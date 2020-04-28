@@ -10,18 +10,13 @@ pub struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    pub async fn tokenize(source: &Arc<Source>) -> Arc<Vec<Arc<Token>>> {
-        let source = source.clone();
-        tokio::spawn(async move {
-            let chars = source.graphemes().peekmore();
-            let lexer = Lexer {
-                source: &source,
-                chars,
-            };
-            lexer.get_tokens()
-        })
-        .await
-        .unwrap()
+    pub fn tokenize(source: &Arc<Source>) -> Arc<Vec<Arc<Token>>> {
+        let chars = source.graphemes().peekmore();
+        let lexer = Lexer {
+            source: &source,
+            chars,
+        };
+        lexer.get_tokens()
     }
 
     fn get_tokens(mut self) -> Arc<Vec<Arc<Token>>> {
@@ -111,7 +106,7 @@ mod tests {
     #[tokio::test]
     async fn empty_source() {
         let source = Source::new("test:x", "");
-        let tokens = Lexer::tokenize(&source).await;
+        let tokens = Lexer::tokenize(&source);
 
         assert_eq!(tokens, Arc::new(vec![Token::new(EOF, &source, 0..0)]));
     }
@@ -119,7 +114,7 @@ mod tests {
     #[tokio::test]
     async fn single_unknown_token() {
         let source = Source::new("test:x", "¥");
-        let tokens = Lexer::tokenize(&source).await;
+        let tokens = Lexer::tokenize(&source);
 
         assert_eq!(
             tokens,
@@ -133,7 +128,7 @@ mod tests {
     #[tokio::test]
     async fn symbol() {
         let source = Source::new("test:x", "åäöकि''");
-        let tokens = Lexer::tokenize(&source).await;
+        let tokens = Lexer::tokenize(&source);
 
         assert_eq!(
             tokens,
@@ -147,7 +142,7 @@ mod tests {
     #[tokio::test]
     async fn two_unknown_tokens() {
         let source = Source::new("test:x", "¥•");
-        let tokens = Lexer::tokenize(&source).await;
+        let tokens = Lexer::tokenize(&source);
 
         assert_eq!(
             tokens,
@@ -162,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn import_keyword() {
         let source = Source::new("test:x", "object");
-        let tokens = Lexer::tokenize(&source).await;
+        let tokens = Lexer::tokenize(&source);
 
         assert_eq!(
             tokens,

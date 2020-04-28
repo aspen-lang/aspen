@@ -21,7 +21,7 @@ use tokio::stream::StreamExt;
 use std::iter::IntoIterator;
 
 pub async fn parse_module(source: Arc<Source>) -> Arc<Node> {
-    let tokens = Lexer::tokenize(&source).await;
+    let tokens = Lexer::tokenize(&source);
     Parser::new(tokens).parse_module().await
 }
 
