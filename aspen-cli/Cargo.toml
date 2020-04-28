@@ -1,0 +1,13 @@
+[package]
+name = "aspen-cli"
+version = "0.1.0"
+authors = ["Emil Broman <emil@emilbroman.me>"]
+edition = "2018"
+
+[[bin]]
+name = "aspen"
+path = "src/main.rs"
+
+[dependencies]
+aspen = { path = "../aspen" }
+tokio = { version = "0.2.19", features = ["macros", "rt-threaded"] }

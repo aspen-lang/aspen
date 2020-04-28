@@ -1,0 +1,10 @@
+[package]
+name = "aspen"
+version = "0.1.0"
+authors = ["Emil Broman <emil@emilbroman.me>"]
+edition = "2018"
+
+[dependencies]
+tokio = { version = "0.2.19", features = ["macros", "rt-threaded", "stream", "sync"] }
+unicode-segmentation = "1.6.0"
+peekmore = "0.4.0"
