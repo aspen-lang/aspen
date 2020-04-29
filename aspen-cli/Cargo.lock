@@ -4,6 +4,7 @@
 name = "aspen"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "peekmore",
  "tokio",
  "unicode-segmentation",
@@ -15,6 +16,17 @@ version = "0.1.0"
 dependencies = [
  "aspen",
  "tokio",
+]
+
+[[package]]
+name = "async-trait"
+version = "0.1.30"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "da71fef07bc806586090247e971229289f64c210a278ee5ae419314eb386b31d"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

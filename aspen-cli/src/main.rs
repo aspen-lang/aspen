@@ -1,8 +1,14 @@
 use aspen;
+use std::io::{self, stdin, Read};
+use aspen::Source;
 
 #[tokio::main]
-async fn main() {
-    let sources = (0..10000).map(|_| aspen::Source::new("test:x", "object Hello ".repeat(200))).collect();
+async fn main() -> io::Result<()> {
+    let mut code = String::new();
+    stdin().read_to_string(&mut code)?;
 
-    aspen::syntax::parse_modules(sources).await;
+    let module = aspen::syntax::parse_module(Source::new("stdin:stdin", code)).await;
+
+    println!("{:#?}", module);
+    Ok(())
 }

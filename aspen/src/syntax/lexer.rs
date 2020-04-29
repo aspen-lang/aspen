@@ -1,8 +1,8 @@
 use crate::source::Source;
 use crate::syntax::{Token, TokenKind, TokenKind::*};
+use crate::Graphemes;
 use peekmore::{PeekMore, PeekMoreIterator};
 use std::sync::Arc;
-use crate::Graphemes;
 
 pub struct Lexer<'a> {
     source: &'a Arc<Source>,
@@ -57,9 +57,20 @@ impl<'a> Lexer<'a> {
         let kind: TokenKind;
 
         match self.peek_char() {
+            '.' => {
+                self.skip();
+                kind = Period;
+            }
+
+            c if c.is_whitespace() => {
+                self.skip_whitespace();
+                kind = Whitespace;
+            }
+
             c if c.is_alphabetic() => {
                 kind = self.take_symbol_or_keyword();
             }
+
             _ => {
                 self.skip();
                 kind = Unknown;
@@ -96,6 +107,12 @@ impl<'a> Lexer<'a> {
         }
 
         unsafe { std::str::from_utf8(std::slice::from_raw_parts(start, length)).unwrap() }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self.peek_char().is_whitespace() {
+            self.skip();
+        }
     }
 }
 

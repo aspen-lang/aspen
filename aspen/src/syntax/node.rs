@@ -16,17 +16,32 @@ pub enum Node {
 
     /// ```bnf
     /// Declaration :=
-    ///   ObjectDeclaration
+    ///   ObjectDeclaration |
+    ///   ClassDeclaration
     /// ```
 
     /// ```bnf
     /// ObjectDeclaration :=
     ///   OBJECT_KEYWORD
     ///   Symbol
+    ///   PERIOD
     /// ```
     ObjectDeclaration {
         keyword: Arc<Token>,
-        symbol: Arc<Node>,
+        symbol: Option<Arc<Node>>,
+        period: Option<Arc<Token>>,
+    },
+
+    /// ```bnf
+    /// ClassDeclaration :=
+    ///   CLASS_KEYWORD
+    ///   Symbol
+    ///   PERIOD
+    /// ```
+    ClassDeclaration {
+        keyword: Arc<Token>,
+        symbol: Option<Arc<Node>>,
+        period: Option<Arc<Token>>,
     },
 
     /// ```bnf

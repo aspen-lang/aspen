@@ -1,7 +1,7 @@
 use crate::source::Source;
 use std::fmt;
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct Location {
     pub offset: usize,
     pub line: usize,

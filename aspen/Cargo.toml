@@ -8,3 +8,4 @@ edition = "2018"
 tokio = { version = "0.2.19", features = ["macros", "rt-threaded", "stream", "sync"] }
 unicode-segmentation = "1.6.0"
 peekmore = "0.4.0"
+async-trait = "0.1.30"

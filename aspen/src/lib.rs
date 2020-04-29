@@ -12,9 +12,16 @@
 //! which implements the CLI used for developing software
 //! in Aspen.
 
+#![feature(async_closure)]
+
+#[macro_use]
+extern crate async_trait;
+
+mod diagnostics;
 mod source;
 pub mod syntax;
 
+pub use self::diagnostics::*;
 pub use self::source::*;
 
 pub fn version() -> &'static str {

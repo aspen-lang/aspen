@@ -1,6 +1,6 @@
 use crate::source::{Location, URI};
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 
 pub struct Source {
@@ -96,10 +96,7 @@ impl Source {
 
         let ptr = self.code[start_byte_offset..].as_ptr();
 
-        unsafe {
-            std::str::from_utf8(std::slice::from_raw_parts(ptr, length))
-                .unwrap()
-        }
+        unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, length)).unwrap() }
     }
 }
 

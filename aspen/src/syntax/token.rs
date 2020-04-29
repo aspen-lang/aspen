@@ -51,6 +51,9 @@ impl fmt::Debug for Token {
 pub enum TokenKind {
     Unknown,
     EOF,
+    Whitespace,
+
+    Period,
 
     Identifier,
 
