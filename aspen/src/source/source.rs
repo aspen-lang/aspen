@@ -2,6 +2,10 @@ use crate::source::{Location, URI};
 use std::collections::HashMap;
 use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
+use std::path::Path;
+use tokio::io::{AsyncRead, AsyncReadExt, stdin};
+use std::io;
+use tokio::fs::File;
 
 pub struct Source {
     uri: URI,
@@ -47,6 +51,25 @@ impl Source {
             offset_byte_indices,
             line_breaks,
         })
+    }
+
+    pub async fn read<U, R>(uri: U, mut read: R) -> io::Result<Arc<Source>>
+    where U: Into<URI>, R: AsyncRead + Unpin {
+        let mut code = String::new();
+        read.read_to_string(&mut code).await?;
+        Ok(Self::new(uri, code))
+    }
+
+    pub async fn file<P: AsRef<Path>>(path: P) -> io::Result<Arc<Source>> {
+        let path = path.as_ref().canonicalize()?;
+        let uri = URI::new("file", format!("{}", path.display()));
+        let file = File::open(path).await?;
+
+        Self::read(uri, file).await
+    }
+
+    pub async fn stdin() -> io::Result<Arc<Source>> {
+        Self::read("file:stdin", stdin()).await
     }
 
     pub fn graphemes(&self) -> Graphemes {

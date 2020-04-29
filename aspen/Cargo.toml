@@ -5,7 +5,7 @@ authors = ["Emil Broman <emil@emilbroman.me>"]
 edition = "2018"
 
 [dependencies]
-tokio = { version = "0.2.19", features = ["macros", "rt-threaded", "stream", "sync"] }
+tokio = { version = "0.2.19", features = ["macros", "rt-threaded", "stream", "sync", "fs", "io-util", "io-std"] }
 unicode-segmentation = "1.6.0"
 peekmore = "0.4.0"
 async-trait = "0.1.30"

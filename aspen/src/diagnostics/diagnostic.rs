@@ -25,7 +25,7 @@ impl<'a> Display for &'a dyn Diagnostic {
         write!(
             f,
             "{}:{}: {:?}: {}",
-            self.source().uri(),
+            self.source().uri().short_name(),
             self.range(),
             self.severity(),
             self.message()

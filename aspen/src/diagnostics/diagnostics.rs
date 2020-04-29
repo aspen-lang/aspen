@@ -69,10 +69,10 @@ impl FromIterator<Box<dyn Diagnostic>> for Diagnostics {
 
 impl fmt::Debug for Diagnostics {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "DIAGNOSTICS ({})", self.len())?;
+        write!(f, "Diagnostics ({})", self.len())?;
 
         for (i, d) in self.iter().enumerate() {
-            write!(f, "\n\n{}: {}", i + 1, d)?;
+            write!(f, "\n- {}: {}", i + 1, d)?;
         }
 
         Ok(())
