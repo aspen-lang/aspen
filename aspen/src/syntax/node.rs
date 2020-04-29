@@ -1,8 +1,25 @@
 use crate::syntax::Token;
 use std::sync::Arc;
+use std::fmt;
+
+pub struct Node {
+    pub kind: NodeKind,
+}
+
+impl Node {
+    pub fn new(kind: NodeKind) -> Arc<Node> {
+        Arc::new(Node { kind })
+    }
+}
+
+impl fmt::Debug for Node {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.kind.fmt(f)
+    }
+}
 
 #[derive(Debug)]
-pub enum Node {
+pub enum NodeKind {
     EOF,
     Unknown(Arc<Token>),
 

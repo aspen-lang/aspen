@@ -1,5 +1,5 @@
 use crate::syntax::ParseResult::Succeeded;
-use crate::syntax::{Node, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind};
+use crate::syntax::{Node, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind, NodeKind};
 use crate::{Diagnostics, Expected};
 use std::sync::Arc;
 
@@ -25,7 +25,7 @@ impl Parser {
             ParseResult::Succeeded(d, t) => (t, d),
 
             ParseResult::Failed(d) => (
-                Arc::new(Node::Module {
+                Node::new(NodeKind::Module {
                     declarations: vec![],
                 }),
                 d,
@@ -92,7 +92,7 @@ impl ParseStrategy<Arc<Node>> for ParseModule {
                 }
             }
         }
-        ParseResult::Succeeded(diagnostics, Arc::new(Node::Module { declarations }))
+        ParseResult::Succeeded(diagnostics, Node::new(NodeKind::Module { declarations }))
     }
 }
 
@@ -132,7 +132,7 @@ impl ParseStrategy<Arc<Node>> for ParseObjectDeclaration {
 
                         Succeeded(
                             diagnostics,
-                            Arc::new(Node::ObjectDeclaration {
+                            Node::new(NodeKind::ObjectDeclaration {
                                 keyword,
                                 symbol,
                                 period,
@@ -168,7 +168,7 @@ impl ParseStrategy<Arc<Node>> for ParseClassDeclaration {
 
                         Succeeded(
                             diagnostics,
-                            Arc::new(Node::ClassDeclaration {
+                            Node::new(NodeKind::ClassDeclaration {
                                 keyword,
                                 symbol,
                                 period,
@@ -191,7 +191,7 @@ impl ParseStrategy<Arc<Node>> for ParseSymbol {
         } else {
             Succeeded(
                 Diagnostics::new(),
-                Arc::new(Node::Symbol(parser.tokens.take())),
+                Node::new(NodeKind::Symbol(parser.tokens.take())),
             )
         }
     }
@@ -207,17 +207,17 @@ mod tests {
     async fn empty_module() {
         let source = Source::new("test:empty", "");
         let mut parser = Parser::new(Lexer::tokenize(&source));
-        parser.parse_module().await.unwrap();
+        parser.parse_module().await;
     }
 
     #[tokio::test]
     async fn single_object_declaration() {
         let source = Source::new("test:empty", "object Example.");
         let mut parser = Parser::new(Lexer::tokenize(&source));
-        let module = parser.parse_module().await.unwrap();
+        let (module, _) = parser.parse_module().await;
 
-        match module.as_ref() {
-            Node::Module { declarations } => {
+        match &module.kind {
+            NodeKind::Module { declarations } => {
                 assert_eq!(declarations.len(), 1);
             }
             n => panic!("expected a module but got: {:?}", n),
@@ -228,7 +228,7 @@ mod tests {
     async fn two_object_declarations() {
         let source = Source::new("test:empty", "object A. object B.");
         let mut parser = Parser::new(Lexer::tokenize(&source));
-        let module = parser.parse_module().await.unwrap();
+        let (module, _) = parser.parse_module().await;
 
         assert_eq!(
             format!("{:#?}", module),
