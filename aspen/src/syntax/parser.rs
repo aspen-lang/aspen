@@ -251,9 +251,7 @@ mod tests {
                     ObjectDeclaration {
                         keyword: ObjectKeyword,
                         symbol: Some(
-                            Symbol(
-                                Identifier "A",
-                            ),
+                            Symbol("A"),
                         ),
                         period: Some(
                             Period,
@@ -262,9 +260,7 @@ mod tests {
                     ObjectDeclaration {
                         keyword: ObjectKeyword,
                         symbol: Some(
-                            Symbol(
-                                Identifier "B",
-                            ),
+                            Symbol("B"),
                         ),
                         period: Some(
                             Period,

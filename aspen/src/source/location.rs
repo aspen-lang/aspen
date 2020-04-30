@@ -1,6 +1,6 @@
 use crate::source::Source;
-use std::fmt;
 use std::cmp::Ordering;
+use std::fmt;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Location {

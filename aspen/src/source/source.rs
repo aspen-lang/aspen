@@ -5,6 +5,7 @@ use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::fs::File;
 use tokio::io::{stdin, AsyncRead, AsyncReadExt};
 use unicode_segmentation::UnicodeSegmentation;
@@ -15,6 +16,7 @@ pub struct Source {
     len: usize,
     offset_byte_indices: HashMap<usize, usize>,
     line_breaks: Vec<usize>,
+    pub modified: SystemTime,
 }
 
 impl PartialEq for Source {
@@ -37,8 +39,40 @@ impl Source {
         U: Into<URI>,
         C: Into<String>,
     {
-        let code = code.into();
+        Self::create(uri.into(), code.into(), SystemTime::now())
+    }
 
+    pub async fn read<U, R>(uri: U, read: R) -> io::Result<Arc<Source>>
+    where
+        U: Into<URI>,
+        R: AsyncRead + Unpin,
+    {
+        Self::create_read(uri.into(), read, SystemTime::now()).await
+    }
+
+    pub async fn file<P: AsRef<Path>>(path: P) -> io::Result<Arc<Source>> {
+        let path = path.as_ref().canonicalize()?;
+        let uri = URI::file(&path);
+        let file = File::open(path).await?;
+        let modified = file.metadata().await?.modified()?;
+
+        Self::create_read(uri, file, modified).await
+    }
+
+    pub async fn stdin() -> io::Result<Arc<Source>> {
+        Self::read(URI::stdin(), stdin()).await
+    }
+
+    async fn create_read<R>(uri: URI, mut read: R, modified: SystemTime) -> io::Result<Arc<Source>>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let mut code = String::new();
+        read.read_to_string(&mut code).await?;
+        Ok(Self::create(uri, code, modified))
+    }
+
+    fn create(uri: URI, code: String, modified: SystemTime) -> Arc<Source> {
         let mut offset = 0;
         let mut offset_byte_indices = HashMap::new();
         let mut line_breaks = vec![];
@@ -55,34 +89,13 @@ impl Source {
         offset_byte_indices.insert(offset, code.len());
 
         Arc::new(Source {
-            uri: uri.into(),
+            uri,
             code,
             len: offset,
             offset_byte_indices,
             line_breaks,
+            modified,
         })
-    }
-
-    pub async fn read<U, R>(uri: U, mut read: R) -> io::Result<Arc<Source>>
-    where
-        U: Into<URI>,
-        R: AsyncRead + Unpin,
-    {
-        let mut code = String::new();
-        read.read_to_string(&mut code).await?;
-        Ok(Self::new(uri, code))
-    }
-
-    pub async fn file<P: AsRef<Path>>(path: P) -> io::Result<Arc<Source>> {
-        let path = path.as_ref().canonicalize()?;
-        let uri = URI::file(&path);
-        let file = File::open(path).await?;
-
-        Self::read(uri, file).await
-    }
-
-    pub async fn stdin() -> io::Result<Arc<Source>> {
-        Self::read(URI::stdin(), stdin()).await
     }
 
     pub fn graphemes(&self) -> Graphemes {
@@ -139,7 +152,11 @@ impl Source {
         Location {
             offset: self.len,
             line: self.line_breaks.len() + 1,
-            character: self.line_breaks.last().map(|b| self.len - *b).unwrap_or(self.len),
+            character: self
+                .line_breaks
+                .last()
+                .map(|b| self.len - *b)
+                .unwrap_or(self.len),
         }
     }
 

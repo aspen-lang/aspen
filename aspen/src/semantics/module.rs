@@ -1,12 +1,13 @@
 use crate::semantics::*;
 use crate::syntax::{Navigator, Node, Parser};
-use crate::{Diagnostics, Source, URI};
+use crate::{Diagnostics, Source};
 use std::fmt;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::sync::Mutex;
 
 pub struct Module {
-    uri: URI,
+    source: Arc<Source>,
     root_node: Arc<Node>,
     diagnostics: Mutex<Diagnostics>,
     host: Host,
@@ -18,11 +19,10 @@ pub struct Module {
 
 impl Module {
     pub async fn parse(source: Arc<Source>, host: Host) -> Module {
-        let uri = source.uri().clone();
-        let (root_node, diagnostics) = Parser::new(source).parse_module().await;
+        let (root_node, diagnostics) = Parser::new(source.clone()).parse_module().await;
 
         Module {
-            uri,
+            source,
             root_node,
             diagnostics: Mutex::new(diagnostics),
             host,
@@ -32,9 +32,13 @@ impl Module {
         }
     }
 
+    pub fn modified(&self) -> &SystemTime {
+        &self.source.modified
+    }
+
     async fn run_analyzer<A: Analyzer>(&self, analyzer: A) -> A::Output {
         let ctx = AnalysisContext {
-            uri: self.uri.clone(),
+            uri: self.source.uri().clone(),
             host: self.host.clone(),
             navigator: Navigator::new(self.root_node.clone()),
         };
@@ -61,7 +65,7 @@ impl Module {
 
 impl fmt::Debug for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(&self.uri, f)?;
+        fmt::Debug::fmt(&self.source.uri(), f)?;
         write!(f, " ")?;
         fmt::Debug::fmt(&self.root_node, f)
     }

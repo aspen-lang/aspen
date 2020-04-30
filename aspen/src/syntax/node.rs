@@ -1,9 +1,9 @@
 use crate::syntax::Token;
 use crate::{Range, Source};
+use std::convert::identity;
 use std::fmt;
 use std::iter::empty;
 use std::sync::Arc;
-use std::convert::identity;
 
 pub struct Node {
     pub source: Arc<Source>,
@@ -37,7 +37,7 @@ impl fmt::Debug for Node {
         use NodeKind::*;
         match &self.kind {
             Symbol(t) => write!(f, "Symbol({:?})", t.lexeme()),
-            k => k.fmt(f)
+            k => k.fmt(f),
         }
     }
 }

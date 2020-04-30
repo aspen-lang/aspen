@@ -8,12 +8,22 @@ pub struct Range {
 }
 
 impl Range {
-    pub fn over<I: IntoIterator<Item=Range>>(iter: I) -> Range {
+    pub fn over<I: IntoIterator<Item = Range>>(iter: I) -> Range {
         let ranges: Vec<Range> = iter.into_iter().collect();
 
         Range {
-            start: ranges.iter().map( | r| &r.start).cloned().min().unwrap_or(Default::default()),
-            end: ranges.iter().map(|r| &r.end).cloned().max().unwrap_or(Default::default()),
+            start: ranges
+                .iter()
+                .map(|r| &r.start)
+                .cloned()
+                .min()
+                .unwrap_or(Default::default()),
+            end: ranges
+                .iter()
+                .map(|r| &r.end)
+                .cloned()
+                .max()
+                .unwrap_or(Default::default()),
         }
     }
 

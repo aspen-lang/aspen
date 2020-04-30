@@ -10,5 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 aspen = { path = "../aspen" }
-tokio = { version = "0.2.19", features = ["macros", "rt-threaded"] }
+tokio = { version = "0.2.19", features = ["macros", "rt-threaded", "stream", "sync", "fs", "io-util", "io-std", "time"] }
 ansi-colors = "0.3.0"
