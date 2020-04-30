@@ -50,7 +50,7 @@ impl Parser {
     }
 
     pub fn expected<S: Into<String>>(&mut self, message: S) -> Expected {
-        Expected(message.into(), self.tokens.clone_next())
+        Expected(message.into(), self.tokens.clone_next_insignificant())
     }
 
     pub fn expect_optional_period(&mut self, diagnostics: &mut Diagnostics) -> Option<Arc<Token>> {

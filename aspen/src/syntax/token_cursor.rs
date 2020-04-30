@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub struct TokenCursor {
     tokens: Arc<Vec<Arc<Token>>>,
     offset: usize,
+    insignificant_offset: usize,
 }
 
 impl TokenCursor {
@@ -14,7 +15,7 @@ impl TokenCursor {
             panic!("cannot construct a cursor from an empty list of tokens");
         }
 
-        let mut cursor = TokenCursor { tokens, offset: 0 };
+        let mut cursor = TokenCursor { tokens, offset: 0, insignificant_offset: 0 };
 
         cursor.move_past_whitespace();
 
@@ -23,7 +24,7 @@ impl TokenCursor {
 
     fn move_past_whitespace(&mut self) {
         while self.sees(Whitespace) {
-            self.skip();
+            self.offset += 1;
         }
     }
 
@@ -35,8 +36,8 @@ impl TokenCursor {
         self.peek().kind == kind
     }
 
-    pub fn clone_next(&self) -> Arc<Token> {
-        self.tokens[self.offset].clone()
+    pub fn clone_next_insignificant(&self) -> Arc<Token> {
+        self.tokens[self.insignificant_offset].clone()
     }
 
     pub fn take(&mut self) -> Arc<Token> {
@@ -45,6 +46,7 @@ impl TokenCursor {
         if self.offset < self.tokens.len() - 1 {
             self.offset += 1;
         }
+        self.insignificant_offset = self.offset;
 
         self.move_past_whitespace();
 
@@ -59,6 +61,7 @@ impl TokenCursor {
         TokenCursor {
             tokens: self.tokens.clone(),
             offset: self.offset,
+            insignificant_offset: self.insignificant_offset,
         }
     }
 

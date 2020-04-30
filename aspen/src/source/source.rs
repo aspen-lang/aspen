@@ -90,12 +90,12 @@ impl Source {
 
     pub fn location_at(&self, offset: usize) -> Location {
         let mut line = 1;
-        let mut character = 1;
+        let mut character = offset + 1;
         for line_break_offset in &self.line_breaks {
-            if offset < *line_break_offset {
+            if offset <= *line_break_offset {
                 break;
             }
-            character = offset - *line_break_offset;
+            character = offset - *line_break_offset + 1;
             line += 1;
         }
 
