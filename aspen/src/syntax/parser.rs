@@ -1,33 +1,38 @@
-use crate::syntax::ParseResult::Succeeded;
+use crate::syntax::ParseResult::*;
 use crate::syntax::{
-    Node, NodeKind, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind,
+    Lexer, Node, NodeKind, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind,
 };
-use crate::{Diagnostics, Expected};
+use crate::{Diagnostics, Expected, Source};
 use std::sync::Arc;
 
 pub struct Parser {
+    source: Arc<Source>,
     tokens: TokenCursor,
 }
 
 impl Parser {
-    pub fn new(tokens: Arc<Vec<Arc<Token>>>) -> Parser {
+    pub fn new(source: Arc<Source>) -> Parser {
+        let tokens = Lexer::tokenize(&source);
+
         Parser {
+            source,
             tokens: TokenCursor::new(tokens),
         }
     }
 
     pub fn split(&self) -> Parser {
         Parser {
+            source: self.source.clone(),
             tokens: self.tokens.split(),
         }
     }
 
     pub async fn parse_module(&mut self) -> (Arc<Node>, Diagnostics) {
         match ParseModule.parse(self).await {
-            ParseResult::Succeeded(d, t) => (t, d),
+            Succeeded(d, t) => (t, d),
 
-            ParseResult::Failed(d) => (
-                Node::new(NodeKind::Module {
+            Failed(d) => (
+                self.node(NodeKind::Module {
                     declarations: vec![],
                 }),
                 d,
@@ -45,7 +50,7 @@ impl Parser {
         message: S,
     ) -> ParseResult<Arc<Token>> {
         if self.tokens.peek().kind == kind {
-            ParseResult::Succeeded(Diagnostics::new(), self.tokens.take())
+            Succeeded(Diagnostics::new(), self.tokens.take())
         } else {
             self.fail_expecting(message)
         }
@@ -62,6 +67,10 @@ impl Parser {
             diagnostics.push(self.expected("period"));
             None
         }
+    }
+
+    pub fn node(&self, kind: NodeKind) -> Arc<Node> {
+        Node::new(self.source.clone(), kind)
     }
 }
 
@@ -94,7 +103,7 @@ impl ParseStrategy<Arc<Node>> for ParseModule {
                 }
             }
         }
-        ParseResult::Succeeded(diagnostics, Node::new(NodeKind::Module { declarations }))
+        Succeeded(diagnostics, parser.node(NodeKind::Module { declarations }))
     }
 }
 
@@ -134,7 +143,7 @@ impl ParseStrategy<Arc<Node>> for ParseObjectDeclaration {
 
                         Succeeded(
                             diagnostics,
-                            Node::new(NodeKind::ObjectDeclaration {
+                            parser.node(NodeKind::ObjectDeclaration {
                                 keyword,
                                 symbol,
                                 period,
@@ -170,7 +179,7 @@ impl ParseStrategy<Arc<Node>> for ParseClassDeclaration {
 
                         Succeeded(
                             diagnostics,
-                            Node::new(NodeKind::ClassDeclaration {
+                            parser.node(NodeKind::ClassDeclaration {
                                 keyword,
                                 symbol,
                                 period,
@@ -193,7 +202,10 @@ impl ParseStrategy<Arc<Node>> for ParseSymbol {
         } else {
             Succeeded(
                 Diagnostics::new(),
-                Node::new(NodeKind::Symbol(parser.tokens.take())),
+                Node::new(
+                    parser.source.clone(),
+                    NodeKind::Symbol(parser.tokens.take()),
+                ),
             )
         }
     }
@@ -202,20 +214,19 @@ impl ParseStrategy<Arc<Node>> for ParseSymbol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::syntax::Lexer;
     use crate::Source;
 
     #[tokio::test]
     async fn empty_module() {
         let source = Source::new("test:empty", "");
-        let mut parser = Parser::new(Lexer::tokenize(&source));
+        let mut parser = Parser::new(source);
         parser.parse_module().await;
     }
 
     #[tokio::test]
     async fn single_object_declaration() {
         let source = Source::new("test:empty", "object Example.");
-        let mut parser = Parser::new(Lexer::tokenize(&source));
+        let mut parser = Parser::new(source);
         let (module, _) = parser.parse_module().await;
 
         match &module.kind {
@@ -229,7 +240,7 @@ mod tests {
     #[tokio::test]
     async fn two_object_declarations() {
         let source = Source::new("test:empty", "object A. object B.");
-        let mut parser = Parser::new(Lexer::tokenize(&source));
+        let mut parser = Parser::new(source);
         let (module, _) = parser.parse_module().await;
 
         assert_eq!(

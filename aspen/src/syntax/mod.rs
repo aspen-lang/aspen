@@ -27,8 +27,7 @@ use std::sync::Arc;
 use tokio::stream::StreamExt;
 
 pub async fn parse_module(source: Arc<Source>) -> (Arc<Node>, Diagnostics) {
-    let tokens = Lexer::tokenize(&source);
-    Parser::new(tokens).parse_module().await
+    Parser::new(source).parse_module().await
 }
 
 pub async fn parse_modules(sources: Vec<Arc<Source>>) -> (Vec<Arc<Node>>, Diagnostics) {

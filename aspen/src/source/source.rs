@@ -1,4 +1,5 @@
 use crate::source::{Location, URI};
+use crate::Range;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::io;
@@ -132,6 +133,33 @@ impl Source {
         let ptr = self.code[start_byte_offset..].as_ptr();
 
         unsafe { std::str::from_utf8(std::slice::from_raw_parts(ptr, length)).unwrap() }
+    }
+
+    pub fn eof_location(&self) -> Location {
+        Location {
+            offset: self.len,
+            line: self.line_breaks.len() + 1,
+            character: self.line_breaks.last().map(|b| *b - self.len).unwrap_or(0),
+        }
+    }
+
+    pub fn eof_range(&self) -> Range {
+        let location = self.eof_location();
+        Range {
+            start: location.clone(),
+            end: location,
+        }
+    }
+
+    pub fn range_all(&self) -> Range {
+        Range {
+            start: Location {
+                offset: 0,
+                line: 1,
+                character: 1,
+            },
+            end: self.eof_location(),
+        }
     }
 }
 

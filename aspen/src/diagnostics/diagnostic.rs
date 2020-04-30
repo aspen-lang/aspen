@@ -1,4 +1,4 @@
-use crate::syntax::Token;
+use crate::syntax::{Node, Token};
 use crate::{Range, Source};
 use std::fmt::{self, Debug, Display};
 use std::sync::Arc;
@@ -16,7 +16,7 @@ where
 {
     fn severity(&self) -> Severity;
     fn source(&self) -> &Arc<Source>;
-    fn range(&self) -> &Range;
+    fn range(&self) -> Range;
     fn message(&self) -> String;
 }
 
@@ -51,11 +51,35 @@ impl Diagnostic for Expected {
         &self.1.source
     }
 
-    fn range(&self) -> &Range {
-        &self.1.range
+    fn range(&self) -> Range {
+        self.1.range.clone()
     }
 
     fn message(&self) -> String {
         format!("Expected {} but encountered {:?}", self.0, self.1)
+    }
+}
+
+#[derive(Debug)]
+pub struct DuplicateExport(pub String, pub Arc<Node>);
+
+impl Diagnostic for DuplicateExport {
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+
+    fn source(&self) -> &Arc<Source> {
+        &self.1.source
+    }
+
+    fn range(&self) -> Range {
+        self.1.range()
+    }
+
+    fn message(&self) -> String {
+        format!(
+            "Duplicate export `{}`",
+            self.0,
+        )
     }
 }

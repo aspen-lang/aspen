@@ -1,15 +1,17 @@
 use crate::syntax::Token;
+use crate::{Range, Source};
 use std::fmt;
 use std::iter::empty;
 use std::sync::Arc;
 
 pub struct Node {
+    pub source: Arc<Source>,
     pub kind: NodeKind,
 }
 
 impl Node {
-    pub fn new(kind: NodeKind) -> Arc<Node> {
-        Arc::new(Node { kind })
+    pub fn new(source: Arc<Source>, kind: NodeKind) -> Arc<Node> {
+        Arc::new(Node { source, kind })
     }
 
     pub fn children(&self) -> impl Iterator<Item = &Arc<Node>> {
@@ -22,6 +24,10 @@ impl Node {
         } else {
             None
         }
+    }
+
+    pub fn range(&self) -> Range {
+        self.kind.range(self.source.as_ref())
     }
 }
 
@@ -89,6 +95,18 @@ impl NodeKind {
             Module { declarations } => declarations.iter().into(),
             ObjectDeclaration { symbol, .. } => symbol.iter().into(),
             ClassDeclaration { symbol, .. } => symbol.iter().into(),
+        }
+    }
+
+    fn range(&self, source: &Source) -> Range {
+        use NodeKind::*;
+        match self {
+            EOF => source.eof_range(),
+            Unknown(t) => t.range.clone(),
+            Module { .. } => source.range_all(),
+            ObjectDeclaration { .. } => source.range_all(),
+            ClassDeclaration { .. } => (source.range_all()),
+            Symbol(t) => t.range.clone(),
         }
     }
 }

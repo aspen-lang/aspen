@@ -1,4 +1,4 @@
-use crate::semantics::module::Module;
+use crate::semantics::Module;
 use crate::{Source, URI};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct Host {
-    modules: Arc<Mutex<HashMap<URI, Module>>>,
+    modules: Arc<Mutex<HashMap<URI, Arc<Module>>>>,
 }
 
 impl Host {
@@ -16,20 +16,23 @@ impl Host {
         }
     }
 
-    pub async fn set(&mut self, source: Arc<Source>) {
+    pub async fn set(&self, source: Arc<Source>) {
         let host = self.clone();
-        self.modules
-            .lock()
-            .await
-            .insert(source.uri().clone(), Module::parse(source, host).await);
+        self.modules.lock().await.insert(
+            source.uri().clone(),
+            Arc::new(Module::parse(source, host).await),
+        );
     }
 
-    pub async fn remove(&mut self, uri: &URI) {
+    pub async fn remove(&self, uri: &URI) {
         self.modules.lock().await.remove(uri);
     }
 
-    #[cfg(test)]
-    pub async fn get<F: FnOnce(Option<&Module>) -> R, R>(&self, uri: &URI, f: F) -> R {
-        f(self.modules.lock().await.get(uri))
+    pub async fn get(&self, uri: &URI) -> Option<Arc<Module>> {
+        let modules = self.modules.lock().await;
+        match modules.get(uri) {
+            None => return None,
+            Some(m) => Some(m.clone()),
+        }
     }
 }

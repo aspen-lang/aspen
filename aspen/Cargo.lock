@@ -233,6 +233,7 @@ dependencies = [
  "memchr",
  "num_cpus",
  "pin-project-lite",
+ "slab",
  "tokio-macros",
 ]
 
