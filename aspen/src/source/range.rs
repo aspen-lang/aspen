@@ -7,9 +7,24 @@ pub struct Range {
     pub end: Location,
 }
 
+impl Range {
+    pub fn over<I: IntoIterator<Item=Range>>(iter: I) -> Range {
+        let ranges: Vec<Range> = iter.into_iter().collect();
+
+        Range {
+            start: ranges.iter().map( | r| &r.start).cloned().min().unwrap_or(Default::default()),
+            end: ranges.iter().map(|r| &r.end).cloned().max().unwrap_or(Default::default()),
+        }
+    }
+
+    pub fn contains(&self, other: &Range) -> bool {
+        self.start <= other.start && other.end <= self.end
+    }
+}
+
 impl fmt::Debug for Range {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}->{}", self.start, self.end)
+        write!(f, "{:?}->{:?}", self.start, self.end)
     }
 }
 

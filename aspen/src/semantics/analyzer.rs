@@ -1,11 +1,12 @@
 use crate::semantics::{Host, Module};
 use crate::syntax::{Navigator, Node, NodeKind};
-use crate::{Diagnostics, DuplicateExport, URI, Merge};
+use crate::{Diagnostics, DuplicateExport, URI};
 use futures::future;
+use std::borrow::BorrowMut;
 use std::collections::HashSet;
+use std::iter::FromIterator;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use std::borrow::BorrowMut;
 
 #[derive(Clone)]
 pub struct AnalysisContext {
@@ -21,21 +22,26 @@ impl AnalysisContext {
 }
 
 #[async_trait]
-pub trait Analyzer<T> where Self: Send + Sized {
-    async fn analyze(self, ctx: AnalysisContext) -> T;
+pub trait Analyzer
+where
+    Self: Send + Sized,
+{
+    type Output: Send;
 
-    fn and<B: Analyzer<T>>(self, b: B) -> MergeTwo<Self, B> {
+    async fn analyze(self, ctx: AnalysisContext) -> Self::Output;
+
+    fn and<B: Analyzer<Output = Self::Output>>(self, b: B) -> MergeTwo<Self, B> {
         MergeTwo::both(self, b)
     }
 }
 
-pub struct Memo<A, T> {
-    mutex: Mutex<Option<T>>,
+pub struct Memo<A: Analyzer> {
+    mutex: Mutex<Option<A::Output>>,
     analyzer: A,
 }
 
-impl<A, T> Memo<A, T> {
-    pub fn of(analyzer: A) -> Memo<A, T> {
+impl<A: Analyzer> Memo<A> {
+    pub fn of(analyzer: A) -> Memo<A> {
         Memo {
             mutex: Mutex::new(None),
             analyzer,
@@ -44,12 +50,14 @@ impl<A, T> Memo<A, T> {
 }
 
 #[async_trait]
-impl<A, T> Analyzer<T> for &Memo<A, T>
-    where
-        A: Analyzer<T> + Clone + Sync + Send,
-        T: Clone + Send,
+impl<A> Analyzer for &Memo<A>
+where
+    A: Analyzer + Clone + Sync + Send,
+    A::Output: Clone,
 {
-    async fn analyze(self, ctx: AnalysisContext) -> T {
+    type Output = A::Output;
+
+    async fn analyze(self, ctx: AnalysisContext) -> A::Output {
         let mut opt = self.mutex.lock().await;
 
         match opt.as_ref() {
@@ -76,17 +84,19 @@ impl<A> Once<A> {
 }
 
 #[async_trait]
-impl<A, T> Analyzer<T> for &Once<A>
+impl<A> Analyzer for &Once<A>
 where
-    A: Analyzer<T>,
-    T: 'static + Default,
+    A: Analyzer,
+    A::Output: Default,
 {
-    async fn analyze(self, ctx: AnalysisContext) -> T {
+    type Output = A::Output;
+
+    async fn analyze(self, ctx: AnalysisContext) -> A::Output {
         let mut lock = self.analyzer.lock().await;
         let opt: &mut Option<A> = lock.borrow_mut();
 
         if opt.is_none() {
-            return T::default();
+            return Default::default();
         }
 
         let analyzer = std::mem::replace(opt, None).unwrap();
@@ -101,36 +111,33 @@ pub struct MergeTwo<A, B> {
 
 impl<A, B> MergeTwo<A, B> {
     pub fn both(a: A, b: B) -> MergeTwo<A, B> {
-        MergeTwo {
-            a,
-            b,
-        }
+        MergeTwo { a, b }
     }
 }
 
 #[async_trait]
-impl<T, A, B> Analyzer<T> for MergeTwo<A, B>
+impl<T, A, B> Analyzer for MergeTwo<A, B>
 where
-    T: 'static + Merge + Send,
-    A: Analyzer<T>,
-    B: Analyzer<T>,
+    T: 'static + FromIterator<T> + Send,
+    A: Analyzer<Output = T>,
+    B: Analyzer<Output = T>,
 {
-    async fn analyze(self, ctx: AnalysisContext) -> T {
-        let (a, b) = future::join(
-            self.a.analyze(ctx.clone()),
-            self.b.analyze(ctx),
-        ).await;
+    type Output = T;
 
-        T::merge(vec![a, b])
+    async fn analyze(self, ctx: AnalysisContext) -> T {
+        let (a, b) = future::join(self.a.analyze(ctx.clone()), self.b.analyze(ctx)).await;
+
+        vec![a, b].into_iter().collect()
     }
 }
 
-#[derive(Clone)]
 pub struct ExportedDeclarations;
 
 #[async_trait]
-impl Analyzer<Vec<(String, Arc<Node>)>> for ExportedDeclarations {
-    async fn analyze(self, ctx: AnalysisContext) -> Vec<(String, Arc<Node>)> {
+impl Analyzer for &ExportedDeclarations {
+    type Output = Vec<(String, Arc<Node>)>;
+
+    async fn analyze(self, ctx: AnalysisContext) -> Self::Output {
         let mut exported_declarations = vec![];
         for declaration in ctx.navigator.children() {
             match &declaration.node.kind {
@@ -147,11 +154,12 @@ impl Analyzer<Vec<(String, Arc<Node>)>> for ExportedDeclarations {
     }
 }
 
-#[derive(Clone)]
 pub struct CheckForDuplicateExports;
 
 #[async_trait]
-impl Analyzer<Diagnostics> for CheckForDuplicateExports {
+impl Analyzer for &CheckForDuplicateExports {
+    type Output = Diagnostics;
+
     async fn analyze(self, ctx: AnalysisContext) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         let mut names = HashSet::new();

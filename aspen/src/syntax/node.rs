@@ -3,6 +3,7 @@ use crate::{Range, Source};
 use std::fmt;
 use std::iter::empty;
 use std::sync::Arc;
+use std::convert::identity;
 
 pub struct Node {
     pub source: Arc<Source>,
@@ -33,7 +34,11 @@ impl Node {
 
 impl fmt::Debug for Node {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.kind.fmt(f)
+        use NodeKind::*;
+        match &self.kind {
+            Symbol(t) => write!(f, "Symbol({:?})", t.lexeme()),
+            k => k.fmt(f)
+        }
     }
 }
 
@@ -100,14 +105,31 @@ impl NodeKind {
 
     fn range(&self, source: &Source) -> Range {
         use NodeKind::*;
-        match self {
-            EOF => source.eof_range(),
-            Unknown(t) => t.range.clone(),
-            Module { .. } => source.range_all(),
-            ObjectDeclaration { .. } => source.range_all(),
-            ClassDeclaration { .. } => (source.range_all()),
-            Symbol(t) => t.range.clone(),
-        }
+        let opts = match self {
+            EOF => return source.eof_range(),
+            Unknown(t) => return t.range.clone(),
+            Module { .. } => return source.range_all(),
+            Symbol(t) => return t.range.clone(),
+            ObjectDeclaration {
+                keyword,
+                symbol,
+                period,
+            } => vec![
+                Some(keyword.range.clone()),
+                symbol.as_ref().map(|n| n.range()),
+                period.as_ref().map(|n| n.range.clone()),
+            ],
+            ClassDeclaration {
+                keyword,
+                symbol,
+                period,
+            } => vec![
+                Some(keyword.range.clone()),
+                symbol.as_ref().map(|n| n.range()),
+                period.as_ref().map(|n| n.range.clone()),
+            ],
+        };
+        Range::over(opts.into_iter().filter_map(identity))
     }
 }
 

@@ -1,5 +1,3 @@
-#![feature(drain_filter)]
-
 mod reporter;
 
 use crate::reporter::report;
@@ -17,14 +15,17 @@ async fn main() -> io::Result<()> {
     if sources.is_empty() {
         sources.push(Source::stdin().await?);
     }
-    let (modules, diagnostics) = aspen::syntax::parse_modules(sources).await;
+
+    let host = aspen::semantics::Host::from(sources).await;
+
+    let diagnostics = host.diagnostics().await;
 
     let is_ok = diagnostics.is_ok();
 
     report(diagnostics);
 
     if is_ok {
-        println!("{:#?}", modules);
+        println!("{:#?}", host.modules().await);
     }
 
     Ok(())

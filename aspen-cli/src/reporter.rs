@@ -1,6 +1,6 @@
 use ansi_colors::ColouredStr;
 use aspen::syntax::{Lexer, Token, TokenKind};
-use aspen::Diagnostics;
+use aspen::{Diagnostics, Diagnostic};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,31 +26,32 @@ pub fn report(diagnostics: Diagnostics) {
         uri.dark_gray();
         println!("{}", uri);
 
-        let mut diagnostics: Vec<_> = diagnostics.into_iter().collect();
+        let diagnostics: Vec<_> = diagnostics.into_iter().collect();
 
         let tokens = Lexer::tokenize(&source);
-        let pairs: Vec<(&Arc<Token>, Diagnostics)> = tokens
+        let pairs: Vec<(&Arc<Token>, bool, Vec<&Arc<dyn Diagnostic>>)> = tokens
             .iter()
             .map(|token| {
                 (
                     token,
-                    diagnostics
-                        .drain_filter(|d| d.range() == &token.range)
+                    diagnostics.iter().any(|d| d.range().contains(&token.range)),
+                    diagnostics.iter()
+                        .filter(|d| d.range().start == token.range.start)
                         .collect(),
                 )
             })
             .collect();
 
-        let mut lines: HashMap<usize, Vec<(&Arc<Token>, Diagnostics)>> = HashMap::new();
+        let mut lines: HashMap<usize, Vec<(&Arc<Token>, bool, Vec<&Arc<dyn Diagnostic>>)>> = HashMap::new();
 
-        for (token, diagnostics) in pairs {
+        for (token, has_error, diagnostics) in pairs {
             if !lines.contains_key(&token.range.start.line) {
                 lines.insert(token.range.start.line, vec![]);
             }
             lines
                 .get_mut(&token.range.start.line)
                 .unwrap()
-                .push((token, diagnostics))
+                .push((token, has_error, diagnostics))
         }
 
         let mut lines: Vec<_> = lines.into_iter().collect();
@@ -65,14 +66,14 @@ pub fn report(diagnostics: Diagnostics) {
                 line_number,
                 gutter_width = gutter_width
             );
-            for (token, d) in tokens.iter() {
+            for (token, has_error, _) in tokens.iter() {
                 let mut lexeme = token.lexeme();
                 if lexeme == "\n" {
                     lexeme = " ";
                 }
                 let mut lexeme = ColouredStr::new(lexeme);
 
-                if !d.is_empty() {
+                if *has_error {
                     lexeme.red();
                     lexeme.underline();
                 } else {
@@ -88,7 +89,7 @@ pub fn report(diagnostics: Diagnostics) {
                 print!("{}", lexeme);
             }
             print!("\n");
-            for (token, diagnostics) in tokens {
+            for (token, _, diagnostics) in tokens {
                 for diagnostic in diagnostics {
                     let mut message = diagnostic.message();
                     message.insert(0, '^');

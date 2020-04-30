@@ -12,7 +12,7 @@ pub enum Severity {
 
 pub trait Diagnostic
 where
-    Self: Send + Debug,
+    Self: Send + Sync + Debug,
 {
     fn severity(&self) -> Severity;
     fn source(&self) -> &Arc<Source>;
@@ -33,13 +33,7 @@ impl<'a> Display for &'a dyn Diagnostic {
     }
 }
 
-impl Display for Box<dyn Diagnostic> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        Display::fmt(&self.as_ref(), f)
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Expected(pub String, pub Arc<Token>);
 
 impl Diagnostic for Expected {
@@ -60,7 +54,7 @@ impl Diagnostic for Expected {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DuplicateExport(pub String, pub Arc<Node>);
 
 impl Diagnostic for DuplicateExport {

@@ -1,20 +1,19 @@
 use crate::semantics::*;
 use crate::syntax::{Navigator, Node, Parser};
 use crate::{Diagnostics, Source, URI};
+use std::fmt;
 use std::sync::Arc;
-use tokio::sync::{Mutex, MutexGuard};
+use tokio::sync::Mutex;
 
 pub struct Module {
     uri: URI,
     root_node: Arc<Node>,
     diagnostics: Mutex<Diagnostics>,
-
-    #[allow(unused)]
     host: Host,
 
     // Analyzers
-    exported_declarations: Memo<ExportedDeclarations, Vec<(String, Arc<Node>)>>,
-    collect_diagnostics: Once<CheckForDuplicateExports>,
+    exported_declarations: Memo<&'static ExportedDeclarations>,
+    collect_diagnostics: Once<&'static CheckForDuplicateExports>,
 }
 
 impl Module {
@@ -28,12 +27,12 @@ impl Module {
             diagnostics: Mutex::new(diagnostics),
             host,
 
-            exported_declarations: Memo::of(ExportedDeclarations),
-            collect_diagnostics: Once::of(CheckForDuplicateExports),
+            exported_declarations: Memo::of(&ExportedDeclarations),
+            collect_diagnostics: Once::of(&CheckForDuplicateExports),
         }
     }
 
-    async fn run_analyzer<A: Analyzer<T>, T>(&self, analyzer: A) -> T {
+    async fn run_analyzer<A: Analyzer>(&self, analyzer: A) -> A::Output {
         let ctx = AnalysisContext {
             uri: self.uri.clone(),
             host: self.host.clone(),
@@ -43,7 +42,7 @@ impl Module {
         analyzer.analyze(ctx).await
     }
 
-    pub async fn diagnostics<'a, 'b: 'a>(&'b self) -> MutexGuard<'a, Diagnostics> {
+    pub async fn diagnostics(&self) -> Diagnostics {
         let d = self.run_analyzer(&self.collect_diagnostics).await;
 
         let mut diagnostics = self.diagnostics.lock().await;
@@ -52,11 +51,19 @@ impl Module {
             diagnostics.push_all(d);
         }
 
-        diagnostics
+        diagnostics.clone()
     }
 
     pub async fn exported_declarations(&self) -> Vec<(String, Arc<Node>)> {
         self.run_analyzer(&self.exported_declarations).await
+    }
+}
+
+impl fmt::Debug for Module {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(&self.uri, f)?;
+        write!(f, " ")?;
+        fmt::Debug::fmt(&self.root_node, f)
     }
 }
 

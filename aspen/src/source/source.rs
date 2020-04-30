@@ -139,7 +139,7 @@ impl Source {
         Location {
             offset: self.len,
             line: self.line_breaks.len() + 1,
-            character: self.line_breaks.last().map(|b| *b - self.len).unwrap_or(0),
+            character: self.line_breaks.last().map(|b| self.len - *b).unwrap_or(self.len),
         }
     }
 

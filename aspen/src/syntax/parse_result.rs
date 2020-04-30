@@ -1,6 +1,7 @@
 use crate::{Diagnostic, Diagnostics};
 use std::cmp::Ordering;
 use std::future::Future;
+use std::sync::Arc;
 
 pub enum ParseResult<T> {
     Failed(Diagnostics),
@@ -42,7 +43,7 @@ impl<T> ParseResult<T> {
     }
 
     pub fn fail<D: Diagnostic + 'static>(diagnostic: D) -> ParseResult<T> {
-        let b: Box<dyn Diagnostic> = Box::new(diagnostic);
+        let b: Arc<dyn Diagnostic> = Arc::new(diagnostic);
         ParseResult::Failed(b.into())
     }
 

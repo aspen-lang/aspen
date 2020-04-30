@@ -1,11 +1,12 @@
-use crate::{Diagnostic, Severity, Source, Merge};
+use crate::{Diagnostic, Severity, Source};
 use std::collections::HashMap;
 use std::fmt;
 use std::iter::FromIterator;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Diagnostics {
-    diagnostics: Vec<Box<dyn Diagnostic>>,
+    diagnostics: Vec<Arc<dyn Diagnostic>>,
 }
 
 impl Diagnostics {
@@ -27,7 +28,7 @@ impl Diagnostics {
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &dyn Diagnostic> {
-        self.diagnostics.iter().map(Box::as_ref)
+        self.diagnostics.iter().map(Arc::as_ref)
     }
 
     pub fn len(&self) -> usize {
@@ -35,7 +36,7 @@ impl Diagnostics {
     }
 
     pub fn push<D: Diagnostic + 'static>(&mut self, diagnostic: D) {
-        self.diagnostics.push(Box::new(diagnostic));
+        self.diagnostics.push(Arc::new(diagnostic));
     }
 
     pub fn push_all<D: Into<Diagnostics>>(&mut self, diagnostics: D) {
@@ -66,31 +67,47 @@ impl Diagnostics {
     }
 }
 
-impl From<Box<dyn Diagnostic>> for Diagnostics {
-    fn from(diagnostic: Box<dyn Diagnostic>) -> Self {
+impl From<Arc<dyn Diagnostic>> for Diagnostics {
+    fn from(diagnostic: Arc<dyn Diagnostic>) -> Self {
         Diagnostics {
             diagnostics: vec![diagnostic],
         }
     }
 }
 
-impl From<Vec<Box<dyn Diagnostic>>> for Diagnostics {
-    fn from(diagnostics: Vec<Box<dyn Diagnostic>>) -> Self {
+impl From<Vec<Arc<dyn Diagnostic>>> for Diagnostics {
+    fn from(diagnostics: Vec<Arc<dyn Diagnostic>>) -> Self {
         Diagnostics { diagnostics }
     }
 }
 
-impl FromIterator<Box<dyn Diagnostic>> for Diagnostics {
-    fn from_iter<T: IntoIterator<Item = Box<dyn Diagnostic>>>(iter: T) -> Self {
+impl From<Vec<Diagnostics>> for Diagnostics {
+    fn from(diagnostics: Vec<Diagnostics>) -> Self {
+        diagnostics.into_iter().collect()
+    }
+}
+
+impl FromIterator<Arc<dyn Diagnostic>> for Diagnostics {
+    fn from_iter<T: IntoIterator<Item = Arc<dyn Diagnostic>>>(iter: T) -> Self {
         Diagnostics {
             diagnostics: iter.into_iter().collect(),
         }
     }
 }
 
+impl FromIterator<Diagnostics> for Diagnostics {
+    fn from_iter<I: IntoIterator<Item = Diagnostics>>(iter: I) -> Diagnostics {
+        let mut result = Diagnostics::new();
+        for d in iter {
+            result.push_all(d);
+        }
+        result
+    }
+}
+
 impl IntoIterator for Diagnostics {
-    type Item = Box<dyn Diagnostic>;
-    type IntoIter = std::vec::IntoIter<Box<dyn Diagnostic>>;
+    type Item = Arc<dyn Diagnostic>;
+    type IntoIter = std::vec::IntoIter<Arc<dyn Diagnostic>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.diagnostics.into_iter()
@@ -106,16 +123,6 @@ impl fmt::Debug for Diagnostics {
         }
 
         Ok(())
-    }
-}
-
-impl Merge for Diagnostics {
-    fn merge<I: IntoIterator<Item=Diagnostics>>(all: I) -> Diagnostics {
-        let mut result = Diagnostics::new();
-        for d in all {
-            result.push_all(d);
-        }
-        result
     }
 }
 
