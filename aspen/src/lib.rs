@@ -17,11 +17,13 @@
 #[macro_use]
 extern crate async_trait;
 
+mod merge;
 mod diagnostics;
 pub mod semantics;
 mod source;
 pub mod syntax;
 
+pub use self::merge::*;
 pub use self::diagnostics::*;
 pub use self::source::*;
 

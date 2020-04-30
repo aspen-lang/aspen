@@ -1,6 +1,7 @@
 use crate::syntax::Node;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct Navigator<'a> {
     parent: Option<&'a Navigator<'a>>,
     pub node: Arc<Node>,

@@ -3,7 +3,6 @@ use crate::syntax::{Navigator, Node, Parser};
 use crate::{Diagnostics, Source, URI};
 use std::sync::Arc;
 use tokio::sync::{Mutex, MutexGuard};
-use futures::future;
 
 pub struct Module {
     uri: URI,
@@ -15,7 +14,7 @@ pub struct Module {
 
     // Analyzers
     exported_declarations: Memo<ExportedDeclarations, Vec<(String, Arc<Node>)>>,
-    check_for_duplicated_exports: Diagnose<CheckForDuplicateExports>,
+    collect_diagnostics: Once<CheckForDuplicateExports>,
 }
 
 impl Module {
@@ -30,11 +29,11 @@ impl Module {
             host,
 
             exported_declarations: Memo::of(ExportedDeclarations),
-            check_for_duplicated_exports: Diagnose::with(CheckForDuplicateExports),
+            collect_diagnostics: Once::of(CheckForDuplicateExports),
         }
     }
 
-    async fn run_analyzer<'a, A: Analyzer<'a, T>, T>(&'a self, analyzer: A) -> T {
+    async fn run_analyzer<A: Analyzer<T>, T>(&self, analyzer: A) -> T {
         let ctx = AnalysisContext {
             uri: self.uri.clone(),
             host: self.host.clone(),
@@ -45,17 +44,12 @@ impl Module {
     }
 
     pub async fn diagnostics<'a, 'b: 'a>(&'b self) -> MutexGuard<'a, Diagnostics> {
-        println!("DIAGNOSTICS");
-        let (d1, _) = future::join(
-            self.run_analyzer(&self.check_for_duplicated_exports),
-            self.exported_declarations(),
-        ).await;
-
+        let d = self.run_analyzer(&self.collect_diagnostics).await;
 
         let mut diagnostics = self.diagnostics.lock().await;
 
-        if !d1.is_empty() {
-            diagnostics.push_all(d1);
+        if !d.is_empty() {
+            diagnostics.push_all(d);
         }
 
         diagnostics
@@ -63,14 +57,6 @@ impl Module {
 
     pub async fn exported_declarations(&self) -> Vec<(String, Arc<Node>)> {
         self.run_analyzer(&self.exported_declarations).await
-    }
-
-    pub async fn check_for_duplicated_exports(&self) {
-        let d = self.run_analyzer(&self.check_for_duplicated_exports).await;
-
-        if !d.is_empty() {
-            self.diagnostics.lock().await.push_all(d);
-        }
     }
 }
 

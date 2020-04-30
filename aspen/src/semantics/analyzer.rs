@@ -1,26 +1,32 @@
 use crate::semantics::{Host, Module};
 use crate::syntax::{Navigator, Node, NodeKind};
-use crate::{Diagnostics, DuplicateExport, URI};
-use std::borrow::BorrowMut;
+use crate::{Diagnostics, DuplicateExport, URI, Merge};
+use futures::future;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use std::borrow::BorrowMut;
 
-pub struct AnalysisContext<'a> {
+#[derive(Clone)]
+pub struct AnalysisContext {
     pub uri: URI,
     pub host: Host,
-    pub navigator: Navigator<'a>,
+    pub navigator: Navigator<'static>,
 }
 
-impl<'a> AnalysisContext<'a> {
+impl AnalysisContext {
     pub async fn current_module(&self) -> Arc<Module> {
         self.host.get(&self.uri).await.unwrap()
     }
 }
 
 #[async_trait]
-pub trait Analyzer<'a, T> {
-    async fn analyze(self, ctx: AnalysisContext<'a>) -> T;
+pub trait Analyzer<T> where Self: Send + Sized {
+    async fn analyze(self, ctx: AnalysisContext) -> T;
+
+    fn and<B: Analyzer<T>>(self, b: B) -> MergeTwo<Self, B> {
+        MergeTwo::both(self, b)
+    }
 }
 
 pub struct Memo<A, T> {
@@ -38,12 +44,12 @@ impl<A, T> Memo<A, T> {
 }
 
 #[async_trait]
-impl<'a, A, T> Analyzer<'a, T> for &'a Memo<A, T>
-where
-    A: Analyzer<'a, T> + Clone + Sync + Send,
-    T: Clone + Send,
+impl<A, T> Analyzer<T> for &Memo<A, T>
+    where
+        A: Analyzer<T> + Clone + Sync + Send,
+        T: Clone + Send,
 {
-    async fn analyze(self, ctx: AnalysisContext<'a>) -> T {
+    async fn analyze(self, ctx: AnalysisContext) -> T {
         let mut opt = self.mutex.lock().await;
 
         match opt.as_ref() {
@@ -57,31 +63,65 @@ where
     }
 }
 
-pub struct Diagnose<A> {
+pub struct Once<A> {
     analyzer: Mutex<Option<A>>,
 }
 
-impl<A> Diagnose<A> {
-    pub fn with(analyzer: A) -> Diagnose<A> {
-        Diagnose {
+impl<A> Once<A> {
+    pub fn of(analyzer: A) -> Once<A> {
+        Once {
             analyzer: Mutex::new(Some(analyzer)),
         }
     }
 }
 
 #[async_trait]
-impl<'a, A> Analyzer<'a, Diagnostics> for &'a Diagnose<A>
+impl<A, T> Analyzer<T> for &Once<A>
 where
-    A: Analyzer<'a, Diagnostics> + Send,
+    A: Analyzer<T>,
+    T: 'static + Default,
 {
-    async fn analyze(self, ctx: AnalysisContext<'a>) -> Diagnostics {
+    async fn analyze(self, ctx: AnalysisContext) -> T {
         let mut lock = self.analyzer.lock().await;
         let opt: &mut Option<A> = lock.borrow_mut();
+
         if opt.is_none() {
-            return Diagnostics::new();
+            return T::default();
         }
+
         let analyzer = std::mem::replace(opt, None).unwrap();
         analyzer.analyze(ctx).await
+    }
+}
+
+pub struct MergeTwo<A, B> {
+    a: A,
+    b: B,
+}
+
+impl<A, B> MergeTwo<A, B> {
+    pub fn both(a: A, b: B) -> MergeTwo<A, B> {
+        MergeTwo {
+            a,
+            b,
+        }
+    }
+}
+
+#[async_trait]
+impl<T, A, B> Analyzer<T> for MergeTwo<A, B>
+where
+    T: 'static + Merge + Send,
+    A: Analyzer<T>,
+    B: Analyzer<T>,
+{
+    async fn analyze(self, ctx: AnalysisContext) -> T {
+        let (a, b) = future::join(
+            self.a.analyze(ctx.clone()),
+            self.b.analyze(ctx),
+        ).await;
+
+        T::merge(vec![a, b])
     }
 }
 
@@ -89,11 +129,8 @@ where
 pub struct ExportedDeclarations;
 
 #[async_trait]
-impl<'a> Analyzer<'a, Vec<(String, Arc<Node>)>> for ExportedDeclarations {
-    async fn analyze(self, ctx: AnalysisContext<'a>) -> Vec<(String, Arc<Node>)> {
-        println!("EXPORTED DECS");
-        tokio::time::delay_for(tokio::time::Duration::new(5, 0)).await;
-
+impl Analyzer<Vec<(String, Arc<Node>)>> for ExportedDeclarations {
+    async fn analyze(self, ctx: AnalysisContext) -> Vec<(String, Arc<Node>)> {
         let mut exported_declarations = vec![];
         for declaration in ctx.navigator.children() {
             match &declaration.node.kind {
@@ -114,11 +151,8 @@ impl<'a> Analyzer<'a, Vec<(String, Arc<Node>)>> for ExportedDeclarations {
 pub struct CheckForDuplicateExports;
 
 #[async_trait]
-impl<'a> Analyzer<'a, Diagnostics> for CheckForDuplicateExports {
-    async fn analyze(self, ctx: AnalysisContext<'a>) -> Diagnostics {
-        println!("CHECK DUPE");
-        tokio::time::delay_for(tokio::time::Duration::new(5, 0)).await;
-
+impl Analyzer<Diagnostics> for CheckForDuplicateExports {
+    async fn analyze(self, ctx: AnalysisContext) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         let mut names = HashSet::new();
         for (name, node) in ctx.current_module().await.exported_declarations().await {

@@ -1,4 +1,4 @@
-use crate::{Diagnostic, Severity, Source};
+use crate::{Diagnostic, Severity, Source, Merge};
 use std::collections::HashMap;
 use std::fmt;
 use std::iter::FromIterator;
@@ -106,5 +106,21 @@ impl fmt::Debug for Diagnostics {
         }
 
         Ok(())
+    }
+}
+
+impl Merge for Diagnostics {
+    fn merge<I: IntoIterator<Item=Diagnostics>>(all: I) -> Diagnostics {
+        let mut result = Diagnostics::new();
+        for d in all {
+            result.push_all(d);
+        }
+        result
+    }
+}
+
+impl Default for Diagnostics {
+    fn default() -> Self {
+        Diagnostics::new()
     }
 }

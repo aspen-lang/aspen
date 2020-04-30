@@ -77,9 +77,6 @@ impl Diagnostic for DuplicateExport {
     }
 
     fn message(&self) -> String {
-        format!(
-            "Duplicate export `{}`",
-            self.0,
-        )
+        format!("Duplicate export `{}`", self.0,)
     }
 }
