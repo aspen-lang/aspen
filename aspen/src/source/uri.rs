@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::Path;
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct URI {
@@ -18,6 +19,14 @@ impl URI {
         }
     }
 
+    pub fn file<P: AsRef<Path>>(path: P) -> URI {
+        URI::new("file", format!("//{}", path.as_ref().display()))
+    }
+
+    pub fn stdin() -> URI {
+        URI::new("std", "in")
+    }
+
     pub fn short_name(&self) -> &str {
         let mut index = 0;
         let len = self.path.len();
@@ -34,7 +43,7 @@ impl URI {
 
 impl fmt::Debug for URI {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}://{}", self.scheme, self.path)
+        write!(f, "{}:{}", self.scheme, self.path)
     }
 }
 

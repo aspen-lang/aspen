@@ -18,6 +18,7 @@
 extern crate async_trait;
 
 mod diagnostics;
+pub mod semantics;
 mod source;
 pub mod syntax;
 

@@ -74,14 +74,14 @@ impl Source {
 
     pub async fn file<P: AsRef<Path>>(path: P) -> io::Result<Arc<Source>> {
         let path = path.as_ref().canonicalize()?;
-        let uri = URI::new("file", format!("{}", path.display()));
+        let uri = URI::file(&path);
         let file = File::open(path).await?;
 
         Self::read(uri, file).await
     }
 
     pub async fn stdin() -> io::Result<Arc<Source>> {
-        Self::read("file:stdin", stdin()).await
+        Self::read(URI::stdin(), stdin()).await
     }
 
     pub fn graphemes(&self) -> Graphemes {

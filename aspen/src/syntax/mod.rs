@@ -4,6 +4,7 @@
 //! grammar.
 
 mod lexer;
+mod navigator;
 mod node;
 mod parse_result;
 mod parse_strategy;
@@ -12,6 +13,7 @@ mod token;
 mod token_cursor;
 
 pub use self::lexer::*;
+pub use self::navigator::*;
 pub use self::node::*;
 pub use self::parse_result::*;
 pub use self::parse_strategy::*;
