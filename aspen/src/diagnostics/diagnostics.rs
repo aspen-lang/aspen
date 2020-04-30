@@ -1,7 +1,8 @@
-use crate::{Diagnostic, Severity, URI};
+use crate::{Diagnostic, Severity, Source};
+use std::collections::HashMap;
 use std::fmt;
 use std::iter::FromIterator;
-use std::collections::HashMap;
+use std::sync::Arc;
 
 pub struct Diagnostics {
     diagnostics: Vec<Box<dyn Diagnostic>>,
@@ -46,13 +47,16 @@ impl Diagnostics {
     }
 
     pub fn is_ok(&self) -> bool {
-        !self.diagnostics.iter().any(|d| d.severity() == Severity::Error)
+        !self
+            .diagnostics
+            .iter()
+            .any(|d| d.severity() == Severity::Error)
     }
 
-    pub fn group_by_source(self) -> HashMap<URI, Diagnostics> {
+    pub fn group_by_source(self) -> HashMap<Arc<Source>, Diagnostics> {
         let mut map = HashMap::new();
         for d in self.diagnostics {
-            let uri = d.source().uri().clone();
+            let uri = d.source().clone();
             if !map.contains_key(&uri) {
                 map.insert(uri.clone(), Diagnostics::new());
             }

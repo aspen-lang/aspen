@@ -1,10 +1,12 @@
+#![feature(drain_filter)]
+
 mod reporter;
 
+use crate::reporter::report;
 use aspen;
-use std::io;
 use aspen::Source;
 use std::env::args;
-use crate::reporter::report;
+use std::io;
 
 #[tokio::main]
 async fn main() -> io::Result<()> {

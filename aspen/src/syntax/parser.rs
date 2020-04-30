@@ -1,5 +1,7 @@
 use crate::syntax::ParseResult::Succeeded;
-use crate::syntax::{Node, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind, NodeKind};
+use crate::syntax::{
+    Node, NodeKind, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind,
+};
 use crate::{Diagnostics, Expected};
 use std::sync::Arc;
 

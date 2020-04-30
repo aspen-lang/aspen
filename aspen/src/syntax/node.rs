@@ -1,6 +1,6 @@
 use crate::syntax::Token;
-use std::sync::Arc;
 use std::fmt;
+use std::sync::Arc;
 
 pub struct Node {
     pub kind: NodeKind,

@@ -15,7 +15,11 @@ impl TokenCursor {
             panic!("cannot construct a cursor from an empty list of tokens");
         }
 
-        let mut cursor = TokenCursor { tokens, offset: 0, insignificant_offset: 0 };
+        let mut cursor = TokenCursor {
+            tokens,
+            offset: 0,
+            insignificant_offset: 0,
+        };
 
         cursor.move_past_whitespace();
 

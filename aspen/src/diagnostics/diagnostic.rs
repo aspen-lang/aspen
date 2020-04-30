@@ -15,7 +15,7 @@ where
     Self: Send + Debug,
 {
     fn severity(&self) -> Severity;
-    fn source(&self) -> &Source;
+    fn source(&self) -> &Arc<Source>;
     fn range(&self) -> &Range;
     fn message(&self) -> String;
 }
@@ -47,8 +47,8 @@ impl Diagnostic for Expected {
         Severity::Error
     }
 
-    fn source(&self) -> &Source {
-        self.1.source.as_ref()
+    fn source(&self) -> &Arc<Source> {
+        &self.1.source
     }
 
     fn range(&self) -> &Range {

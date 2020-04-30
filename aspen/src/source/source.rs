@@ -1,11 +1,12 @@
 use crate::source::{Location, URI};
 use std::collections::HashMap;
-use std::sync::Arc;
-use unicode_segmentation::UnicodeSegmentation;
-use std::path::Path;
-use tokio::io::{AsyncRead, AsyncReadExt, stdin};
+use std::hash::{Hash, Hasher};
 use std::io;
+use std::path::Path;
+use std::sync::Arc;
 use tokio::fs::File;
+use tokio::io::{stdin, AsyncRead, AsyncReadExt};
+use unicode_segmentation::UnicodeSegmentation;
 
 pub struct Source {
     uri: URI,
@@ -18,6 +19,14 @@ pub struct Source {
 impl PartialEq for Source {
     fn eq(&self, other: &Self) -> bool {
         self.uri == other.uri
+    }
+}
+
+impl Eq for Source {}
+
+impl Hash for Source {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.uri.hash(state)
     }
 }
 
@@ -54,7 +63,10 @@ impl Source {
     }
 
     pub async fn read<U, R>(uri: U, mut read: R) -> io::Result<Arc<Source>>
-    where U: Into<URI>, R: AsyncRead + Unpin {
+    where
+        U: Into<URI>,
+        R: AsyncRead + Unpin,
+    {
         let mut code = String::new();
         read.read_to_string(&mut code).await?;
         Ok(Self::new(uri, code))
@@ -95,7 +107,7 @@ impl Source {
             if offset <= *line_break_offset {
                 break;
             }
-            character = offset - *line_break_offset + 1;
+            character = offset - *line_break_offset;
             line += 1;
         }
 
@@ -108,7 +120,7 @@ impl Source {
 
     pub fn slice<R: Into<std::ops::Range<usize>>>(&self, range: R) -> &str {
         let range = range.into();
-        if range.start >= self.len {
+        if range.end > self.len {
             panic!("offset out of range");
         }
 

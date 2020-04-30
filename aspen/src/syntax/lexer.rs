@@ -62,6 +62,11 @@ impl<'a> Lexer<'a> {
                 kind = Period;
             }
 
+            c if c == '\n' => {
+                self.skip();
+                kind = Whitespace;
+            }
+
             c if c.is_whitespace() => {
                 self.skip_whitespace();
                 kind = Whitespace;
@@ -110,8 +115,15 @@ impl<'a> Lexer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
-        while self.peek_char().is_whitespace() {
-            self.skip();
+        loop {
+            let c = self.peek_char();
+
+            if c.is_whitespace() && c != '\n' {
+                self.skip();
+                continue;
+            }
+
+            break;
         }
     }
 }
