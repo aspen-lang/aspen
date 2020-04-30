@@ -1,6 +1,7 @@
-use crate::Diagnostic;
+use crate::{Diagnostic, Severity, URI};
 use std::fmt;
 use std::iter::FromIterator;
+use std::collections::HashMap;
 
 pub struct Diagnostics {
     diagnostics: Vec<Box<dyn Diagnostic>>,
@@ -43,6 +44,22 @@ impl Diagnostics {
     pub fn is_empty(&self) -> bool {
         self.diagnostics.is_empty()
     }
+
+    pub fn is_ok(&self) -> bool {
+        !self.diagnostics.iter().any(|d| d.severity() == Severity::Error)
+    }
+
+    pub fn group_by_source(self) -> HashMap<URI, Diagnostics> {
+        let mut map = HashMap::new();
+        for d in self.diagnostics {
+            let uri = d.source().uri().clone();
+            if !map.contains_key(&uri) {
+                map.insert(uri.clone(), Diagnostics::new());
+            }
+            map.get_mut(&uri).unwrap().diagnostics.push(d);
+        }
+        map
+    }
 }
 
 impl From<Box<dyn Diagnostic>> for Diagnostics {
@@ -64,6 +81,15 @@ impl FromIterator<Box<dyn Diagnostic>> for Diagnostics {
         Diagnostics {
             diagnostics: iter.into_iter().collect(),
         }
+    }
+}
+
+impl IntoIterator for Diagnostics {
+    type Item = Box<dyn Diagnostic>;
+    type IntoIter = std::vec::IntoIter<Box<dyn Diagnostic>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.diagnostics.into_iter()
     }
 }
 

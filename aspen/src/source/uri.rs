@@ -1,6 +1,6 @@
 use std::fmt;
 
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct URI {
     scheme: String,
     path: String,
@@ -34,13 +34,13 @@ impl URI {
 
 impl fmt::Debug for URI {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.path)
+        write!(f, "{}://{}", self.scheme, self.path)
     }
 }
 
 impl fmt::Display for URI {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}", self.scheme, self.path)
+        write!(f, "{}", self.short_name())
     }
 }
 

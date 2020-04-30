@@ -3,7 +3,7 @@ use crate::{Range, Source};
 use std::fmt::{self, Debug, Display};
 use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum Severity {
     Error,
     // Warning,
@@ -25,11 +25,17 @@ impl<'a> Display for &'a dyn Diagnostic {
         write!(
             f,
             "{}:{}: {:?}: {}",
-            self.source().uri().short_name(),
+            self.source().uri(),
             self.range(),
             self.severity(),
             self.message()
         )
+    }
+}
+
+impl Display for Box<dyn Diagnostic> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        Display::fmt(&self.as_ref(), f)
     }
 }
 
