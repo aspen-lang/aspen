@@ -1,10 +1,12 @@
 use crate::semantics::*;
 use crate::syntax::{Navigator, Node, Parser};
-use crate::{Diagnostics, Source};
+use crate::{Diagnostics, Source, URI};
 use std::fmt;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
+use std::path::PathBuf;
+use std::convert::TryInto;
 
 pub struct Module {
     source: Arc<Source>,
@@ -30,6 +32,22 @@ impl Module {
             exported_declarations: Memo::of(&ExportedDeclarations),
             collect_diagnostics: Once::of(&CheckForDuplicateExports),
         }
+    }
+
+    pub fn object_file_path(&self) -> Option<PathBuf> {
+        let mut path: PathBuf = self.uri().try_into().ok()?;
+        path.set_extension("o");
+        Some(path)
+    }
+
+    pub fn header_file_path(&self) -> Option<PathBuf> {
+        let mut path: PathBuf = self.uri().try_into().ok()?;
+        path.set_extension("ah");
+        Some(path)
+    }
+
+    pub fn uri(&self) -> &URI {
+        self.source.uri()
     }
 
     pub fn modified(&self) -> &SystemTime {

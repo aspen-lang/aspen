@@ -1,5 +1,7 @@
+use std::convert::TryInto;
 use std::fmt;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct URI {
@@ -71,6 +73,21 @@ impl<'a> From<&'a str> for URI {
         }
 
         URI { scheme, path }
+    }
+}
+
+impl TryInto<PathBuf> for &URI {
+    type Error = io::Error;
+
+    fn try_into(self) -> Result<PathBuf, Self::Error> {
+        if self.scheme != "file" {
+            Err(io::ErrorKind::PermissionDenied.into())
+        } else {
+            let mut path = self.path.clone();
+            path.remove(0);
+            path.remove(0);
+            Ok(path.into())
+        }
     }
 }
 

@@ -1,0 +1,11 @@
+[package]
+name = "aspen-runtime"
+version = "0.1.0"
+authors = ["Emil Broman <emil@emilbroman.me>"]
+edition = "2018"
+
+[lib]
+name = "aspen"
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
