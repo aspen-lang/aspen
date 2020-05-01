@@ -44,7 +44,7 @@ impl Host {
         self.modules.lock().await.values().cloned().collect()
     }
 
-    pub async fn emit(&self) -> Vec<llama::Error> {
+    pub async fn emit(&self) {
         let modules = self.modules().await;
 
         let mut errors: Vec<_> = future::join_all(modules.iter().map(crate::emit::emit_module))
@@ -55,7 +55,9 @@ impl Host {
 
         errors.extend(crate::emit::emit_main(modules).await.err());
 
-        errors
+        if !errors.is_empty() {
+            panic!(errors);
+        }
     }
 
     pub async fn set(&self, source: Arc<Source>) {

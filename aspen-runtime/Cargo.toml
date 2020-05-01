@@ -6,6 +6,6 @@ edition = "2018"
 
 [lib]
 name = "aspen"
-crate-type = ["staticlib", "cdylib"]
+crate-type = ["staticlib"]
 
 [dependencies]

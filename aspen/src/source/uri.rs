@@ -5,19 +5,25 @@ use std::path::{Path, PathBuf};
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct URI {
-    scheme: String,
-    path: String,
+    uri: String,
+    scheme_len: usize,
 }
 
 impl URI {
     pub fn new<S, P>(scheme: S, path: P) -> URI
     where
         S: ToString,
-        P: ToString,
+        P: AsRef<str>,
     {
+        let scheme = scheme.to_string();
+        let scheme_len = scheme.len();
+        let mut uri = scheme;
+        uri.push(':');
+        uri.push_str(path.as_ref());
+
         URI {
-            scheme: scheme.to_string(),
-            path: path.to_string(),
+            uri,
+            scheme_len,
         }
     }
 
@@ -29,23 +35,32 @@ impl URI {
         URI::new("std", "in")
     }
 
-    pub fn short_name(&self) -> &str {
-        let mut index = 0;
-        let len = self.path.len();
+    fn scheme(&self) -> &str {
+        &self.uri[..self.scheme_len]
+    }
 
-        for (i, c) in self.path.chars().enumerate() {
+    fn path(&self) -> &str {
+        &self.uri[self.scheme_len + 1..]
+    }
+
+    pub fn short_name(&self) -> &str {
+        let mut index = self.scheme_len + 1;
+        let path = self.path();
+        let len = path.len();
+
+        for (i, c) in path.chars().enumerate() {
             if c == '/' && i < len {
-                index = i + 1;
+                index = i + self.scheme_len + 2;
             }
         }
 
-        &self.path[index..]
+        &self.uri[index..]
     }
 }
 
 impl fmt::Debug for URI {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}", self.scheme, self.path)
+        write!(f, "{}:{}", self.scheme(), self.path())
     }
 }
 
@@ -72,7 +87,7 @@ impl<'a> From<&'a str> for URI {
             }
         }
 
-        URI { scheme, path }
+        URI::new(scheme, path)
     }
 }
 
@@ -80,14 +95,20 @@ impl TryInto<PathBuf> for &URI {
     type Error = io::Error;
 
     fn try_into(self) -> Result<PathBuf, Self::Error> {
-        if self.scheme != "file" {
+        if self.scheme() != "file" {
             Err(io::ErrorKind::PermissionDenied.into())
         } else {
-            let mut path = self.path.clone();
+            let mut path = self.path().to_string();
             path.remove(0);
             path.remove(0);
             Ok(path.into())
         }
+    }
+}
+
+impl AsRef<str> for &URI {
+    fn as_ref(&self) -> &str {
+        &self.uri
     }
 }
 

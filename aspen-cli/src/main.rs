@@ -25,10 +25,7 @@ async fn main() -> io::Result<()> {
     report(diagnostics);
 
     if is_ok {
-        let errors = host.emit().await;
-        if !errors.is_empty() {
-            println!("{:?}", errors);
-        }
+        host.emit().await;
     }
 
     Ok(())

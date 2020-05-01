@@ -7,7 +7,6 @@ edition = "2018"
 [[bin]]
 name = "aspen"
 path = "src/main.rs"
-bin-type = ["dylib"]
 
 [dependencies]
 aspen = { path = "../aspen" }
