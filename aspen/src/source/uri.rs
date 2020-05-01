@@ -21,10 +21,7 @@ impl URI {
         uri.push(':');
         uri.push_str(path.as_ref());
 
-        URI {
-            uri,
-            scheme_len,
-        }
+        URI { uri, scheme_len }
     }
 
     pub fn file<P: AsRef<Path>>(path: P) -> URI {

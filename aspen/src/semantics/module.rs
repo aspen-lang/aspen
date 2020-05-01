@@ -1,12 +1,12 @@
 use crate::semantics::*;
 use crate::syntax::{Navigator, Node, Parser};
 use crate::{Diagnostics, Source, URI};
+use std::convert::TryInto;
 use std::fmt;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
-use std::path::PathBuf;
-use std::convert::TryInto;
 
 pub struct Module {
     source: Arc<Source>,

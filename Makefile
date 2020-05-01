@@ -18,3 +18,9 @@ ifeq ($(PROFILE), release)
 else
 	( cd aspen-runtime; cargo build )
 endif
+
+.PHONY: fmt
+fmt:
+	( cd aspen; cargo fmt )
+	( cd aspen-cli; cargo fmt )
+	( cd aspen-runtime; cargo fmt )

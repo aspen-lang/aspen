@@ -1,6 +1,6 @@
 use ansi_colors::ColouredStr;
 use aspen::syntax::{Lexer, Token, TokenKind};
-use aspen::{Diagnostics, Diagnostic};
+use aspen::{Diagnostic, Diagnostics};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -35,14 +35,16 @@ pub fn report(diagnostics: Diagnostics) {
                 (
                     token,
                     diagnostics.iter().any(|d| d.range().contains(&token.range)),
-                    diagnostics.iter()
+                    diagnostics
+                        .iter()
                         .filter(|d| d.range().start == token.range.start)
                         .collect(),
                 )
             })
             .collect();
 
-        let mut lines: HashMap<usize, Vec<(&Arc<Token>, bool, Vec<&Arc<dyn Diagnostic>>)>> = HashMap::new();
+        let mut lines: HashMap<usize, Vec<(&Arc<Token>, bool, Vec<&Arc<dyn Diagnostic>>)>> =
+            HashMap::new();
 
         for (token, has_error, diagnostics) in pairs {
             if !lines.contains_key(&token.range.start.line) {

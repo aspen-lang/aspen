@@ -44,7 +44,7 @@ impl Host {
         self.modules.lock().await.values().cloned().collect()
     }
 
-    pub async fn emit(&self) {
+    pub async fn emit(&self, main: Option<String>) {
         let modules = self.modules().await;
 
         let mut errors: Vec<_> = future::join_all(modules.iter().map(crate::emit::emit_module))
@@ -53,7 +53,9 @@ impl Host {
             .filter_map(|r| r.err())
             .collect();
 
-        errors.extend(crate::emit::emit_main(modules).await.err());
+        if let Some(main) = main {
+            errors.extend(crate::emit::emit_main(modules, main).await.err());
+        }
 
         if !errors.is_empty() {
             panic!(errors);

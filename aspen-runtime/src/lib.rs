@@ -1,6 +1,6 @@
-use std::os::raw::c_char;
-use std::mem::size_of;
 use std::env::args;
+use std::mem::size_of;
+use std::os::raw::c_char;
 
 type NativeStr = *mut c_char;
 
@@ -15,6 +15,6 @@ unsafe fn extern_str(mut s: NativeStr) -> &'static str {
 }
 
 #[no_mangle]
-pub unsafe extern fn aspen_main(s: NativeStr) {
+pub unsafe extern "C" fn aspen_main(s: NativeStr) {
     println!("Main! {:?} {:?}", extern_str(s), args().collect::<Vec<_>>());
 }

@@ -59,6 +59,18 @@ impl Source {
         Self::create_read(uri, file, modified).await
     }
 
+    pub async fn files<P: AsRef<str>>(pattern: P) -> Vec<Arc<Source>> {
+        if let Ok(paths) = glob::glob(pattern.as_ref()) {
+            futures::future::join_all(paths.into_iter().filter_map(Result::ok).map(Self::file))
+                .await
+                .into_iter()
+                .filter_map(Result::ok)
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
     pub async fn stdin() -> io::Result<Arc<Source>> {
         Self::read(URI::stdin(), stdin()).await
     }
