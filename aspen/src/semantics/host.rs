@@ -1,6 +1,5 @@
 use crate::semantics::Module;
 use crate::{Diagnostics, Source, URI};
-use futures::future;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -44,30 +43,12 @@ impl Host {
         self.modules.lock().await.values().cloned().collect()
     }
 
-    pub async fn emit(&self, main: Option<String>) {
-        let modules = self.modules().await;
-
-        let mut errors: Vec<_> = future::join_all(modules.iter().map(crate::emit::emit_module))
-            .await
-            .into_iter()
-            .filter_map(|r| r.err())
-            .collect();
-
-        if let Some(main) = main {
-            errors.extend(crate::emit::emit_main(modules, main).await.err());
-        }
-
-        if !errors.is_empty() {
-            panic!(errors);
-        }
-    }
-
-    pub async fn set(&self, source: Arc<Source>) {
+    pub async fn set(&self, source: Arc<Source>) -> Arc<Module> {
         let host = self.clone();
-        self.modules.lock().await.insert(
-            source.uri().clone(),
-            Arc::new(Module::parse(source, host).await),
-        );
+        let mut modules = self.modules.lock().await;
+        let uri = source.uri().clone();
+        modules.insert(uri.clone(), Arc::new(Module::parse(source, host).await));
+        modules.get(&uri).unwrap().clone()
     }
 
     pub async fn remove(&self, uri: &URI) {

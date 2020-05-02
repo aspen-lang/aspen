@@ -2,7 +2,7 @@ use crate::syntax::ParseResult::*;
 use crate::syntax::{
     Lexer, Node, NodeKind, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind,
 };
-use crate::{Diagnostics, Expected, Source};
+use crate::{Diagnostics, Expected, Source, SourceKind};
 use std::sync::Arc;
 
 pub struct Parser {
@@ -27,9 +27,19 @@ impl Parser {
         }
     }
 
-    pub async fn parse_module(&mut self) -> (Arc<Node>, Diagnostics) {
-        match ParseModule.parse(self).await {
-            Succeeded(d, t) => (t, d),
+    pub async fn parse(&mut self) -> (Arc<Node>, Diagnostics) {
+        let result = match self.source.kind {
+            SourceKind::Module => ParseModule.parse(self).await,
+            SourceKind::Expression => ParseExpression.parse(self).await,
+        };
+
+        match result {
+            Succeeded(mut d, t) => {
+                if !self.tokens.is_at_end() {
+                    d.push(self.expected("end"));
+                }
+                (t, d)
+            }
 
             Failed(d) => (
                 self.node(NodeKind::Module {
@@ -211,6 +221,27 @@ impl ParseStrategy<Arc<Node>> for ParseSymbol {
     }
 }
 
+struct ParseExpression;
+
+#[async_trait]
+impl ParseStrategy<Arc<Node>> for ParseExpression {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
+        ParseReferenceExpression.parse(parser).await
+    }
+}
+
+struct ParseReferenceExpression;
+
+#[async_trait]
+impl ParseStrategy<Arc<Node>> for ParseReferenceExpression {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
+        ParseSymbol
+            .parse(parser)
+            .await
+            .map(|symbol| parser.node(NodeKind::ReferenceExpression(symbol)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,14 +251,14 @@ mod tests {
     async fn empty_module() {
         let source = Source::new("test:empty", "");
         let mut parser = Parser::new(source);
-        parser.parse_module().await;
+        parser.parse().await;
     }
 
     #[tokio::test]
     async fn single_object_declaration() {
         let source = Source::new("test:empty", "object Example.");
         let mut parser = Parser::new(source);
-        let (module, _) = parser.parse_module().await;
+        let (module, _) = parser.parse().await;
 
         match &module.kind {
             NodeKind::Module { declarations } => {
@@ -241,7 +272,7 @@ mod tests {
     async fn two_object_declarations() {
         let source = Source::new("test:empty", "object A. object B.");
         let mut parser = Parser::new(source);
-        let (module, _) = parser.parse_module().await;
+        let (module, _) = parser.parse().await;
 
         assert_eq!(
             format!("{:#?}", module),

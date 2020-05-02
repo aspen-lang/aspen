@@ -10,5 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 aspen = { path = "../aspen" }
+aspen-runtime = { path = "../aspen-runtime" }
 tokio = { version = "0.2.19", features = ["macros", "rt-threaded", "stream", "sync", "fs", "io-util", "io-std", "time"] }
 ansi-colors = "0.3.0"
+clap = "2.33.0"
+rustyline = "6.1.2"

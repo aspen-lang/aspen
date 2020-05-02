@@ -1,6 +1,7 @@
+use crate::emit::{EmissionContext, Emitter};
 use crate::semantics::*;
 use crate::syntax::{Navigator, Node, Parser};
-use crate::{Diagnostics, Source, URI};
+use crate::{Diagnostics, Source, SourceKind, URI};
 use std::convert::TryInto;
 use std::fmt;
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ pub struct Module {
 
 impl Module {
     pub async fn parse(source: Arc<Source>, host: Host) -> Module {
-        let (root_node, diagnostics) = Parser::new(source.clone()).parse_module().await;
+        let (root_node, diagnostics) = Parser::new(source.clone()).parse().await;
 
         Module {
             source,
@@ -48,6 +49,14 @@ impl Module {
 
     pub fn uri(&self) -> &URI {
         self.source.uri()
+    }
+
+    pub fn kind(&self) -> &SourceKind {
+        &self.source.kind
+    }
+
+    pub fn syntax_tree(&self) -> &Arc<Node> {
+        &self.root_node
     }
 
     pub fn modified(&self) -> &SystemTime {
@@ -79,13 +88,15 @@ impl Module {
     pub async fn exported_declarations(&self) -> Vec<(String, Arc<Node>)> {
         self.run_analyzer(&self.exported_declarations).await
     }
+
+    pub async fn emitter<'ctx>(self: &Arc<Self>, context: &'ctx EmissionContext) -> Emitter<'ctx> {
+        Emitter::new(context, self.clone())
+    }
 }
 
 impl fmt::Debug for Module {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Debug::fmt(&self.source.uri(), f)?;
-        write!(f, " ")?;
-        fmt::Debug::fmt(&self.root_node, f)
+        write!(f, "{:?} {:?}", self.source.uri(), self.root_node)
     }
 }
 

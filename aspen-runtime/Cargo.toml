@@ -5,7 +5,7 @@ authors = ["Emil Broman <emil@emilbroman.me>"]
 edition = "2018"
 
 [lib]
-name = "aspen"
-crate-type = ["staticlib"]
+name = "aspen_runtime"
+crate-type = ["staticlib", "lib"]
 
 [dependencies]

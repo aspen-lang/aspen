@@ -90,6 +90,17 @@ pub enum NodeKind {
     ///   IDENTIFIER
     /// ```
     Symbol(Arc<Token>),
+
+    /// ```bnf
+    /// Expression :=
+    ///   ReferenceExpression
+    /// ```
+
+    /// ```bnf
+    /// ReferenceExpression :=
+    ///   Symbol
+    /// ```
+    ReferenceExpression(Arc<Node>),
 }
 
 impl NodeKind {
@@ -100,6 +111,7 @@ impl NodeKind {
             Module { declarations } => declarations.iter().into(),
             ObjectDeclaration { symbol, .. } => symbol.iter().into(),
             ClassDeclaration { symbol, .. } => symbol.iter().into(),
+            ReferenceExpression(symbol) => symbol.into(),
         }
     }
 
@@ -110,6 +122,7 @@ impl NodeKind {
             Unknown(t) => return t.range.clone(),
             Module { .. } => return source.range_all(),
             Symbol(t) => return t.range.clone(),
+            ReferenceExpression(symbol) => return symbol.range(),
             ObjectDeclaration {
                 keyword,
                 symbol,
@@ -135,6 +148,7 @@ impl NodeKind {
 
 enum NodeChildren<'a> {
     Empty,
+    Single(&'a Arc<Node>),
     Slice(std::slice::Iter<'a, Arc<Node>>),
     Option(std::option::Iter<'a, Arc<Node>>),
 }
@@ -142,6 +156,12 @@ enum NodeChildren<'a> {
 impl<'a> From<std::iter::Empty<&'a Arc<Node>>> for NodeChildren<'a> {
     fn from(_: std::iter::Empty<&'a Arc<Node>>) -> Self {
         NodeChildren::Empty
+    }
+}
+
+impl<'a> From<&'a Arc<Node>> for NodeChildren<'a> {
+    fn from(node: &'a Arc<Node>) -> Self {
+        NodeChildren::Single(node)
     }
 }
 
@@ -164,6 +184,13 @@ impl<'a> Iterator for NodeChildren<'a> {
         use NodeChildren::*;
         match self {
             Empty => None,
+            Single(_) => {
+                if let Single(i) = std::mem::replace(self, Empty) {
+                    Some(i)
+                } else {
+                    None
+                }
+            }
             Slice(i) => i.next(),
             Option(i) => i.next(),
         }

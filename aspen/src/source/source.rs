@@ -17,6 +17,12 @@ pub struct Source {
     offset_byte_indices: HashMap<usize, usize>,
     line_breaks: Vec<usize>,
     pub modified: SystemTime,
+    pub kind: SourceKind,
+}
+
+pub enum SourceKind {
+    Module,
+    Expression,
 }
 
 impl PartialEq for Source {
@@ -39,7 +45,25 @@ impl Source {
         U: Into<URI>,
         C: Into<String>,
     {
-        Self::create(uri.into(), code.into(), SystemTime::now())
+        Self::create(
+            uri.into(),
+            code.into(),
+            SystemTime::now(),
+            SourceKind::Module,
+        )
+    }
+
+    pub fn expression<U, C>(uri: U, code: C) -> Arc<Source>
+    where
+        U: Into<URI>,
+        C: Into<String>,
+    {
+        Self::create(
+            uri.into(),
+            code.into(),
+            SystemTime::now(),
+            SourceKind::Expression,
+        )
     }
 
     pub async fn read<U, R>(uri: U, read: R) -> io::Result<Arc<Source>>
@@ -81,10 +105,10 @@ impl Source {
     {
         let mut code = String::new();
         read.read_to_string(&mut code).await?;
-        Ok(Self::create(uri, code, modified))
+        Ok(Self::create(uri, code, modified, SourceKind::Module))
     }
 
-    fn create(uri: URI, code: String, modified: SystemTime) -> Arc<Source> {
+    fn create(uri: URI, code: String, modified: SystemTime, kind: SourceKind) -> Arc<Source> {
         let mut offset = 0;
         let mut offset_byte_indices = HashMap::new();
         let mut line_breaks = vec![];
@@ -107,6 +131,7 @@ impl Source {
             offset_byte_indices,
             line_breaks,
             modified,
+            kind,
         })
     }
 

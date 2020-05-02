@@ -1,5 +1,5 @@
+/*
 use crate::semantics::Module as AModule;
-use inkwell::context::Context;
 use inkwell::module::{Linkage, Module};
 use inkwell::AddressSpace;
 use std::env::consts::ARCH;
@@ -8,7 +8,19 @@ use std::io::{ErrorKind, Result, Write};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
+*/
 
+mod emission_context;
+mod emitter;
+mod jit;
+mod output;
+
+pub use emission_context::*;
+pub use emitter::*;
+pub use jit::*;
+pub use output::*;
+
+/*
 pub async fn emit_module(aspen_module: &Arc<AModule>) -> Result<()> {
     let object_path = match aspen_module.object_file_path() {
         None => return Err(ErrorKind::InvalidInput.into()),
@@ -134,3 +146,4 @@ pub async fn emit_main(modules: Vec<Arc<AModule>>, main: String) -> Result<()> {
 
     Ok(())
 }
+*/
