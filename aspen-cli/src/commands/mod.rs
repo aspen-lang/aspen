@@ -1,6 +1,7 @@
 use clap::{App, ArgMatches};
 
 pub mod build;
+pub mod context;
 pub mod live;
 
 pub fn app() -> App<'static, 'static> {
@@ -8,12 +9,14 @@ pub fn app() -> App<'static, 'static> {
         .version(aspen::version())
         .subcommand(live::app())
         .subcommand(build::app())
+        .subcommand(context::app())
 }
 
 pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
     match matches.subcommand() {
         ("live", Some(matches)) => live::main(matches).await,
         ("build", Some(matches)) => build::main(matches).await,
+        ("context", Some(matches)) => context::main(matches).await,
 
         _ => Ok(eprintln!(
             "Usage: aspen [COMMAND]. Use --help to find out how to use this program."

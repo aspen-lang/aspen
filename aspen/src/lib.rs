@@ -17,6 +17,7 @@
 #[macro_use]
 extern crate async_trait;
 
+pub mod context;
 mod diagnostics;
 pub mod emit;
 pub mod semantics;

@@ -5,8 +5,8 @@ use crate::SourceKind;
 use inkwell::builder::Builder;
 use inkwell::values::PointerValue;
 use std::fmt;
-use std::sync::Arc;
 use std::io;
+use std::sync::Arc;
 
 pub struct Emitter<'ctx> {
     context: &'ctx EmissionContext,
