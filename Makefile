@@ -1,5 +1,7 @@
 PROFILE ?= release
 
+build: aspen-cli/target/$(PROFILE)/aspen
+
 .PHONY: aspen-cli/target/$(PROFILE)/aspen
 aspen-cli/target/$(PROFILE)/aspen: aspen-cli/target/$(PROFILE)/libaspen_runtime.a
 ifeq ($(PROFILE), release)

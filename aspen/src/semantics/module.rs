@@ -16,8 +16,8 @@ pub struct Module {
     host: Host,
 
     // Analyzers
-    exported_declarations: Memo<&'static ExportedDeclarations>,
-    collect_diagnostics: Once<&'static CheckForDuplicateExports>,
+    exported_declarations: Memo<&'static analyzers::GetExportedDeclarations>,
+    collect_diagnostics: Once<&'static analyzers::CheckForDuplicateExports>,
 }
 
 impl Module {
@@ -30,8 +30,8 @@ impl Module {
             diagnostics: Mutex::new(diagnostics),
             host,
 
-            exported_declarations: Memo::of(&ExportedDeclarations),
-            collect_diagnostics: Once::of(&CheckForDuplicateExports),
+            exported_declarations: Memo::of(&analyzers::GetExportedDeclarations),
+            collect_diagnostics: Once::of(&analyzers::CheckForDuplicateExports),
         }
     }
 
@@ -59,8 +59,13 @@ impl Module {
         &self.source.modified
     }
 
-    async fn run_analyzer<A: Analyzer>(&self, analyzer: A) -> A::Output {
+    pub fn navigate(&self) -> Arc<Navigator> {
+        Navigator::new(self.root_node.clone())
+    }
+
+    async fn run_analyzer<A: Analyzer>(&self, analyzer: A, input: A::Input) -> A::Output {
         let ctx = AnalysisContext {
+            input,
             uri: self.source.uri().clone(),
             host: self.host.clone(),
             navigator: Navigator::new(self.root_node.clone()),
@@ -70,7 +75,7 @@ impl Module {
     }
 
     pub async fn diagnostics(&self) -> Diagnostics {
-        let d = self.run_analyzer(&self.collect_diagnostics).await;
+        let d = self.run_analyzer(&self.collect_diagnostics, ()).await;
 
         let mut diagnostics = self.diagnostics.lock().await;
 
@@ -82,7 +87,7 @@ impl Module {
     }
 
     pub async fn exported_declarations(&self) -> Vec<(String, Arc<Node>)> {
-        self.run_analyzer(&self.exported_declarations).await
+        self.run_analyzer(&self.exported_declarations, ()).await
     }
 
     pub fn emitter<'ctx>(self: &Arc<Self>, context: &'ctx EmissionContext) -> Emitter<'ctx> {

@@ -13,6 +13,7 @@
 //! in Aspen.
 
 #![feature(async_closure)]
+#![feature(try_trait)]
 
 #[macro_use]
 extern crate async_trait;

@@ -37,11 +37,18 @@ impl Linker {
         let entry_block = context.append_basic_block(main_fn, "entry");
         builder.position_at_end(entry_block);
 
-        let status_code = builder.build_call(
-            libmain_fn,
-            &[builder.build_global_string_ptr(main, "").as_pointer_value().into()],
-            "",
-        ).try_as_basic_value().left().unwrap();
+        let status_code = builder
+            .build_call(
+                libmain_fn,
+                &[builder
+                    .build_global_string_ptr(main, "")
+                    .as_pointer_value()
+                    .into()],
+                "",
+            )
+            .try_as_basic_value()
+            .left()
+            .unwrap();
 
         builder.build_return(Some(&status_code));
 

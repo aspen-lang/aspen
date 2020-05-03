@@ -1,4 +1,5 @@
 mod analyzer;
+mod analyzers;
 mod host;
 mod module;
 
