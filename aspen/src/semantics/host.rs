@@ -1,27 +1,48 @@
+use crate::emit::{Linker, OutputResult};
 use crate::semantics::Module;
-use crate::{Diagnostics, Source, URI};
+use crate::{Context, Diagnostics, Source, URI};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct Host {
+    pub context: Arc<Context>,
     modules: Arc<Mutex<HashMap<URI, Arc<Module>>>>,
 }
 
 impl Host {
-    pub fn new() -> Host {
+    pub fn new(context: Arc<Context>) -> Host {
         Host {
+            context,
             modules: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
-    pub async fn from<I: IntoIterator<Item = Arc<Source>>>(i: I) -> Self {
-        let host = Host::new();
+    pub async fn from<I: IntoIterator<Item = Arc<Source>>>(context: Arc<Context>, i: I) -> Self {
+        let host = Host::new(context);
         for source in i {
             host.set(source).await;
         }
         host
+    }
+
+    pub async fn emit(&self) -> Vec<OutputResult<()>> {
+        let ec = self.context.emission_context();
+        let modules = self.modules().await;
+        futures::future::join_all(
+            modules
+                .iter()
+                .map(|module| module.emitter(&ec))
+                .map(async move |mut emitter| emitter.output().await),
+        )
+        .await
+    }
+
+    pub async fn link(&self, main: &str) -> OutputResult<()> {
+        let linker = Linker::new(self.context.clone());
+        let modules = self.modules().await;
+        linker.link(modules, main).await
     }
 
     pub async fn diagnostics(&self) -> Diagnostics {

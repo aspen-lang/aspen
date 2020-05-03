@@ -15,6 +15,7 @@ unsafe fn extern_str(mut s: NativeStr) -> &'static str {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn aspen_main(s: NativeStr) {
+pub unsafe extern "C" fn aspen_main(s: NativeStr) -> i32 {
     println!("Main! {:?} {:?}", extern_str(s), args().collect::<Vec<_>>());
+    return 13;
 }

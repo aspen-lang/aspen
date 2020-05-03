@@ -2,8 +2,8 @@ use crate::emit::{EmissionContext, Emitter};
 use crate::semantics::*;
 use crate::syntax::{Navigator, Node, Parser};
 use crate::{Diagnostics, Source, SourceKind, URI};
-use std::convert::TryInto;
 use std::fmt;
+use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -35,16 +35,12 @@ impl Module {
         }
     }
 
-    pub fn object_file_path(&self) -> Option<PathBuf> {
-        let mut path: PathBuf = self.uri().try_into().ok()?;
-        path.set_extension("o");
-        Some(path)
+    pub fn object_file_path(&self) -> io::Result<PathBuf> {
+        self.host.context.object_file_path(self.uri())
     }
 
-    pub fn header_file_path(&self) -> Option<PathBuf> {
-        let mut path: PathBuf = self.uri().try_into().ok()?;
-        path.set_extension("ah");
-        Some(path)
+    pub fn header_file_path(&self) -> io::Result<PathBuf> {
+        self.host.context.header_file_path(self.uri())
     }
 
     pub fn uri(&self) -> &URI {
@@ -89,7 +85,7 @@ impl Module {
         self.run_analyzer(&self.exported_declarations).await
     }
 
-    pub async fn emitter<'ctx>(self: &Arc<Self>, context: &'ctx EmissionContext) -> Emitter<'ctx> {
+    pub fn emitter<'ctx>(self: &Arc<Self>, context: &'ctx EmissionContext) -> Emitter<'ctx> {
         Emitter::new(context, self.clone())
     }
 }

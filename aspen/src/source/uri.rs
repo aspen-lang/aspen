@@ -98,7 +98,7 @@ impl TryInto<PathBuf> for &URI {
             let mut path = self.path().to_string();
             path.remove(0);
             path.remove(0);
-            Ok(path.into())
+            PathBuf::from(path).canonicalize()
         }
     }
 }

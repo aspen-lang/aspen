@@ -5,6 +5,6 @@ pub fn app() -> App<'static, 'static> {
 }
 
 pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
-    println!("{:?}", aspen::context::Context::infer().await.unwrap());
+    println!("{:?}", aspen::Context::infer().await.unwrap());
     Ok(())
 }
