@@ -26,3 +26,9 @@ fmt:
 	( cd aspen; cargo fmt )
 	( cd aspen-cli; cargo fmt )
 	( cd aspen-runtime; cargo fmt )
+
+.PHONY: test
+test:
+	( cd aspen; cargo test --lib )
+	( cd aspen-cli; cargo test )
+	( cd aspen-runtime; cargo test --lib )

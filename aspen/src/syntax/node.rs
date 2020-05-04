@@ -27,6 +27,7 @@ impl Node {
         }
     }
 
+
     pub fn range(&self) -> Range {
         self.kind.range(self.source.as_ref())
     }

@@ -27,11 +27,22 @@ enum ContextKind {
     Global(PathBuf),
     Directory(PathBuf),
     Temporary(Temp),
+
+    #[cfg(test)]
+    Test,
 }
 
 impl Context {
     pub fn temporary(parent: Option<Arc<Context>>) -> io::Result<Context> {
         Ok(Self::new(parent, ContextKind::Temporary(Temp::new_dir()?)))
+    }
+
+    #[cfg(test)]
+    pub fn test() -> Context {
+        Context {
+            parent: None,
+            kind: ContextKind::Test,
+        }
     }
 
     pub fn directory(parent: Option<Arc<Context>>, dir: PathBuf) -> Context {
@@ -135,6 +146,9 @@ impl Context {
             ContextKind::Temporary(_) => current_dir(),
             ContextKind::Directory(dir) => dir.canonicalize(),
             ContextKind::Global(dir) => Ok(dir.clone()),
+
+            #[cfg(test)]
+            ContextKind::Test => Err(io::ErrorKind::PermissionDenied.into()),
         }
     }
 
@@ -149,6 +163,13 @@ impl Context {
             ContextKind::Global(dir) => {
                 let mut dir = dirs::home_dir().unwrap_or(dir.clone());
                 dir.push(".aspen");
+                dir
+            }
+
+            #[cfg(test)]
+            ContextKind::Test => {
+                let mut dir = current_dir().unwrap();
+                dir.push(".test-aspen");
                 dir
             }
         };
@@ -220,6 +241,9 @@ impl fmt::Debug for ContextKind {
             ContextKind::Global(p) => write!(f, "Global {:?}", p),
             ContextKind::Directory(p) => write!(f, "Directory {:?}", p),
             ContextKind::Temporary(p) => write!(f, "Temporary {:?}", p.as_os_str()),
+
+            #[cfg(test)]
+            ContextKind::Test => write!(f, "Test"),
         }
     }
 }

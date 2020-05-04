@@ -105,10 +105,11 @@ impl fmt::Debug for Module {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use crate::Context;
 
     #[tokio::test]
     async fn empty_source() {
-        let host = Host::new();
+        let host = Host::new(Arc::new(Context::test()));
         host.set(Source::new("test:x", "object X.")).await;
         let module = host.get(&"test:x".into()).await.unwrap();
 
@@ -119,7 +120,7 @@ mod tests {
 
     #[tokio::test]
     async fn duplcated_export() {
-        let host = Host::new();
+        let host = Host::new(Arc::new(Context::test()));
         host.set(Source::new("test:x", "object X. class X.")).await;
         let module = host.get(&"test:x".into()).await.unwrap();
 
