@@ -1,4 +1,5 @@
 use crate::reporter::report;
+use aspen::generation::JIT;
 use aspen::{Source, URI};
 use clap::{App, ArgMatches};
 use rustyline::error::ReadlineError;
@@ -11,7 +12,7 @@ pub fn app() -> App<'static, 'static> {
 pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
     let context = aspen::Context::infer().await?;
     let host = context.host();
-    let emission_context = context.emission_context();
+    let jit = JIT::new(context);
 
     let mut rl = Editor::<()>::new();
     let mut line_number: usize = 0;
@@ -34,9 +35,9 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
                     report(diagnostics);
                     host.remove(module.uri()).await;
                 } else {
-                    let mut module = module.emitter(&emission_context);
-
-                    module.evaluate().await.unwrap();
+                    //jit.evaluate(module).unwrap();
+                    jit.evaluate(aspen::generation::compile::HelloWorld)
+                        .unwrap();
                 }
             }
             Err(ReadlineError::Interrupted) => {

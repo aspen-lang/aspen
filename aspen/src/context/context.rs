@@ -1,4 +1,3 @@
-use crate::emit::EmissionContext;
 use crate::semantics::Host;
 use crate::URI;
 use mktemp::Temp;
@@ -135,10 +134,6 @@ impl Context {
         } else {
             false
         }
-    }
-
-    pub fn emission_context(&self) -> EmissionContext {
-        EmissionContext::new()
     }
 
     fn root_dir(&self) -> io::Result<PathBuf> {

@@ -14,13 +14,17 @@
 
 #![feature(async_closure)]
 #![feature(try_trait)]
+#![feature(asm)]
 
 #[macro_use]
 extern crate async_trait;
 
+#[macro_use]
+extern crate lazy_static;
+
 mod context;
 mod diagnostics;
-pub mod emit;
+pub mod generation;
 pub mod semantics;
 mod source;
 pub mod syntax;

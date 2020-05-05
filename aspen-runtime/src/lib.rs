@@ -19,3 +19,8 @@ pub unsafe extern "C" fn aspen_main(s: NativeStr) -> i32 {
     println!("Main! {:?} {:?}", extern_str(s), args().collect::<Vec<_>>());
     return 13;
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn hello_world() {
+    println!("Hello World!");
+}

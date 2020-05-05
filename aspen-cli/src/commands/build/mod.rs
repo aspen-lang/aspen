@@ -1,3 +1,4 @@
+use aspen::generation::Executable;
 use aspen::semantics::Host;
 use aspen::Source;
 use clap::{App, ArgMatches};
@@ -11,14 +12,9 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
 
     let host = Host::from(context, Source::files("**/*.aspen").await).await;
 
-    for result in host.emit().await {
-        if let Err(e) = result {
-            println!("{:?}", e);
-        }
-    }
+    let executable = Executable::new(host, "Main").await.unwrap();
 
-    if let Err(e) = host.link("Main").await {
-        println!("{:?}", e);
-    }
+    println!("Compiled {}", executable);
+
     Ok(())
 }

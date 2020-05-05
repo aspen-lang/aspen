@@ -1,10 +1,7 @@
-use crate::emit::{EmissionContext, Emitter};
 use crate::semantics::*;
 use crate::syntax::{Navigator, Node, Parser};
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
-use std::io;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -13,7 +10,7 @@ pub struct Module {
     source: Arc<Source>,
     root_node: Arc<Node>,
     diagnostics: Mutex<Diagnostics>,
-    host: Host,
+    pub host: Host,
 
     // Analyzers
     exported_declarations: Memo<&'static analyzers::GetExportedDeclarations>,
@@ -33,14 +30,6 @@ impl Module {
             exported_declarations: Memo::of(&analyzers::GetExportedDeclarations),
             collect_diagnostics: Once::of(&analyzers::CheckForDuplicateExports),
         }
-    }
-
-    pub fn object_file_path(&self) -> io::Result<PathBuf> {
-        self.host.context.object_file_path(self.uri())
-    }
-
-    pub fn header_file_path(&self) -> io::Result<PathBuf> {
-        self.host.context.header_file_path(self.uri())
     }
 
     pub fn uri(&self) -> &URI {
@@ -88,10 +77,6 @@ impl Module {
 
     pub async fn exported_declarations(&self) -> Vec<(String, Arc<Node>)> {
         self.run_analyzer(&self.exported_declarations, ()).await
-    }
-
-    pub fn emitter<'ctx>(self: &Arc<Self>, context: &'ctx EmissionContext) -> Emitter<'ctx> {
-        Emitter::new(context, self.clone())
     }
 }
 

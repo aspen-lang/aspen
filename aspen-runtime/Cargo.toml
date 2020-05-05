@@ -6,6 +6,6 @@ edition = "2018"
 
 [lib]
 name = "aspen_runtime"
-crate-type = ["staticlib", "lib"]
+crate-type = ["staticlib"]
 
 [dependencies]

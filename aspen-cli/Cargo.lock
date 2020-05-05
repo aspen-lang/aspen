@@ -51,6 +51,7 @@ dependencies = [
  "futures",
  "glob",
  "inkwell",
+ "lazy_static",
  "mktemp",
  "peekmore",
  "tokio",
