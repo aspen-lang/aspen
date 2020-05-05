@@ -1,5 +1,5 @@
 use crate::semantics::*;
-use crate::syntax::{Navigator, Node, Parser};
+use crate::syntax::{Declaration, Navigator, Parser, Root};
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 
 pub struct Module {
     source: Arc<Source>,
-    root_node: Arc<Node>,
+    root_node: Arc<Root>,
     diagnostics: Mutex<Diagnostics>,
     pub host: Host,
 
@@ -40,7 +40,7 @@ impl Module {
         &self.source.kind
     }
 
-    pub fn syntax_tree(&self) -> &Arc<Node> {
+    pub fn syntax_tree(&self) -> &Arc<Root> {
         &self.root_node
     }
 
@@ -75,7 +75,7 @@ impl Module {
         diagnostics.clone()
     }
 
-    pub async fn exported_declarations(&self) -> Vec<(String, Arc<Node>)> {
+    pub async fn exported_declarations(&self) -> Vec<(String, Arc<Declaration>)> {
         self.run_analyzer(&self.exported_declarations, ()).await
     }
 }
@@ -93,7 +93,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[tokio::test]
-    async fn empty_source() {
+    async fn single_declaration() {
         let host = Host::new(Arc::new(Context::test()));
         host.set(Source::new("test:x", "object X.")).await;
         let module = host.get(&"test:x".into()).await.unwrap();
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplcated_export() {
+    async fn duplicated_export() {
         let host = Host::new(Arc::new(Context::test()));
         host.set(Source::new("test:x", "object X. class X.")).await;
         let module = host.get(&"test:x".into()).await.unwrap();

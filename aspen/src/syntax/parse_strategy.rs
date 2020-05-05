@@ -1,6 +1,7 @@
 use crate::syntax::ParseResult::{Failed, Succeeded};
 use crate::syntax::{ParseResult, Parser};
 use crate::Diagnostics;
+use std::marker::PhantomData;
 
 #[async_trait]
 pub trait ParseStrategy<T>
@@ -15,6 +16,33 @@ where
 
     fn maybe(self) -> MaybeParse<Self> {
         MaybeParse::some(self)
+    }
+
+    fn map<U, F: FnOnce(T) -> U>(self, f: F) -> MapParse<Self, T, F> {
+        MapParse {
+            _t: PhantomData,
+            from: self,
+            via: f,
+        }
+    }
+}
+
+pub struct MapParse<S, T, F> {
+    _t: PhantomData<T>,
+    from: S,
+    via: F,
+}
+
+#[async_trait]
+impl<S, T, F, U> ParseStrategy<U> for MapParse<S, T, F>
+where
+    U: 'static + Send + Sync,
+    T: 'static + Send + Sync,
+    S: ParseStrategy<T>,
+    F: FnOnce(T) -> U + Send + Sync,
+{
+    async fn parse(self, parser: &mut Parser) -> ParseResult<U> {
+        self.from.parse(parser).await.map(self.via)
     }
 }
 

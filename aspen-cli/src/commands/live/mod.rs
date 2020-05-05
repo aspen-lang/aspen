@@ -35,9 +35,7 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
                     report(diagnostics);
                     host.remove(module.uri()).await;
                 } else {
-                    //jit.evaluate(module).unwrap();
-                    jit.evaluate(aspen::generation::compile::HelloWorld)
-                        .unwrap();
+                    jit.evaluate(module).unwrap();
                 }
             }
             Err(ReadlineError::Interrupted) => {

@@ -1,7 +1,5 @@
 use crate::syntax::ParseResult::*;
-use crate::syntax::{
-    Lexer, Node, NodeKind, ParseMany, ParseResult, ParseStrategy, Token, TokenCursor, TokenKind,
-};
+use crate::syntax::*;
 use crate::{Diagnostics, Expected, Source, SourceKind};
 use std::sync::Arc;
 
@@ -27,11 +25,8 @@ impl Parser {
         }
     }
 
-    pub async fn parse(&mut self) -> (Arc<Node>, Diagnostics) {
-        let result = match self.source.kind {
-            SourceKind::Module => ParseModule.parse(self).await,
-            SourceKind::Inline => ParseExpression.parse(self).await,
-        };
+    pub async fn parse(&mut self) -> (Arc<Root>, Diagnostics) {
+        let result = ParseRoot.parse(self).await;
 
         match result {
             Succeeded(mut d, t) => {
@@ -42,9 +37,10 @@ impl Parser {
             }
 
             Failed(d) => (
-                self.node(NodeKind::Module {
+                Arc::new(Root::Module(Arc::new(Module {
+                    source: self.source.clone(),
                     declarations: vec![],
-                }),
+                }))),
                 d,
             ),
         }
@@ -78,17 +74,41 @@ impl Parser {
             None
         }
     }
+}
 
-    pub fn node(&self, kind: NodeKind) -> Arc<Node> {
-        Node::new(self.source.clone(), kind)
+struct ParseRoot;
+
+#[async_trait]
+impl ParseStrategy<Arc<Root>> for ParseRoot {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Root>> {
+        match parser.source.kind {
+            SourceKind::Inline => ParseInline.map(Root::Inline).parse(parser),
+            SourceKind::Module => ParseModule.map(Root::Module).parse(parser),
+        }
+        .await
+        .map(Arc::new)
+    }
+}
+
+struct ParseInline;
+
+#[async_trait]
+impl ParseStrategy<Arc<Inline>> for ParseInline {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Inline>> {
+        ParseExpression
+            .map(Inline::Expression)
+            .or(ParseDeclaration.map(Inline::Declaration))
+            .parse(parser)
+            .await
+            .map(Arc::new)
     }
 }
 
 struct ParseModule;
 
 #[async_trait]
-impl ParseStrategy<Arc<Node>> for ParseModule {
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
+impl ParseStrategy<Arc<Module>> for ParseModule {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Module>> {
         let mut diagnostics = Diagnostics::new();
         let mut declarations = vec![];
 
@@ -113,7 +133,13 @@ impl ParseStrategy<Arc<Node>> for ParseModule {
                 }
             }
         }
-        Succeeded(diagnostics, parser.node(NodeKind::Module { declarations }))
+        Succeeded(
+            diagnostics,
+            Arc::new(Module {
+                source: parser.source.clone(),
+                declarations,
+            }),
+        )
     }
 }
 
@@ -121,39 +147,37 @@ impl ParseStrategy<Arc<Node>> for ParseModule {
 struct ParseDeclaration;
 
 #[async_trait]
-impl ParseStrategy<Arc<Node>> for ParseDeclaration {
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
+impl ParseStrategy<Arc<Declaration>> for ParseDeclaration {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Declaration>> {
         ParseObjectDeclaration
-            .or(ParseClassDeclaration)
+            .map(Declaration::Object)
+            .or(ParseClassDeclaration.map(Declaration::Class))
             .parse(parser)
             .await
+            .map(Arc::new)
     }
 }
 
 struct ParseObjectDeclaration;
 
 #[async_trait]
-impl ParseStrategy<Arc<Node>> for ParseObjectDeclaration {
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
+impl ParseStrategy<Arc<ObjectDeclaration>> for ParseObjectDeclaration {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ObjectDeclaration>> {
         parser
             .expect(TokenKind::ObjectKeyword, "object declaration")
             .and_then(async move |keyword| {
                 ParseSymbol
-                    .maybe()
                     .parse(parser)
                     .await
                     .and_then(async move |symbol| {
                         let mut diagnostics = Diagnostics::new();
 
-                        if let None = symbol {
-                            diagnostics.push(parser.expected("object name"));
-                        }
-
                         let period = parser.expect_optional_period(&mut diagnostics);
 
                         Succeeded(
                             diagnostics,
-                            parser.node(NodeKind::ObjectDeclaration {
+                            Arc::new(ObjectDeclaration {
+                                source: parser.source.clone(),
                                 keyword,
                                 symbol,
                                 period,
@@ -169,27 +193,23 @@ impl ParseStrategy<Arc<Node>> for ParseObjectDeclaration {
 struct ParseClassDeclaration;
 
 #[async_trait]
-impl ParseStrategy<Arc<Node>> for ParseClassDeclaration {
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
+impl ParseStrategy<Arc<ClassDeclaration>> for ParseClassDeclaration {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ClassDeclaration>> {
         parser
             .expect(TokenKind::ClassKeyword, "class declaration")
             .and_then(async move |keyword| {
                 ParseSymbol
-                    .maybe()
                     .parse(parser)
                     .await
                     .and_then(async move |symbol| {
                         let mut diagnostics = Diagnostics::new();
 
-                        if let None = symbol {
-                            diagnostics.push(parser.expected("class name"));
-                        }
-
                         let period = parser.expect_optional_period(&mut diagnostics);
 
                         Succeeded(
                             diagnostics,
-                            parser.node(NodeKind::ClassDeclaration {
+                            Arc::new(ClassDeclaration {
+                                source: parser.source.clone(),
                                 keyword,
                                 symbol,
                                 period,
@@ -205,17 +225,17 @@ impl ParseStrategy<Arc<Node>> for ParseClassDeclaration {
 struct ParseSymbol;
 
 #[async_trait]
-impl ParseStrategy<Arc<Node>> for ParseSymbol {
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
+impl ParseStrategy<Arc<Symbol>> for ParseSymbol {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Symbol>> {
         if !parser.tokens.sees(TokenKind::Identifier) {
             parser.fail_expecting("symbol")
         } else {
             Succeeded(
                 Diagnostics::new(),
-                Node::new(
-                    parser.source.clone(),
-                    NodeKind::Symbol(parser.tokens.take()),
-                ),
+                Arc::new(Symbol {
+                    source: parser.source.clone(),
+                    identifier: parser.tokens.take(),
+                }),
             )
         }
     }
@@ -224,21 +244,27 @@ impl ParseStrategy<Arc<Node>> for ParseSymbol {
 struct ParseExpression;
 
 #[async_trait]
-impl ParseStrategy<Arc<Node>> for ParseExpression {
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
-        ParseReferenceExpression.parse(parser).await
+impl ParseStrategy<Arc<Expression>> for ParseExpression {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Expression>> {
+        ParseReferenceExpression
+            .map(Expression::Reference)
+            .parse(parser)
+            .await
+            .map(Arc::new)
     }
 }
 
 struct ParseReferenceExpression;
 
 #[async_trait]
-impl ParseStrategy<Arc<Node>> for ParseReferenceExpression {
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Node>> {
-        ParseSymbol
-            .parse(parser)
-            .await
-            .map(|symbol| parser.node(NodeKind::ReferenceExpression(symbol)))
+impl ParseStrategy<Arc<ReferenceExpression>> for ParseReferenceExpression {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ReferenceExpression>> {
+        ParseSymbol.parse(parser).await.map(|symbol| {
+            Arc::new(ReferenceExpression {
+                source: parser.source.clone(),
+                symbol,
+            })
+        })
     }
 }
 
@@ -256,50 +282,31 @@ mod tests {
 
     #[tokio::test]
     async fn single_object_declaration() {
-        let source = Source::new("test:empty", "object Example.");
+        let source = Source::new("test:single-object-declaration", "object Example.");
         let mut parser = Parser::new(source);
         let (module, _) = parser.parse().await;
 
-        match &module.kind {
-            NodeKind::Module { declarations } => {
-                assert_eq!(declarations.len(), 1);
-            }
-            n => panic!("expected a module but got: {:?}", n),
-        }
+        assert_eq!(module.as_module().unwrap().declarations.len(), 1)
     }
 
     #[tokio::test]
     async fn two_object_declarations() {
-        let source = Source::new("test:empty", "object A. object B.");
+        let source = Source::new("test:two-object-declarations", "object A. object B.");
         let mut parser = Parser::new(source);
         let (module, _) = parser.parse().await;
 
         assert_eq!(
             format!("{:#?}", module),
             r#"
-            Module {
-                declarations: [
-                    ObjectDeclaration {
-                        keyword: ObjectKeyword,
-                        symbol: Some(
-                            Symbol("A"),
-                        ),
-                        period: Some(
-                            Period,
-                        ),
-                    },
-                    ObjectDeclaration {
-                        keyword: ObjectKeyword,
-                        symbol: Some(
-                            Symbol("B"),
-                        ),
-                        period: Some(
-                            Period,
-                        ),
-                    },
-                ],
-            }
-        "#
+            two-object-declarations (Module) [
+                ObjectDeclaration {
+                    symbol: Symbol("A"),
+                },
+                ObjectDeclaration {
+                    symbol: Symbol("B"),
+                },
+            ]
+            "#
             .trim()
             .replace("\n            ", "\n")
         );

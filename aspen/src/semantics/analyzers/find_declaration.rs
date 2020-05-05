@@ -7,8 +7,8 @@ pub struct FindDeclaration;
 
 #[async_trait]
 impl<'a> Analyzer for &'a FindDeclaration {
-    type Input = Arc<Node>;
-    type Output = Result<Arc<Node>, FindDeclarationError>;
+    type Input = Arc<dyn Node>;
+    type Output = Result<Arc<dyn Node>, FindDeclarationError>;
 
     async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> Self::Output {
         let navigator = ctx.navigator.down_to(&ctx.input)?;

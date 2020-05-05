@@ -4,11 +4,11 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Navigator {
     parent: Option<Arc<Navigator>>,
-    pub node: Arc<Node>,
+    pub node: Arc<dyn Node>,
 }
 
 impl Navigator {
-    pub fn new(root: Arc<Node>) -> Arc<Navigator> {
+    pub fn new(root: Arc<dyn Node>) -> Arc<Navigator> {
         Arc::new(Navigator {
             parent: None,
             node: root,
@@ -34,7 +34,7 @@ impl Navigator {
         }
     }
 
-    pub fn down_to(self: &Arc<Self>, node: &Arc<Node>) -> Option<Arc<Navigator>> {
+    pub fn down_to(self: &Arc<Self>, node: &Arc<dyn Node>) -> Option<Arc<Navigator>> {
         for nav in self.traverse() {
             if Arc::ptr_eq(&nav.node, node) {
                 return Some(nav.clone());
@@ -43,7 +43,19 @@ impl Navigator {
         None
     }
 
-    pub fn find_upward<F: Fn(&Arc<Node>) -> bool>(&self, predicate: F) -> Option<Arc<Node>> {
+    pub fn down_to_cast<R, F: Fn(Arc<dyn Node>) -> Option<R>>(self: &Arc<Self>, f: F) -> Option<R> {
+        for nav in self.traverse() {
+            if let Some(r) = f(nav.node.clone()) {
+                return Some(r);
+            }
+        }
+        None
+    }
+
+    pub fn find_upward<F: Fn(&Arc<dyn Node>) -> bool>(
+        &self,
+        predicate: F,
+    ) -> Option<Arc<dyn Node>> {
         let mut parent = self.parent.as_ref();
 
         while let Some(p) = parent {

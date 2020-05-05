@@ -1,4 +1,5 @@
 use crate::source::{IntoLocation, Location, Source};
+use std::cmp::{max, min};
 use std::fmt;
 
 #[derive(Clone, PartialEq)]
@@ -29,6 +30,12 @@ impl Range {
 
     pub fn contains(&self, other: &Range) -> bool {
         self.start <= other.start && other.end <= self.end
+    }
+
+    pub fn through(&self, mut other: Range) -> Range {
+        other.start = min(&self.start, &other.start).clone();
+        other.end = max(&self.end, &other.end).clone();
+        other
     }
 }
 

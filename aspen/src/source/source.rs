@@ -1,6 +1,7 @@
 use crate::source::{Location, URI};
 use crate::Range;
 use std::collections::HashMap;
+use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io;
 use std::path::Path;
@@ -20,9 +21,16 @@ pub struct Source {
     pub kind: SourceKind,
 }
 
+#[derive(Debug)]
 pub enum SourceKind {
     Module,
     Inline,
+}
+
+impl fmt::Debug for Source {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{} ({:?})", self.uri, self.kind)
+    }
 }
 
 impl PartialEq for Source {

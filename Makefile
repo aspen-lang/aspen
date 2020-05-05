@@ -28,7 +28,9 @@ fmt:
 	( cd aspen-runtime; cargo fmt )
 
 .PHONY: test
-test:
+test: aspen-runtime/target/$(PROFILE)/libaspen_runtime.a
+	mkdir -p aspen/target/$(PROFILE)/deps
+	cp aspen-runtime/target/$(PROFILE)/libaspen_runtime.a aspen/target/$(PROFILE)/deps/libaspen_runtime.a
 	( cd aspen; cargo test --lib )
 	( cd aspen-cli; cargo test )
 	( cd aspen-runtime; cargo test --lib )

@@ -55,7 +55,7 @@ impl Diagnostic for Expected {
 }
 
 #[derive(Debug, Clone)]
-pub struct DuplicateExport(pub String, pub Arc<Node>);
+pub struct DuplicateExport(pub String, pub Arc<dyn Node>);
 
 impl Diagnostic for DuplicateExport {
     fn severity(&self) -> Severity {
@@ -63,7 +63,7 @@ impl Diagnostic for DuplicateExport {
     }
 
     fn source(&self) -> &Arc<Source> {
-        &self.1.source
+        &self.1.source()
     }
 
     fn range(&self) -> Range {
