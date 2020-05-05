@@ -1,4 +1,3 @@
-use std::env::args;
 use std::mem::size_of;
 use std::os::raw::c_char;
 
@@ -15,12 +14,6 @@ unsafe fn extern_str(mut s: NativeStr) -> &'static str {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn aspen_main(s: NativeStr) -> i32 {
-    println!("Main! {:?} {:?}", extern_str(s), args().collect::<Vec<_>>());
-    return 13;
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn hello_world() {
-    println!("Hello World!");
+pub unsafe extern "C" fn print(s: NativeStr) {
+    println!("{}", extern_str(s));
 }

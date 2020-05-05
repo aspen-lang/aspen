@@ -23,7 +23,7 @@ impl ObjectFile {
         let llvm_module = context.create_module(module.uri().as_ref());
         let builder = context.create_builder();
 
-        module.compile(&context, &llvm_module, &builder);
+        module.compile(&context, &llvm_module, &builder)?;
 
         Self::write(path, llvm_module).await
     }

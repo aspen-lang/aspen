@@ -47,8 +47,21 @@ impl JIT {
         c: C,
     ) -> GenResult<()> {
         unsafe {
-            let f = c.compile(CONTEXT.as_ref().unwrap(), &self.module, &self.builder);
+            let f = c.compile(CONTEXT.as_ref().unwrap(), &self.module, &self.builder)?;
+            if cfg!(debug_assertions) {
+                eprintln!("\n\n");
+                self.module.print_to_stderr();
+                eprintln!("\n\n");
+            }
+
             self.engine.run_function(f, &[]);
+            f.delete();
+
+            if cfg!(debug_assertions) {
+                eprintln!("\n\n");
+                self.module.print_to_stderr();
+                eprintln!("\n\n");
+            }
         }
         Ok(())
     }

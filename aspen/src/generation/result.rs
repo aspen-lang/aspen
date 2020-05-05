@@ -12,6 +12,7 @@ pub enum GenError {
     FailedToLink,
     NoTargetMachine(TargetTriple),
     LLVM(String),
+    UndefinedReference,
 }
 
 impl From<io::Error> for GenError {

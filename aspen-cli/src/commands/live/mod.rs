@@ -35,7 +35,9 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
                     report(diagnostics);
                     host.remove(module.uri()).await;
                 } else {
-                    jit.evaluate(module).unwrap();
+                    if let Err(error) = jit.evaluate(module) {
+                        eprintln!("{:?}", error);
+                    }
                 }
             }
             Err(ReadlineError::Interrupted) => {
