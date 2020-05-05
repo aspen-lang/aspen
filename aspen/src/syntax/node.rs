@@ -27,7 +27,6 @@ impl Node {
         }
     }
 
-
     pub fn range(&self) -> Range {
         self.kind.range(self.source.as_ref())
     }
@@ -45,7 +44,6 @@ impl fmt::Debug for Node {
 
 #[derive(Debug)]
 pub enum NodeKind {
-    EOF,
     Unknown(Arc<Token>),
 
     /// ```bnf
@@ -55,6 +53,12 @@ pub enum NodeKind {
     Module {
         declarations: Vec<Arc<Node>>,
     },
+
+    /// ```bnf
+    /// Inline :=
+    ///   Declaration |
+    ///   Expression
+    /// ```
 
     /// ```bnf
     /// Declaration :=
@@ -105,10 +109,26 @@ pub enum NodeKind {
 }
 
 impl NodeKind {
+    pub fn is_expression(&self) -> bool {
+        use NodeKind::*;
+        match self {
+            ReferenceExpression(_) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_declaration(&self) -> bool {
+        use NodeKind::*;
+        match self {
+            ObjectDeclaration { .. } | ClassDeclaration { .. } => true,
+            _ => false,
+        }
+    }
+
     fn children(&self) -> NodeChildren {
         use NodeKind::*;
         match self {
-            EOF | Unknown(_) | Symbol(_) => empty().into(),
+            Unknown(_) | Symbol(_) => empty().into(),
             Module { declarations } => declarations.iter().into(),
             ObjectDeclaration { symbol, .. } => symbol.iter().into(),
             ClassDeclaration { symbol, .. } => symbol.iter().into(),
@@ -119,7 +139,6 @@ impl NodeKind {
     fn range(&self, source: &Source) -> Range {
         use NodeKind::*;
         let opts = match self {
-            EOF => return source.eof_range(),
             Unknown(t) => return t.range.clone(),
             Module { .. } => return source.range_all(),
             Symbol(t) => return t.range.clone(),

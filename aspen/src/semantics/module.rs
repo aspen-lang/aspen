@@ -104,8 +104,8 @@ impl fmt::Debug for Module {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use crate::Context;
+    use std::collections::HashMap;
 
     #[tokio::test]
     async fn empty_source() {

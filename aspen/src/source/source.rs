@@ -22,7 +22,7 @@ pub struct Source {
 
 pub enum SourceKind {
     Module,
-    Expression,
+    Inline,
 }
 
 impl PartialEq for Source {
@@ -53,7 +53,7 @@ impl Source {
         )
     }
 
-    pub fn expression<U, C>(uri: U, code: C) -> Arc<Source>
+    pub fn inline<U, C>(uri: U, code: C) -> Arc<Source>
     where
         U: Into<URI>,
         C: Into<String>,
@@ -62,7 +62,7 @@ impl Source {
             uri.into(),
             code.into(),
             SystemTime::now(),
-            SourceKind::Expression,
+            SourceKind::Inline,
         )
     }
 

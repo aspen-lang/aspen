@@ -30,7 +30,7 @@ impl Parser {
     pub async fn parse(&mut self) -> (Arc<Node>, Diagnostics) {
         let result = match self.source.kind {
             SourceKind::Module => ParseModule.parse(self).await,
-            SourceKind::Expression => ParseExpression.parse(self).await,
+            SourceKind::Inline => ParseExpression.parse(self).await,
         };
 
         match result {

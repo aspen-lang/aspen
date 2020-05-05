@@ -6,10 +6,12 @@ use inkwell::builder::Builder;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
 };
-use inkwell::values::PointerValue;
+use inkwell::types::StructType;
+use inkwell::values::{FunctionValue, PointerValue, StructValue};
 use inkwell::OptimizationLevel;
 use std::fmt;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -17,18 +19,37 @@ pub struct Emitter<'ctx> {
     context: &'ctx EmissionContext,
     llvm_module: inkwell::module::Module<'ctx>,
     module: Arc<Module>,
+
+    object_type: StructType<'ctx>,
 }
 
 const TARGET: &str = env!("TARGET");
+
+static ID_GEN: AtomicUsize = AtomicUsize::new(0);
+
+fn new_id() -> usize {
+    ID_GEN.fetch_add(1, Ordering::SeqCst)
+}
+
+fn new_name() -> String {
+    let mut name = "gen".to_string();
+    name.push_str(format!("{}", new_id()).as_str());
+    name
+}
 
 impl<'ctx> Emitter<'ctx> {
     pub fn new(context: &'ctx EmissionContext, module: Arc<Module>) -> Emitter<'ctx> {
         let m = context.inner.create_module(module.uri().as_ref());
 
+        let object_type = context.inner.opaque_struct_type("Object");
+        object_type.set_body(&[], false);
+
         Emitter {
             context,
             llvm_module: m,
             module,
+
+            object_type,
         }
     }
 
@@ -46,10 +67,11 @@ impl<'ctx> Emitter<'ctx> {
         match self.module.kind() {
             SourceKind::Module => {
                 let module_node = self.module.syntax_tree().clone();
-                self.emit_module(module_node);
+                self.emit_module(module_node).await;
             }
-            SourceKind::Expression => {
-                let _expression_node = self.module.syntax_tree().clone();
+            SourceKind::Inline => {
+                let inline_node = self.module.syntax_tree().clone();
+                self.emit_inline(inline_node).await;
             }
         }
 
@@ -82,32 +104,59 @@ impl<'ctx> Emitter<'ctx> {
         Ok(machine.write_to_file(llvm_module, FileType::Object, &object_file_path)?)
     }
 
-    pub fn evaluate(&mut self) -> JITResult<()> {
-        let mut jit = JIT::new(&self.context.inner, self.llvm_module.clone());
+    pub async fn evaluate(&mut self) -> JITResult<()> {
+        let mut jit = JIT::new(&self.context.inner, &self.llvm_module);
         match self.module.kind() {
             SourceKind::Module => {
                 let module_node = self.module.syntax_tree().clone();
-                self.emit_module(module_node);
+                self.emit_module(module_node).await;
                 Ok(())
             }
-            SourceKind::Expression => {
-                let expression_node = self.module.syntax_tree().clone();
-                unsafe { jit.evaluate(|builder| self.emit_expression(builder, expression_node)) }
+            SourceKind::Inline => {
+                let inline_node = self.module.syntax_tree().clone();
+                if let Some(f) = self.emit_inline(inline_node).await {
+                    unsafe {
+                        jit.evaluate(f)?;
+                    }
+                }
+                Ok(())
             }
         }
     }
 
-    fn emit_module(&mut self, _module: Arc<Node>) {}
+    async fn emit_module(&mut self, _module: Arc<Node>) {}
 
-    fn emit_expression(
+    async fn emit_inline(&mut self, inline: Arc<Node>) -> Option<FunctionValue<'ctx>> {
+        if inline.kind.is_expression() {
+            let expression_fn = self.llvm_module.add_function(
+                new_name().as_str(),
+                self.object_type.fn_type(&[], false),
+                None,
+            );
+            let builder = self.context.inner.create_builder();
+            let entry_block = self
+                .context
+                .inner
+                .append_basic_block(expression_fn, "entry");
+            builder.position_at_end(entry_block);
+            builder.build_return(Some(&self.emit_expression(&builder, inline).await));
+            println!("{}", self.llvm_module.print_to_string().to_string());
+            Some(expression_fn)
+        } else {
+            self.emit_declaration(inline).await;
+            None
+        }
+    }
+
+    async fn emit_expression(
         &mut self,
         builder: &Builder<'ctx>,
-        _module: Arc<Node>,
-    ) -> PointerValue<'ctx> {
-        builder
-            .build_global_string_ptr("Hello", "")
-            .as_pointer_value()
+        _node: Arc<Node>,
+    ) -> StructValue<'ctx> {
+        self.object_type.const_zero()
     }
+
+    async fn emit_declaration(&mut self, _node: Arc<Node>) {}
 }
 
 impl<'ctx> fmt::Debug for Emitter<'ctx> {

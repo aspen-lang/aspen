@@ -22,7 +22,7 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
                 line_number += 1;
 
                 let module = host
-                    .set(Source::expression(
+                    .set(Source::inline(
                         URI::new("repl", line_number.to_string()),
                         line,
                     ))
@@ -36,7 +36,7 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
                 } else {
                     let mut module = module.emitter(&emission_context);
 
-                    module.evaluate().unwrap();
+                    module.evaluate().await.unwrap();
                 }
             }
             Err(ReadlineError::Interrupted) => {
