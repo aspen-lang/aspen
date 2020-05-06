@@ -59,10 +59,20 @@ impl<'ctx> Compile<'ctx> for Arc<syntax::Root> {
                     Ok(Some(result)) => {
                         let result_type = result.get_type().into_struct_type();
                         let type_name = result_type.get_name().unwrap();
-                        let to_string_fn_name = format!("{}::ToString", type_name.to_str().unwrap());
-                        let to_string_fn = module.get_function(to_string_fn_name.as_str()).unwrap_or_else(|| {
-                            module.add_function(to_string_fn_name.as_str(), context.i8_type().ptr_type(AddressSpace::Generic).fn_type(&[result.get_type()], false), Some(Linkage::Private))
-                        });
+                        let to_string_fn_name =
+                            format!("{}::ToString", type_name.to_str().unwrap());
+                        let to_string_fn = module
+                            .get_function(to_string_fn_name.as_str())
+                            .unwrap_or_else(|| {
+                                module.add_function(
+                                    to_string_fn_name.as_str(),
+                                    context
+                                        .i8_type()
+                                        .ptr_type(AddressSpace::Generic)
+                                        .fn_type(&[result.get_type()], false),
+                                    Some(Linkage::External),
+                                )
+                            });
 
                         let as_string = builder.build_call(to_string_fn, &[result], "");
 
@@ -103,14 +113,6 @@ impl<'ctx> Compile<'ctx> for Arc<syntax::Module> {
         );
         let entry_block = context.append_basic_block(init_fn, "entry");
         builder.position_at_end(entry_block);
-        builder.build_call(
-            Print.compile(context, module, builder)?,
-            &[builder
-                .build_global_string_ptr(format!("Init {}", self.source.uri()).as_str(), "")
-                .as_pointer_value()
-                .into()],
-            "",
-        );
 
         for declaration in self.declarations.iter() {
             declaration.compile(context, module, builder)?;
@@ -178,7 +180,7 @@ impl<'ctx> Compile<'ctx> for Arc<syntax::ObjectDeclaration> {
         let init_fn = module.add_function(
             self.symbol(),
             type_.fn_type(&[], false),
-            Some(Linkage::LinkerPrivate),
+            Some(Linkage::External),
         );
         let entry_block = context.append_basic_block(init_fn, "entry");
         builder.position_at_end(entry_block);
@@ -189,8 +191,11 @@ impl<'ctx> Compile<'ctx> for Arc<syntax::ObjectDeclaration> {
         // TOSTRING FUNCTION
         let to_string_fn = module.add_function(
             format!("{}::ToString", self.symbol()).as_str(),
-            context.i8_type().ptr_type(AddressSpace::Generic).fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
-            Some(Linkage::LinkerPrivate),
+            context
+                .i8_type()
+                .ptr_type(AddressSpace::Generic)
+                .fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
+            Some(Linkage::External),
         );
         let entry_block = context.append_basic_block(to_string_fn, "entry");
         builder.position_at_end(entry_block);
@@ -248,7 +253,7 @@ impl<'ctx> Compile<'ctx> for Arc<syntax::ReferenceExpression> {
                 module.add_function(
                     self.symbol.identifier.lexeme(),
                     type_.fn_type(&[], false),
-                    Some(Linkage::LinkerPrivate),
+                    Some(Linkage::External),
                 )
             });
 

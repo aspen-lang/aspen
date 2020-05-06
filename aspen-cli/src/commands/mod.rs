@@ -3,6 +3,7 @@ use clap::{App, ArgMatches};
 pub mod build;
 pub mod context;
 pub mod live;
+pub mod run;
 
 pub fn app() -> App<'static, 'static> {
     App::new("aspen")
@@ -10,6 +11,7 @@ pub fn app() -> App<'static, 'static> {
         .subcommand(live::app())
         .subcommand(build::app())
         .subcommand(context::app())
+        .subcommand(run::app())
 }
 
 pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
@@ -17,6 +19,7 @@ pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
         ("live", Some(matches)) => live::main(matches).await,
         ("build", Some(matches)) => build::main(matches).await,
         ("context", Some(matches)) => context::main(matches).await,
+        ("run", Some(matches)) => run::main(matches).await,
 
         _ => Ok(eprintln!(
             "Usage: aspen [COMMAND]. Use --help to find out how to use this program."

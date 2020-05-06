@@ -1,9 +1,11 @@
+use crate::generation::compile::{Compile, Print};
 use crate::generation::{GenError, GenResult, ObjectFile};
 use crate::semantics::Host;
 use futures::future::join_all;
 use inkwell::module::Linkage;
+use inkwell::AddressSpace;
 use std::env::consts::ARCH;
-use std::env::current_exe;
+use std::env::{current_dir, current_exe};
 use std::fmt;
 use std::path::PathBuf;
 use tokio::fs::create_dir_all;
@@ -52,6 +54,34 @@ impl Executable {
                     builder.build_call(init_fn, &[], "");
                 }
 
+                let main_type = context.opaque_struct_type(main.as_ref());
+                let main_init_fn = module.add_function(
+                    main.as_ref(),
+                    main_type.fn_type(&[], false),
+                    Some(Linkage::External),
+                );
+                let main_to_string_fn = module.add_function(
+                    format!("{}::ToString", main.as_ref()).as_str(),
+                    context
+                        .i8_type()
+                        .ptr_type(AddressSpace::Generic)
+                        .fn_type(&[main_type.into()], false),
+                    Some(Linkage::External),
+                );
+                let print_fn = Print.compile(&context, &module, &builder)?;
+
+                let main_obj = builder.build_call(main_init_fn, &[], "");
+                let object_as_string = builder.build_call(
+                    main_to_string_fn,
+                    &[main_obj.try_as_basic_value().left().unwrap()],
+                    "",
+                );
+                builder.build_call(
+                    print_fn,
+                    &[object_as_string.try_as_basic_value().left().unwrap()],
+                    "",
+                );
+
                 let status_code = context.i32_type().const_int(13, false);
                 builder.build_return(Some(&status_code));
             }
@@ -98,6 +128,14 @@ impl Executable {
 
 impl fmt::Display for Executable {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Executable!")
+        write!(
+            f,
+            "{}",
+            current_dir()
+                .ok()
+                .and_then(|cwd| self.path.strip_prefix(cwd).ok())
+                .unwrap_or(&self.path)
+                .display()
+        )
     }
 }

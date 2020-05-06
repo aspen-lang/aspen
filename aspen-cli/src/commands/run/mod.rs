@@ -1,11 +1,11 @@
 use crate::reporter::report;
-use aspen::generation::Executable;
+use aspen::generation::JIT;
 use aspen::semantics::Host;
 use aspen::Source;
 use clap::{App, Arg, ArgMatches};
 
 pub fn app() -> App<'static, 'static> {
-    App::new("build").arg(Arg::with_name("MAIN").takes_value(true))
+    App::new("run").arg(Arg::with_name("MAIN").takes_value(true))
 }
 
 pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
@@ -16,6 +16,8 @@ pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
         .expect("Couldn't infer main object name")
         .to_string();
 
+    let jit = JIT::new(context.clone());
+
     let host = Host::from(context, Source::files("**/*.aspen").await).await;
 
     let diagnostics = host.diagnostics().await;
@@ -25,9 +27,11 @@ pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
     }
     report(diagnostics);
 
-    let executable = Executable::new(host, main).await.unwrap();
+    for module in host.modules().await {
+        jit.evaluate(module).unwrap();
+    }
 
-    println!("Compiled {}", executable);
+    jit.evaluate_main(main).unwrap();
 
     Ok(())
 }

@@ -4,6 +4,7 @@ use mktemp::Temp;
 use std::convert::TryInto;
 use std::env::consts::EXE_EXTENSION;
 use std::env::current_dir;
+use std::ffi::OsStr;
 use std::fmt;
 use std::fs::Metadata;
 use std::io;
@@ -212,6 +213,16 @@ impl Context {
 
     pub fn host(self: &Arc<Self>) -> Host {
         Host::new(self.clone())
+    }
+
+    pub fn name(&self) -> Option<&str> {
+        match &self.kind {
+            ContextKind::Temporary(_) => None,
+            ContextKind::Global(_) => None,
+            #[cfg(test)]
+            ContextKind::Test => Some("Test"),
+            ContextKind::Directory(dir) => dir.file_name().and_then(OsStr::to_str),
+        }
     }
 }
 
