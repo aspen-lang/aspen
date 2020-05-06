@@ -1,3 +1,4 @@
+use crate::generation::compile::Compile;
 use crate::generation::{GenError, GenResult};
 use crate::semantics::Module;
 use inkwell::targets::{
@@ -7,7 +8,6 @@ use inkwell::OptimizationLevel;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::create_dir_all;
-use crate::generation::compile::Compile;
 
 const TARGET: &str = env!("TARGET");
 

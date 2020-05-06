@@ -1,12 +1,12 @@
 use crate::generation::{GenError, GenResult, ObjectFile};
 use crate::semantics::Host;
 use futures::future::join_all;
+use inkwell::module::Linkage;
 use std::env::consts::ARCH;
 use std::env::current_exe;
 use std::fmt;
 use std::path::PathBuf;
 use tokio::fs::create_dir_all;
-use inkwell::module::Linkage;
 
 pub struct Executable {
     pub path: PathBuf,
@@ -16,10 +16,8 @@ pub struct Executable {
 impl Executable {
     pub async fn new<M: AsRef<str>>(host: Host, main: M) -> GenResult<Executable> {
         let modules = host.modules().await;
-        let object_results = join_all(
-            modules.iter() .map(|module| ObjectFile::new(module.clone())),
-        )
-        .await;
+        let object_results =
+            join_all(modules.iter().map(|module| ObjectFile::new(module.clone()))).await;
 
         let mut objects = vec![];
         let mut errors = vec![];
@@ -46,7 +44,11 @@ impl Executable {
 
                 for m in modules {
                     let init_fn_name = format!("{:?}::init", m.uri());
-                    let init_fn = module.add_function(init_fn_name.as_str(), context.void_type().fn_type(&[], false), Some(Linkage::External));
+                    let init_fn = module.add_function(
+                        init_fn_name.as_str(),
+                        context.void_type().fn_type(&[], false),
+                        Some(Linkage::External),
+                    );
                     builder.build_call(init_fn, &[], "");
                 }
 
