@@ -11,6 +11,7 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::{self, DirEntry};
+use tokio::io::AsyncWriteExt;
 
 /// The context in which the compiler will work with code
 /// emission and configuration.
@@ -205,7 +206,10 @@ impl Context {
     }
 
     pub fn binary_file_path(&self, main: &str) -> PathBuf {
-        let mut path = self.workspace_dir(Some("out"));
+        let mut path = match &self.kind {
+            ContextKind::Temporary(tmp) => self.root_dir().unwrap_or(tmp.to_path_buf()),
+            _ => self.workspace_dir(Some("out")),
+        };
         path.push(main);
         path.set_extension(EXE_EXTENSION);
         path
@@ -215,14 +219,37 @@ impl Context {
         Host::new(self.clone())
     }
 
-    pub fn name(&self) -> Option<&str> {
-        match &self.kind {
-            ContextKind::Temporary(_) => None,
-            ContextKind::Global(_) => None,
-            #[cfg(test)]
-            ContextKind::Test => Some("Test"),
-            ContextKind::Directory(dir) => dir.file_name().and_then(OsStr::to_str),
+    pub fn name(&self) -> Option<String> {
+        self.root_dir().ok().and_then(|d| {
+            d.file_name()
+                .and_then(OsStr::to_str)
+                .map(ToString::to_string)
+        })
+    }
+
+    pub async fn ensure_workspace_dir(&self, subdir: Option<&str>) -> io::Result<()> {
+        let dir = self.workspace_dir(subdir);
+        tokio::fs::create_dir_all(&dir).await?;
+
+        let gitignore_path = self.workspace_dir(Some(".gitignore"));
+        if !tokio::fs::metadata(&gitignore_path).await.is_ok() {
+            let mut file = tokio::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .open(&gitignore_path)
+                .await?;
+            file.write_all("cache/\nout/\n".as_bytes()).await?;
         }
+
+        Ok(())
+    }
+
+    pub async fn ensure_binary_dir(&self) -> io::Result<()> {
+        self.ensure_workspace_dir(Some("out")).await
+    }
+
+    pub async fn ensure_object_file_dir(&self) -> io::Result<()> {
+        self.ensure_workspace_dir(Some("cache")).await
     }
 }
 

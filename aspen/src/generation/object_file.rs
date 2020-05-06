@@ -7,7 +7,6 @@ use inkwell::targets::{
 use inkwell::OptimizationLevel;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::fs::create_dir_all;
 
 const TARGET: &str = env!("TARGET");
 
@@ -25,6 +24,7 @@ impl ObjectFile {
 
         module.compile(&context, &llvm_module, &builder)?;
 
+        module.host.context.ensure_object_file_dir().await?;
         Self::write(path, llvm_module).await
     }
 
@@ -32,8 +32,6 @@ impl ObjectFile {
         path: PathBuf,
         module: inkwell::module::Module<'_>,
     ) -> GenResult<ObjectFile> {
-        create_dir_all(path.parent().unwrap()).await?;
-
         Target::initialize_all(&InitializationConfig::default());
         let triple = TargetTriple::create(TARGET);
         let target = Target::from_triple(&triple)?;

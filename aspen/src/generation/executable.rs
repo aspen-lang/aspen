@@ -8,7 +8,6 @@ use std::env::consts::ARCH;
 use std::env::{current_dir, current_exe};
 use std::fmt;
 use std::path::PathBuf;
-use tokio::fs::create_dir_all;
 
 pub struct Executable {
     pub path: PathBuf,
@@ -86,12 +85,14 @@ impl Executable {
                 builder.build_return(Some(&status_code));
             }
 
+            host.context.ensure_object_file_dir().await?;
             objects.push(
                 ObjectFile::write(host.context.main_object_file_path(main.as_ref()), module)
                     .await?,
             );
 
             let path = host.context.binary_file_path(main.as_ref());
+            host.context.ensure_binary_dir().await?;
             Executable::write(path, objects).await
         }
     }
@@ -113,8 +114,6 @@ impl Executable {
         for object in objects.iter() {
             ld.arg(&object.path);
         }
-
-        create_dir_all(path.parent().unwrap()).await?;
 
         let status = ld.arg("-o").arg(&path).spawn()?.await?;
 

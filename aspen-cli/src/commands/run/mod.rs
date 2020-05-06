@@ -12,9 +12,9 @@ pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
     let context = aspen::Context::infer().await?;
     let main = matches
         .value_of("MAIN")
+        .map(ToString::to_string)
         .or(context.name())
-        .expect("Couldn't infer main object name")
-        .to_string();
+        .expect("Couldn't infer main object name");
 
     let jit = JIT::new(context.clone());
 
