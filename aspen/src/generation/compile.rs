@@ -273,11 +273,13 @@ impl<'ctx> Compile<'ctx> for Print {
         module: &Module<'ctx>,
         _builder: &Builder<'ctx>,
     ) -> GenResult<Self::Output> {
+        #[cfg(not(test))]
         #[link(name = "aspen_runtime")]
         extern "C" {
             fn print(message: *mut c_char);
         }
         {
+            #[cfg(not(test))]
             #[used]
             static USED: unsafe extern "C" fn(*mut c_char) = print;
         }
