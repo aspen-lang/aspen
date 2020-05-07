@@ -1,5 +1,4 @@
-use crate::generation::compile::Compile;
-use crate::generation::{GenError, GenResult};
+use crate::generation::{EmittedModule, GenError, GenResult, Generator};
 use crate::semantics::Module;
 use inkwell::targets::{
     CodeModel, FileType, InitializationConfig, RelocMode, Target, TargetTriple,
@@ -17,21 +16,16 @@ pub struct ObjectFile {
 impl ObjectFile {
     pub async fn new(module: Arc<Module>) -> GenResult<ObjectFile> {
         let path = module.host.context.object_file_path(module.uri())?;
-
         let context = inkwell::context::Context::create();
-        let llvm_module = context.create_module(module.uri().as_ref());
-        let builder = context.create_builder();
 
-        module.compile(&context, &llvm_module, &builder)?;
+        let generator = Generator::new(module.host.clone(), &context);
+        let emitted = generator.generate_module(&module)?;
 
         module.host.context.ensure_object_file_dir().await?;
-        Self::write(path, llvm_module).await
+        Self::write(path, emitted).await
     }
 
-    pub(crate) async fn write(
-        path: PathBuf,
-        module: inkwell::module::Module<'_>,
-    ) -> GenResult<ObjectFile> {
+    pub(crate) async fn write(path: PathBuf, module: EmittedModule<'_>) -> GenResult<ObjectFile> {
         Target::initialize_all(&InitializationConfig::default());
         let triple = TargetTriple::create(TARGET);
         let target = Target::from_triple(&triple)?;
@@ -46,7 +40,7 @@ impl ObjectFile {
             )
             .ok_or(GenError::NoTargetMachine(triple))?;
 
-        machine.write_to_file(&module, FileType::Object, &path)?;
+        machine.write_to_file(&module.module, FileType::Object, &path)?;
 
         Ok(ObjectFile { path })
     }

@@ -1,9 +1,6 @@
-use crate::generation::compile::{Compile, Print};
-use crate::generation::{GenError, GenResult, ObjectFile};
+use crate::generation::{GenError, GenResult, Generator, ObjectFile};
 use crate::semantics::Host;
 use futures::future::join_all;
-use inkwell::module::Linkage;
-use inkwell::AddressSpace;
 use std::env::consts::ARCH;
 use std::env::{current_dir, current_exe};
 use std::fmt;
@@ -34,61 +31,17 @@ impl Executable {
             Err(GenError::Multi(errors))
         } else {
             let context = inkwell::context::Context::create();
-            let module = context.create_module("main");
-            // Main module
-            {
-                let builder = context.create_builder();
-                let main_fn =
-                    module.add_function("main", context.i32_type().fn_type(&[], false), None);
-                let entry_block = context.append_basic_block(main_fn, "entry");
-                builder.position_at_end(entry_block);
+            let generator = Generator::new(host.clone(), &context);
 
-                for m in modules {
-                    let init_fn_name = format!("{:?}::init", m.uri());
-                    let init_fn = module.add_function(
-                        init_fn_name.as_str(),
-                        context.void_type().fn_type(&[], false),
-                        Some(Linkage::External),
-                    );
-                    builder.build_call(init_fn, &[], "");
-                }
-
-                let main_type = context.opaque_struct_type(main.as_ref());
-                let main_init_fn = module.add_function(
-                    main.as_ref(),
-                    main_type.fn_type(&[], false),
-                    Some(Linkage::External),
-                );
-                let main_to_string_fn = module.add_function(
-                    format!("{}::ToString", main.as_ref()).as_str(),
-                    context
-                        .i8_type()
-                        .ptr_type(AddressSpace::Generic)
-                        .fn_type(&[main_type.into()], false),
-                    Some(Linkage::External),
-                );
-                let print_fn = Print.compile(&context, &module, &builder)?;
-
-                let main_obj = builder.build_call(main_init_fn, &[], "");
-                let object_as_string = builder.build_call(
-                    main_to_string_fn,
-                    &[main_obj.try_as_basic_value().left().unwrap()],
-                    "",
-                );
-                builder.build_call(
-                    print_fn,
-                    &[object_as_string.try_as_basic_value().left().unwrap()],
-                    "",
-                );
-
-                let status_code = context.i32_type().const_int(13, false);
-                builder.build_return(Some(&status_code));
-            }
+            let emitted_module = generator.generate_main(main.as_ref())?;
 
             host.context.ensure_object_file_dir().await?;
             objects.push(
-                ObjectFile::write(host.context.main_object_file_path(main.as_ref()), module)
-                    .await?,
+                ObjectFile::write(
+                    host.context.main_object_file_path(main.as_ref()),
+                    emitted_module,
+                )
+                .await?,
             );
 
             let path = host.context.binary_file_path(main.as_ref());

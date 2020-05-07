@@ -17,7 +17,6 @@ pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
         .expect("Couldn't infer main object name");
 
     let jit = JIT::new(context.clone());
-
     let host = Host::from(context, Source::files("**/*.aspen").await).await;
 
     let diagnostics = host.diagnostics().await;
@@ -31,7 +30,7 @@ pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
         jit.evaluate(module).unwrap();
     }
 
-    jit.evaluate_main(main).unwrap();
+    jit.evaluate_main(host, main).unwrap();
 
     Ok(())
 }
