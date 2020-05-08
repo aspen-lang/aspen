@@ -71,7 +71,8 @@ impl<'ctx> Generator<'ctx> {
         let main_type = context.opaque_struct_type(main);
         let main_init_fn = module.add_function(
             format!("{}::New", main).as_str(),
-            main_type.fn_type(&[], false),
+            self.void_type
+                .fn_type(&[main_type.ptr_type(AddressSpace::Generic).into()], false),
             Some(Linkage::External),
         );
         let main_to_string_fn = module.add_function(
@@ -84,12 +85,10 @@ impl<'ctx> Generator<'ctx> {
         );
         let print_fn = self.print_fn(&module);
 
-        let main_obj = builder.build_call(main_init_fn, &[], "");
-        let object_as_string = builder.build_call(
-            main_to_string_fn,
-            &[main_obj.try_as_basic_value().left().unwrap()],
-            "",
-        );
+        let main_obj = builder.build_alloca(main_type, "main_obj");
+        builder.build_call(main_init_fn, &[], "");
+        let object_as_string =
+            builder.build_call(main_to_string_fn, &[main_obj.into()], "object_as_string");
         builder.build_call(
             print_fn,
             &[object_as_string.try_as_basic_value().left().unwrap()],
@@ -172,6 +171,8 @@ impl<'ctx> Generator<'ctx> {
                         "{}::ToString",
                         object
                             .get_type()
+                            .into_pointer_type()
+                            .get_element_type()
                             .into_struct_type()
                             .get_name()
                             .unwrap()
@@ -237,13 +238,15 @@ impl<'ctx> Generator<'ctx> {
             .unwrap_or_else(|| {
                 module.add_function(
                     new_fn_name.as_str(),
-                    type_.fn_type(&[], false),
+                    self.void_type
+                        .fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
                     Some(Linkage::External),
                 )
             });
 
-        let instance = builder.build_call(new_fn, &[], "instance");
-        Ok(instance.try_as_basic_value().left().unwrap())
+        let instance = builder.build_alloca(type_, "instance");
+        builder.build_call(new_fn, &[instance.into()], "");
+        Ok(instance.into())
     }
 
     fn generate_declaration(
@@ -273,16 +276,18 @@ impl<'ctx> Generator<'ctx> {
         let init_fn_name = format!("{}::New", qn);
         let init_fn = module.add_function(
             init_fn_name.as_str(),
-            type_.fn_type(&[], false),
+            self.void_type
+                .fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
             Some(Linkage::External),
         );
         {
             let entry_block = self.context.append_basic_block(init_fn, "entry");
             builder.position_at_end(entry_block);
 
-            let instance = builder.build_alloca(type_, "instance");
+            let _instance = init_fn.get_first_param().unwrap();
+            // TODO: Initialize all fields on instance
 
-            builder.build_return(Some(&instance));
+            builder.build_return(None);
         }
 
         let to_string_fn_name = format!("{}::ToString", qn);

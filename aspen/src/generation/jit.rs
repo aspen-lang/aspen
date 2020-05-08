@@ -38,11 +38,12 @@ impl JIT {
         unsafe {
             let generator = Generator::new(module.host.clone(), CONTEXT.as_ref().unwrap());
             let module = generator.generate_module(&module)?;
-            module.evaluate(self.engine.clone());
 
             if cfg!(debug_assertions) {
-                eprintln!("\n\n{:?}\n\n", module);
+                eprintln!("------------------\n{:?}------------------", module);
             }
+
+            module.evaluate(self.engine.clone());
         }
         Ok(())
     }
@@ -51,11 +52,12 @@ impl JIT {
         unsafe {
             let generator = Generator::new(host.clone(), CONTEXT.as_ref().unwrap());
             let module = generator.generate_main(main.as_ref())?;
-            module.evaluate(self.engine.clone());
 
             if cfg!(debug_assertions) {
-                eprintln!("\n\n{:?}\n\n", module);
+                eprintln!("------------------\n{:?}------------------", module);
             }
+
+            module.evaluate(self.engine.clone());
         }
         Ok(())
     }

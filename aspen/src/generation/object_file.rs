@@ -26,6 +26,10 @@ impl ObjectFile {
     }
 
     pub(crate) async fn write(path: PathBuf, module: EmittedModule<'_>) -> GenResult<ObjectFile> {
+        if cfg!(debug_assertions) {
+            eprintln!("------------------\n{:?}------------------", module);
+        }
+
         Target::initialize_all(&InitializationConfig::default());
         let triple = TargetTriple::create(TARGET);
         let target = Target::from_triple(&triple)?;
