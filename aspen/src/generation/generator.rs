@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 pub struct Generator<'ctx> {
     context: &'ctx Context,
+    #[allow(unused)]
     host: Host,
 
     // void
@@ -52,7 +53,7 @@ impl<'ctx> Generator<'ctx> {
     pub fn generate_module(&self, module: &Arc<HostModule>) -> GenResult<EmittedModule> {
         let llvm_module = self.context.create_module(module.uri().as_ref());
 
-        let init_fn = self.generate_root(&llvm_module, module.syntax_tree())?;
+        let init_fn = self.generate_root(module, &llvm_module, module.syntax_tree())?;
 
         Ok(EmittedModule {
             module: llvm_module,
@@ -127,31 +128,34 @@ impl<'ctx> Generator<'ctx> {
 
     fn generate_root(
         &self,
+        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         root: &Arc<syntax::Root>,
     ) -> GenResult<Option<FunctionValue<'ctx>>> {
         match root.as_ref() {
             syntax::Root::Module(syntax_module) => {
-                self.generate_syntax_module(module, syntax_module)?;
+                self.generate_syntax_module(host_module, module, syntax_module)?;
                 Ok(None)
             }
-            syntax::Root::Inline(inline) => self.generate_inline(module, inline),
+            syntax::Root::Inline(inline) => self.generate_inline(host_module, module, inline),
         }
     }
 
     fn generate_syntax_module(
         &self,
+        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         syntax_module: &Arc<syntax::Module>,
     ) -> GenResult<()> {
         for declaration in syntax_module.declarations.iter() {
-            self.generate_declaration(module, declaration)?;
+            self.generate_declaration(host_module, module, declaration)?;
         }
         Ok(())
     }
 
     fn generate_inline(
         &self,
+        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         inline: &Arc<syntax::Inline>,
     ) -> GenResult<Option<FunctionValue<'ctx>>> {
@@ -165,7 +169,8 @@ impl<'ctx> Generator<'ctx> {
                     let entry_block = self.context.append_basic_block(run_fn, "entry");
                     builder.position_at_end(entry_block);
 
-                    let object = self.generate_expression(module, &builder, expression)?;
+                    let object =
+                        self.generate_expression(host_module, module, &builder, expression)?;
 
                     let to_string_fn_name = format!(
                         "{}::ToString",
@@ -203,7 +208,7 @@ impl<'ctx> Generator<'ctx> {
                 Ok(Some(run_fn))
             }
             syntax::Inline::Declaration(declaration) => {
-                self.generate_declaration(module, declaration)?;
+                self.generate_declaration(host_module, module, declaration)?;
                 Ok(None)
             }
         }
@@ -211,24 +216,28 @@ impl<'ctx> Generator<'ctx> {
 
     fn generate_expression(
         &self,
+        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         builder: &Builder<'ctx>,
         expression: &Arc<syntax::Expression>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
         match expression.as_ref() {
             syntax::Expression::Reference(r) => {
-                self.generate_reference_expression(module, builder, r)
+                self.generate_reference_expression(host_module, module, builder, r)
             }
         }
     }
 
     fn generate_reference_expression(
         &self,
+        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         builder: &Builder<'ctx>,
         expression: &Arc<syntax::ReferenceExpression>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
-        let symbol = expression.symbol.identifier.lexeme();
+        let declaration = block_on(host_module.declaration_referenced_by(expression)).unwrap();
+
+        let symbol = declaration.symbol();
 
         let type_ = module.get_struct_type(symbol).unwrap();
 
@@ -251,21 +260,24 @@ impl<'ctx> Generator<'ctx> {
 
     fn generate_declaration(
         &self,
+        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         declaration: &Arc<syntax::Declaration>,
     ) -> GenResult<()> {
         match declaration.as_ref() {
-            syntax::Declaration::Object(d) => self.generate_object_declaration(module, d),
+            syntax::Declaration::Object(d) => {
+                self.generate_object_declaration(host_module, module, d)
+            }
             syntax::Declaration::Class(d) => self.generate_class_declaration(d),
         }
     }
 
     fn generate_object_declaration(
         &self,
+        _host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         declaration: &Arc<syntax::ObjectDeclaration>,
     ) -> GenResult<()> {
-        let _host_module = block_on(self.host.get(declaration.source.uri())).unwrap();
         let qn = declaration.symbol();
 
         let type_ = self.context.opaque_struct_type(qn);

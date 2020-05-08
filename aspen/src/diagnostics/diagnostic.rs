@@ -1,4 +1,4 @@
-use crate::syntax::{Node, Token};
+use crate::syntax::{Node, ReferenceExpression, Token};
 use crate::{Range, Source};
 use std::fmt::{self, Debug, Display};
 use std::sync::Arc;
@@ -71,6 +71,30 @@ impl Diagnostic for DuplicateExport {
     }
 
     fn message(&self) -> String {
-        format!("Duplicate export `{}`", self.0,)
+        format!("Duplicate export `{}`", self.0)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UndefinedReference(pub Arc<ReferenceExpression>);
+
+impl Diagnostic for UndefinedReference {
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+
+    fn source(&self) -> &Arc<Source> {
+        &self.0.source()
+    }
+
+    fn range(&self) -> Range {
+        self.0.range()
+    }
+
+    fn message(&self) -> String {
+        format!(
+            "Undefined reference `{}`",
+            self.0.symbol.identifier.lexeme()
+        )
     }
 }

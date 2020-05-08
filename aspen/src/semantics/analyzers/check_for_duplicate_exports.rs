@@ -12,7 +12,7 @@ impl Analyzer for &CheckForDuplicateExports {
     async fn analyze(self, ctx: AnalysisContext<()>) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         let mut names = HashSet::new();
-        for (name, node) in ctx.current_module().await.exported_declarations().await {
+        for (name, node) in ctx.module.exported_declarations().await {
             if names.contains(&name) {
                 diagnostics.push(DuplicateExport(name, node));
             } else {

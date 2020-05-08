@@ -1,5 +1,6 @@
 use crate::semantics::{AnalysisContext, Analyzer};
-use crate::syntax::Node;
+use crate::syntax::{Declaration, Inline, IntoNode, ReferenceExpression, Root};
+use crate::SourceKind;
 use std::option::NoneError;
 use std::sync::Arc;
 
@@ -7,21 +8,55 @@ pub struct FindDeclaration;
 
 #[async_trait]
 impl<'a> Analyzer for &'a FindDeclaration {
-    type Input = Arc<dyn Node>;
-    type Output = Result<Arc<dyn Node>, FindDeclarationError>;
+    type Input = Arc<ReferenceExpression>;
+    type Output = Result<Arc<Declaration>, FindDeclarationError>;
 
     async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> Self::Output {
-        let navigator = ctx.navigator.down_to(&ctx.input)?;
+        let reference = ctx.input.clone();
+        let name = reference.symbol.identifier.lexeme();
 
-        Ok(navigator.find_upward(|_node| {
-            // CHECK IF NODE IS A DECLARATION OF THE SAME SYMBOL
-            // AS BEING REFERENCED BY THE INPUT NODE
-            false
-        })?)
+        let navigator = ctx.navigator.down_to(&ctx.input.into_node())?;
+
+        let declaration_in_scope = navigator
+            .find_upward(|node| {
+                if let Some(dec) = node.clone().as_declaration() {
+                    if dec.symbol() == name {
+                        return true;
+                    }
+                }
+                false
+            })
+            .and_then(|d| d.as_declaration());
+
+        if let Some(declaration) = declaration_in_scope {
+            return Ok(declaration);
+        }
+
+        match reference.source.kind {
+            SourceKind::Inline => {
+                for module in ctx.host.modules().await {
+                    if module.uri() != ctx.module.uri() {
+                        if let Root::Inline(other_inline) = module.syntax_tree().as_ref() {
+                            if let Inline::Declaration(dec) = other_inline.as_ref() {
+                                if dec.symbol() == name {
+                                    return Ok(dec.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            SourceKind::Module => {
+                // TODO: Imports
+            }
+        }
+
+        Err(FindDeclarationError::NotFound)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FindDeclarationError {
     NotFound,
 }

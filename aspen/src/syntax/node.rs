@@ -1,6 +1,7 @@
 use crate::syntax::Token;
 use crate::{Range, Source};
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub trait Node: fmt::Debug + Send + Sync {
@@ -15,6 +16,15 @@ pub trait Node: fmt::Debug + Send + Sync {
     fn as_declaration(self: Arc<Self>) -> Option<Arc<Declaration>> {
         None
     }
+
+    fn as_reference_expression(self: Arc<Self>) -> Option<Arc<ReferenceExpression>> {
+        None
+    }
+}
+
+fn hash_node<N: Node, H: Hasher>(node: &N, state: &mut H) {
+    Arc::into_raw(node.source().clone()).hash(state);
+    node.range().hash(state);
 }
 
 pub trait IntoNode {
@@ -84,8 +94,8 @@ pub enum Root {
 impl fmt::Debug for Root {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Root::Module(n) => n.fmt(f),
-            Root::Inline(n) => n.fmt(f),
+            Root::Module(n) => f.debug_tuple("Root::Module").field(n).finish(),
+            Root::Inline(n) => f.debug_tuple("Root::Inline").field(n).finish(),
         }
     }
 }
@@ -176,8 +186,8 @@ pub enum Inline {
 impl fmt::Debug for Inline {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Inline::Declaration(n) => n.fmt(f),
-            Inline::Expression(n) => n.fmt(f),
+            Inline::Declaration(n) => f.debug_tuple("Inline::Declaration").field(n).finish(),
+            Inline::Expression(n) => f.debug_tuple("Inline::Expression").field(n).finish(),
         }
     }
 }
@@ -218,8 +228,8 @@ pub enum Declaration {
 impl fmt::Debug for Declaration {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Declaration::Object(n) => n.fmt(f),
-            Declaration::Class(n) => n.fmt(f),
+            Declaration::Object(n) => f.debug_tuple("Declaration::Object").field(n).finish(),
+            Declaration::Class(n) => f.debug_tuple("Declaration::Class").field(n).finish(),
         }
     }
 }
@@ -398,7 +408,7 @@ pub enum Expression {
 impl fmt::Debug for Expression {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Expression::Reference(n) => n.fmt(f),
+            Expression::Reference(n) => f.debug_tuple("Expression::Reference").field(n).finish(),
         }
     }
 }
@@ -440,6 +450,12 @@ impl fmt::Debug for ReferenceExpression {
     }
 }
 
+impl Hash for ReferenceExpression {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_node(self, state);
+    }
+}
+
 impl Node for ReferenceExpression {
     fn source(&self) -> &Arc<Source> {
         &self.source
@@ -451,5 +467,9 @@ impl Node for ReferenceExpression {
 
     fn children(&self) -> Children {
         Children::Single(Some(self.symbol.clone()))
+    }
+
+    fn as_reference_expression(self: Arc<Self>) -> Option<Arc<ReferenceExpression>> {
+        Some(self)
     }
 }

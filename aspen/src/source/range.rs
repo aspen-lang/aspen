@@ -2,7 +2,7 @@ use crate::source::{IntoLocation, Location, Source};
 use std::cmp::{max, min};
 use std::fmt;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Hash)]
 pub struct Range {
     pub start: Location,
     pub end: Location,

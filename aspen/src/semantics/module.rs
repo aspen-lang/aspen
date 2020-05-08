@@ -1,5 +1,5 @@
 use crate::semantics::*;
-use crate::syntax::{Declaration, Navigator, Parser, Root};
+use crate::syntax::{Declaration, Navigator, Parser, ReferenceExpression, Root};
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
 use std::sync::Arc;
@@ -13,8 +13,14 @@ pub struct Module {
     pub host: Host,
 
     // Analyzers
-    exported_declarations: Memo<&'static analyzers::GetExportedDeclarations>,
-    collect_diagnostics: Once<&'static analyzers::CheckForDuplicateExports>,
+    exported_declarations: MemoOut<&'static analyzers::GetExportedDeclarations>,
+    collect_diagnostics: Once<
+        MergeTwo<
+            &'static analyzers::CheckForDuplicateExports,
+            &'static analyzers::CheckAllReferencesAreDefined,
+        >,
+    >,
+    find_declaration: Memo<&'static analyzers::FindDeclaration, usize>,
 }
 
 impl Module {
@@ -27,8 +33,12 @@ impl Module {
             diagnostics: Mutex::new(diagnostics),
             host,
 
-            exported_declarations: Memo::of(&analyzers::GetExportedDeclarations),
-            collect_diagnostics: Once::of(&analyzers::CheckForDuplicateExports),
+            exported_declarations: MemoOut::of(&analyzers::GetExportedDeclarations),
+            collect_diagnostics: Once::of(
+                (&analyzers::CheckForDuplicateExports)
+                    .and(&analyzers::CheckAllReferencesAreDefined),
+            ),
+            find_declaration: Memo::of(&analyzers::FindDeclaration),
         }
     }
 
@@ -52,10 +62,14 @@ impl Module {
         Navigator::new(self.root_node.clone())
     }
 
-    async fn run_analyzer<A: Analyzer>(&self, analyzer: A, input: A::Input) -> A::Output {
+    async fn run_analyzer<A: Analyzer>(
+        self: &Arc<Self>,
+        analyzer: A,
+        input: A::Input,
+    ) -> A::Output {
         let ctx = AnalysisContext {
             input,
-            uri: self.source.uri().clone(),
+            module: self.clone(),
             host: self.host.clone(),
             navigator: Navigator::new(self.root_node.clone()),
         };
@@ -63,7 +77,7 @@ impl Module {
         analyzer.analyze(ctx).await
     }
 
-    pub async fn diagnostics(&self) -> Diagnostics {
+    pub async fn diagnostics(self: &Arc<Self>) -> Diagnostics {
         let d = self.run_analyzer(&self.collect_diagnostics, ()).await;
 
         let mut diagnostics = self.diagnostics.lock().await;
@@ -75,8 +89,17 @@ impl Module {
         diagnostics.clone()
     }
 
-    pub async fn exported_declarations(&self) -> Vec<(String, Arc<Declaration>)> {
+    pub async fn exported_declarations(self: &Arc<Self>) -> Vec<(String, Arc<Declaration>)> {
         self.run_analyzer(&self.exported_declarations, ()).await
+    }
+
+    pub async fn declaration_referenced_by(
+        self: &Arc<Self>,
+        reference: &Arc<ReferenceExpression>,
+    ) -> Option<Arc<Declaration>> {
+        self.run_analyzer(&self.find_declaration, reference.clone())
+            .await
+            .ok()
     }
 }
 

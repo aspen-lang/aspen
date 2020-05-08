@@ -1,26 +1,18 @@
 use crate::semantics::{Host, Module};
 use crate::syntax::Navigator;
-use crate::URI;
 use futures::future;
 use std::borrow::BorrowMut;
 use std::collections::HashMap;
-use std::hash::Hash;
 use std::iter::FromIterator;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub struct AnalysisContext<I> {
-    pub uri: URI,
+    pub module: Arc<Module>,
     pub host: Host,
     pub navigator: Arc<Navigator>,
     pub input: I,
-}
-
-impl<I> AnalysisContext<I> {
-    pub async fn current_module(&self) -> Arc<Module> {
-        self.host.get(&self.uri).await.unwrap()
-    }
 }
 
 #[async_trait]
@@ -38,13 +30,50 @@ where
     }
 }
 
-pub struct Memo<A: Analyzer> {
-    mutex: Mutex<HashMap<A::Input, A::Output>>,
+pub struct MemoOut<A: Analyzer> {
+    mutex: Mutex<Option<A::Output>>,
     analyzer: A,
 }
 
-impl<A: Analyzer> Memo<A> {
-    pub fn of(analyzer: A) -> Memo<A> {
+impl<A: Analyzer> MemoOut<A> {
+    pub fn of(analyzer: A) -> MemoOut<A> {
+        MemoOut {
+            mutex: Mutex::new(None),
+            analyzer,
+        }
+    }
+}
+
+#[async_trait]
+impl<A> Analyzer for &MemoOut<A>
+where
+    A: Analyzer<Input = ()> + Clone + Sync + Send,
+    A::Output: Clone,
+{
+    type Input = ();
+    type Output = A::Output;
+
+    async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> A::Output {
+        let mut opt = self.mutex.lock().await;
+
+        match opt.as_ref() {
+            Some(t) => return t.clone(),
+            None => {}
+        }
+        let analyzer = self.analyzer.clone();
+        let t = analyzer.analyze(ctx).await;
+        *opt = Some(t.clone());
+        t
+    }
+}
+
+pub struct Memo<A: Analyzer, K> {
+    mutex: Mutex<HashMap<K, A::Output>>,
+    analyzer: A,
+}
+
+impl<A: Analyzer, K> Memo<A, K> {
+    pub fn of(analyzer: A) -> Memo<A, K> {
         Memo {
             mutex: Mutex::new(HashMap::new()),
             analyzer,
@@ -52,27 +81,37 @@ impl<A: Analyzer> Memo<A> {
     }
 }
 
+pub trait PtrAsUsize {
+    fn ptr_as_usize(&self) -> usize;
+}
+
+impl<T> PtrAsUsize for Arc<T> {
+    fn ptr_as_usize(&self) -> usize {
+        self.as_ref() as *const _ as usize
+    }
+}
+
 #[async_trait]
-impl<A> Analyzer for &Memo<A>
+impl<A> Analyzer for &Memo<A, usize>
 where
     A: Analyzer + Clone + Sync + Send,
-    A::Input: Hash + Eq + Clone,
     A::Output: Clone,
+    A::Input: PtrAsUsize,
 {
     type Input = A::Input;
     type Output = A::Output;
 
     async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> A::Output {
+        let key = ctx.input.ptr_as_usize();
         let mut map = self.mutex.lock().await;
 
-        match map.get(&ctx.input) {
+        match map.get(&key) {
             Some(t) => return t.clone(),
             None => {}
         }
         let analyzer = self.analyzer.clone();
-        let input = ctx.input.clone();
         let t = analyzer.analyze(ctx).await;
-        map.insert(input, t.clone());
+        map.insert(key, t.clone());
         t
     }
 }

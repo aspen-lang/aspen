@@ -1,7 +1,7 @@
 use crate::syntax::Node;
 use std::sync::Arc;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Navigator {
     parent: Option<Arc<Navigator>>,
     pub node: Arc<dyn Node>,
@@ -36,7 +36,7 @@ impl Navigator {
 
     pub fn down_to(self: &Arc<Self>, node: &Arc<dyn Node>) -> Option<Arc<Navigator>> {
         for nav in self.traverse() {
-            if Arc::ptr_eq(&nav.node, node) {
+            if nav.node.range() == node.range() {
                 return Some(nav.clone());
             }
         }
@@ -72,6 +72,7 @@ impl Navigator {
     }
 }
 
+#[derive(Debug)]
 struct Traverse {
     stack: Vec<Arc<Navigator>>,
 }

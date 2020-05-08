@@ -1,6 +1,7 @@
 use crate::source::Source;
 use std::cmp::Ordering;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Location {
@@ -16,6 +17,12 @@ impl Default for Location {
             line: Default::default(),
             character: Default::default(),
         }
+    }
+}
+
+impl Hash for Location {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.offset.hash(state)
     }
 }
 
