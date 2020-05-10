@@ -40,6 +40,8 @@ impl TypeTracer {
 
                     // TODO: Class types
                     Declaration::Class(_) => Type::Failed { diagnosed: false },
+
+                    Declaration::Instance(_) => Type::Failed { diagnosed: false },
                 }
             }
         }

@@ -1,6 +1,8 @@
 use crate::semantics::types::Type;
 use crate::semantics::*;
-use crate::syntax::{Declaration, Expression, Navigator, Parser, ReferenceExpression, Root};
+use crate::syntax::{
+    Declaration, Expression, Navigator, Parser, ReferenceExpression, ReferenceTypeExpression, Root,
+};
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
 use std::sync::Arc;
@@ -22,6 +24,7 @@ pub struct Module {
         >,
     >,
     find_declaration: Memo<analyzers::FindDeclaration, usize>,
+    find_type_declaration: Memo<analyzers::FindTypeDeclaration, usize>,
     get_type_of_expression: Memo<analyzers::GetTypeOfExpression, usize>,
 }
 
@@ -42,6 +45,7 @@ impl Module {
                     .and(analyzers::CheckForFailedTypeInference),
             ),
             find_declaration: Memo::of(analyzers::FindDeclaration),
+            find_type_declaration: Memo::of(analyzers::FindTypeDeclaration),
             get_type_of_expression: Memo::of(analyzers::GetTypeOfExpression),
         }
     }
@@ -102,6 +106,15 @@ impl Module {
         reference: Arc<ReferenceExpression>,
     ) -> Option<Arc<Declaration>> {
         self.run_analyzer(&self.find_declaration, reference)
+            .await
+            .ok()
+    }
+
+    pub async fn declaration_referenced_by_type(
+        self: &Arc<Self>,
+        reference: Arc<ReferenceTypeExpression>,
+    ) -> Option<Arc<Declaration>> {
+        self.run_analyzer(&self.find_type_declaration, reference)
             .await
             .ok()
     }

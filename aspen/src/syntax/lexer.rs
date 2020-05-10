@@ -95,6 +95,8 @@ impl<'a> Lexer<'a> {
         match self.take_symbol() {
             "object" => ObjectKeyword,
             "class" => ClassKeyword,
+            "instance" => InstanceKeyword,
+            "of" => OfKeyword,
             _ => Identifier,
         }
     }

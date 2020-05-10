@@ -152,6 +152,7 @@ impl ParseStrategy<Arc<Declaration>> for ParseDeclaration {
         ParseObjectDeclaration
             .map(Declaration::Object)
             .or(ParseClassDeclaration.map(Declaration::Class))
+            .or(ParseInstanceDeclaration.map(Declaration::Instance))
             .parse(parser)
             .await
             .map(Arc::new)
@@ -187,6 +188,79 @@ impl ParseStrategy<Arc<ObjectDeclaration>> for ParseObjectDeclaration {
                     .await
             })
             .await
+    }
+}
+
+struct ParseInstanceDeclaration;
+
+#[async_trait]
+impl ParseStrategy<Arc<InstanceDeclaration>> for ParseInstanceDeclaration {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<InstanceDeclaration>> {
+        parser
+            .expect(TokenKind::InstanceKeyword, "instance declaration")
+            .and_then(async move |instance_keyword| {
+                ParseTypeExpression
+                    .parse(parser)
+                    .await
+                    .and_then(async move |lhs| {
+                        parser
+                            .expect(TokenKind::OfKeyword, "`of` keyword")
+                            .and_then(async move |of_keyword| {
+                                ParseTypeExpression
+                                    .parse(parser)
+                                    .await
+                                    .and_then(async move |rhs| {
+                                        let mut diagnostics = Diagnostics::new();
+
+                                        let period =
+                                            parser.expect_optional_period(&mut diagnostics);
+
+                                        Succeeded(
+                                            diagnostics,
+                                            Arc::new(InstanceDeclaration {
+                                                source: parser.source.clone(),
+                                                instance_keyword,
+                                                lhs,
+                                                of_keyword,
+                                                rhs,
+                                                period,
+                                            }),
+                                        )
+                                    })
+                                    .await
+                            })
+                            .await
+                    })
+                    .await
+            })
+            .await
+    }
+}
+
+struct ParseTypeExpression;
+
+#[async_trait]
+impl ParseStrategy<Arc<TypeExpression>> for ParseTypeExpression {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<TypeExpression>> {
+        ParseReferenceTypeExpression
+            .parse(parser)
+            .await
+            .map(TypeExpression::Reference)
+            .map(Arc::new)
+    }
+}
+
+struct ParseReferenceTypeExpression;
+
+#[async_trait]
+impl ParseStrategy<Arc<ReferenceTypeExpression>> for ParseReferenceTypeExpression {
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ReferenceTypeExpression>> {
+        ParseSymbol.parse(parser).await.map(|symbol| {
+            Arc::new(ReferenceTypeExpression {
+                source: parser.source.clone(),
+                symbol,
+            })
+        })
     }
 }
 

@@ -59,4 +59,6 @@ pub enum TokenKind {
 
     ObjectKeyword,
     ClassKeyword,
+    InstanceKeyword,
+    OfKeyword,
 }

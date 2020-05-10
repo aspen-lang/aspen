@@ -274,6 +274,7 @@ impl<'ctx> Generator<'ctx> {
                 self.generate_object_declaration(host_module, module, d)
             }
             syntax::Declaration::Class(d) => self.generate_class_declaration(d),
+            syntax::Declaration::Instance(_) => Ok(()),
         }
     }
 

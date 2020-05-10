@@ -1,7 +1,6 @@
 use crate::syntax::Token;
 use crate::{Range, Source};
 use std::fmt;
-use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 pub trait Node: fmt::Debug + Send + Sync {
@@ -24,11 +23,10 @@ pub trait Node: fmt::Debug + Send + Sync {
     fn as_expression(self: Arc<Self>) -> Option<Arc<Expression>> {
         None
     }
-}
 
-fn hash_node<N: Node, H: Hasher>(node: &N, state: &mut H) {
-    Arc::into_raw(node.source().clone()).hash(state);
-    node.range().hash(state);
+    fn as_reference_type_expression(self: Arc<Self>) -> Option<Arc<ReferenceTypeExpression>> {
+        None
+    }
 }
 
 pub trait IntoNode {
@@ -222,11 +220,13 @@ impl Node for Inline {
 /// ```bnf
 /// Declaration :=
 ///   ObjectDeclaration |
-///   ClassDeclaration
+///   ClassDeclaration |
+///   InstanceDeclaration
 /// ```
 pub enum Declaration {
     Object(Arc<ObjectDeclaration>),
     Class(Arc<ClassDeclaration>),
+    Instance(Arc<InstanceDeclaration>),
 }
 
 impl fmt::Debug for Declaration {
@@ -234,6 +234,7 @@ impl fmt::Debug for Declaration {
         match self {
             Declaration::Object(n) => f.debug_tuple("Declaration::Object").field(n).finish(),
             Declaration::Class(n) => f.debug_tuple("Declaration::Class").field(n).finish(),
+            Declaration::Instance(n) => f.debug_tuple("Declaration::Instance").field(n).finish(),
         }
     }
 }
@@ -243,6 +244,7 @@ impl Declaration {
         match self {
             Declaration::Object(n) => n.symbol(),
             Declaration::Class(n) => n.symbol(),
+            Declaration::Instance(_) => "",
         }
     }
 }
@@ -252,6 +254,7 @@ impl Node for Declaration {
         match self {
             Declaration::Object(n) => n.source(),
             Declaration::Class(n) => n.source(),
+            Declaration::Instance(n) => n.source(),
         }
     }
 
@@ -259,6 +262,7 @@ impl Node for Declaration {
         match self {
             Declaration::Object(n) => n.range(),
             Declaration::Class(n) => n.range(),
+            Declaration::Instance(n) => n.range(),
         }
     }
 
@@ -266,6 +270,7 @@ impl Node for Declaration {
         match self {
             Declaration::Object(n) => Children::Single(Some(n.clone())),
             Declaration::Class(n) => Children::Single(Some(n.clone())),
+            Declaration::Instance(n) => Children::Single(Some(n.clone())),
         }
     }
 
@@ -367,6 +372,126 @@ impl Node for ClassDeclaration {
 }
 
 /// ```bnf
+/// InstanceDeclaration :=
+///   INSTANCE_KEYWORD
+///   TypeExpression
+///   OF_KEYWORD
+///   TypeExpression
+///   PERIOD
+/// ```
+pub struct InstanceDeclaration {
+    pub source: Arc<Source>,
+    pub instance_keyword: Arc<Token>,
+    pub lhs: Arc<TypeExpression>,
+    pub of_keyword: Arc<Token>,
+    pub rhs: Arc<TypeExpression>,
+    pub period: Option<Arc<Token>>,
+}
+
+impl fmt::Debug for InstanceDeclaration {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("InstanceDeclaration")
+            .field("lhs", &self.lhs)
+            .field("rhs", &self.rhs)
+            .finish()
+    }
+}
+
+impl Node for InstanceDeclaration {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.instance_keyword.range.through(
+            self.period
+                .as_ref()
+                .map(|t| t.range.clone())
+                .unwrap_or(self.rhs.range()),
+        )
+    }
+
+    fn children(&self) -> Children {
+        Children::Iter(Box::new(
+            vec![self.lhs.clone().into_node(), self.rhs.clone().into_node()].into_iter(),
+        ))
+    }
+}
+
+/// ```bnf
+/// TypeExpression :=
+///   ReferenceTypeExpression
+/// ```
+pub enum TypeExpression {
+    Reference(Arc<ReferenceTypeExpression>),
+}
+
+impl fmt::Debug for TypeExpression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            TypeExpression::Reference(n) => {
+                f.debug_tuple("TypeExpression::Reference").field(n).finish()
+            }
+        }
+    }
+}
+
+impl Node for TypeExpression {
+    fn source(&self) -> &Arc<Source> {
+        match self {
+            TypeExpression::Reference(n) => n.source(),
+        }
+    }
+
+    fn range(&self) -> Range {
+        match self {
+            TypeExpression::Reference(n) => n.range(),
+        }
+    }
+
+    fn children(&self) -> Children {
+        match self {
+            TypeExpression::Reference(n) => Children::Single(Some(n.clone())),
+        }
+    }
+}
+
+/// ```bnf
+/// ReferenceTypeExpression :=
+///   Symbol
+/// ```
+pub struct ReferenceTypeExpression {
+    pub source: Arc<Source>,
+    pub symbol: Arc<Symbol>,
+}
+
+impl fmt::Debug for ReferenceTypeExpression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ReferenceTypeExpression")
+            .field("symbol", &self.symbol)
+            .finish()
+    }
+}
+
+impl Node for ReferenceTypeExpression {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.symbol.range()
+    }
+
+    fn children(&self) -> Children {
+        Children::Single(Some(self.symbol.clone()))
+    }
+
+    fn as_reference_type_expression(self: Arc<Self>) -> Option<Arc<ReferenceTypeExpression>> {
+        Some(self)
+    }
+}
+
+/// ```bnf
 /// Symbol :=
 ///   IDENTIFIER
 /// ```
@@ -455,12 +580,6 @@ impl fmt::Debug for ReferenceExpression {
         f.debug_struct("ReferenceExpression")
             .field("symbol", &self.symbol)
             .finish()
-    }
-}
-
-impl Hash for ReferenceExpression {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        hash_node(self, state);
     }
 }
 

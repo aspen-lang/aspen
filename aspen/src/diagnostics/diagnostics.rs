@@ -36,7 +36,11 @@ impl Diagnostics {
     }
 
     pub fn push<D: Diagnostic + 'static>(&mut self, diagnostic: D) {
-        self.diagnostics.push(Arc::new(diagnostic));
+        self.push_dyn(Arc::new(diagnostic));
+    }
+
+    pub fn push_dyn(&mut self, diagnostic: Arc<dyn Diagnostic>) {
+        self.diagnostics.push(diagnostic);
     }
 
     pub fn push_all<D: Into<Diagnostics>>(&mut self, diagnostics: D) {
