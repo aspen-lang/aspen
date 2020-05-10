@@ -5,11 +5,11 @@ use std::collections::HashSet;
 pub struct CheckForDuplicateExports;
 
 #[async_trait]
-impl Analyzer for &CheckForDuplicateExports {
+impl Analyzer for CheckForDuplicateExports {
     type Input = ();
     type Output = Diagnostics;
 
-    async fn analyze(self, ctx: AnalysisContext<()>) -> Diagnostics {
+    async fn analyze(&self, ctx: AnalysisContext<()>) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         let mut names = HashSet::new();
         for (name, node) in ctx.module.exported_declarations().await {

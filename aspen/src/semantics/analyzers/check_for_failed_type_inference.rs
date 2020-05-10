@@ -8,11 +8,11 @@ use std::sync::Arc;
 pub struct CheckForFailedTypeInference;
 
 #[async_trait]
-impl Analyzer for &CheckForFailedTypeInference {
+impl Analyzer for CheckForFailedTypeInference {
     type Input = ();
     type Output = Diagnostics;
 
-    async fn analyze(self, ctx: AnalysisContext<()>) -> Diagnostics {
+    async fn analyze(&self, ctx: AnalysisContext<()>) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         let types = futures::future::join_all(
             ctx.navigator

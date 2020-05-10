@@ -4,14 +4,15 @@ use crate::SourceKind;
 use std::option::NoneError;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct FindDeclaration;
 
 #[async_trait]
-impl<'a> Analyzer for &'a FindDeclaration {
+impl Analyzer for FindDeclaration {
     type Input = Arc<ReferenceExpression>;
     type Output = Result<Arc<Declaration>, FindDeclarationError>;
 
-    async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> Self::Output {
+    async fn analyze(&self, ctx: AnalysisContext<Self::Input>) -> Self::Output {
         let reference = ctx.input.clone();
         let name = reference.symbol.identifier.lexeme();
 

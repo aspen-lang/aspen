@@ -18,12 +18,12 @@ pub struct AnalysisContext<I> {
 #[async_trait]
 pub trait Analyzer
 where
-    Self: Send + Sized,
+    Self: Send + Sized + Sync,
 {
     type Input: Send;
     type Output: Send;
 
-    async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> Self::Output;
+    async fn analyze(&self, ctx: AnalysisContext<Self::Input>) -> Self::Output;
 
     fn and<B: Analyzer<Output = Self::Output>>(self, b: B) -> MergeTwo<Self, B> {
         MergeTwo::both(self, b)
@@ -45,7 +45,7 @@ impl<A: Analyzer> MemoOut<A> {
 }
 
 #[async_trait]
-impl<A> Analyzer for &MemoOut<A>
+impl<A> Analyzer for MemoOut<A>
 where
     A: Analyzer<Input = ()> + Clone + Sync + Send,
     A::Output: Clone,
@@ -53,7 +53,7 @@ where
     type Input = ();
     type Output = A::Output;
 
-    async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> A::Output {
+    async fn analyze(&self, ctx: AnalysisContext<Self::Input>) -> A::Output {
         let mut opt = self.mutex.lock().await;
 
         match opt.as_ref() {
@@ -92,7 +92,7 @@ impl<T> PtrAsUsize for Arc<T> {
 }
 
 #[async_trait]
-impl<A> Analyzer for &Memo<A, usize>
+impl<A> Analyzer for Memo<A, usize>
 where
     A: Analyzer + Clone + Sync + Send,
     A::Output: Clone,
@@ -101,7 +101,7 @@ where
     type Input = A::Input;
     type Output = A::Output;
 
-    async fn analyze(self, ctx: AnalysisContext<Self::Input>) -> A::Output {
+    async fn analyze(&self, ctx: AnalysisContext<Self::Input>) -> A::Output {
         let key = ctx.input.ptr_as_usize();
         let mut map = self.mutex.lock().await;
 
@@ -129,7 +129,7 @@ impl<A> Once<A> {
 }
 
 #[async_trait]
-impl<A> Analyzer for &Once<A>
+impl<A> Analyzer for Once<A>
 where
     A: Analyzer<Input = ()>,
     A::Output: Default,
@@ -137,7 +137,7 @@ where
     type Input = ();
     type Output = A::Output;
 
-    async fn analyze(self, ctx: AnalysisContext<()>) -> A::Output {
+    async fn analyze(&self, ctx: AnalysisContext<()>) -> A::Output {
         let mut lock = self.analyzer.lock().await;
         let opt: &mut Option<A> = lock.borrow_mut();
 
@@ -172,7 +172,7 @@ where
     type Input = I;
     type Output = O;
 
-    async fn analyze(self, ctx: AnalysisContext<I>) -> O {
+    async fn analyze(&self, ctx: AnalysisContext<I>) -> O {
         let (a, b) = future::join(self.a.analyze(ctx.clone()), self.b.analyze(ctx)).await;
 
         vec![a, b].into_iter().collect()

@@ -5,11 +5,11 @@ use std::convert::identity;
 pub struct CheckAllReferencesAreDefined;
 
 #[async_trait]
-impl Analyzer for &CheckAllReferencesAreDefined {
+impl Analyzer for CheckAllReferencesAreDefined {
     type Input = ();
     type Output = Diagnostics;
 
-    async fn analyze(self, ctx: AnalysisContext<()>) -> Diagnostics {
+    async fn analyze(&self, ctx: AnalysisContext<()>) -> Diagnostics {
         let mut diagnostics = Diagnostics::new();
         let module = &ctx.module.clone();
         for diagnostic in

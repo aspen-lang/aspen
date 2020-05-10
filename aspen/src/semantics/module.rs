@@ -14,18 +14,15 @@ pub struct Module {
     pub host: Host,
 
     // Analyzers
-    exported_declarations: MemoOut<&'static analyzers::GetExportedDeclarations>,
+    exported_declarations: MemoOut<analyzers::GetExportedDeclarations>,
     collect_diagnostics: Once<
         MergeTwo<
-            MergeTwo<
-                &'static analyzers::CheckForDuplicateExports,
-                &'static analyzers::CheckAllReferencesAreDefined,
-            >,
-            &'static analyzers::CheckForFailedTypeInference,
+            MergeTwo<analyzers::CheckForDuplicateExports, analyzers::CheckAllReferencesAreDefined>,
+            analyzers::CheckForFailedTypeInference,
         >,
     >,
-    find_declaration: Memo<&'static analyzers::FindDeclaration, usize>,
-    get_type_of_expression: Memo<&'static analyzers::GetTypeOfExpression, usize>,
+    find_declaration: Memo<analyzers::FindDeclaration, usize>,
+    get_type_of_expression: Memo<analyzers::GetTypeOfExpression, usize>,
 }
 
 impl Module {
@@ -38,14 +35,14 @@ impl Module {
             diagnostics: Mutex::new(diagnostics),
             host,
 
-            exported_declarations: MemoOut::of(&analyzers::GetExportedDeclarations),
+            exported_declarations: MemoOut::of(analyzers::GetExportedDeclarations),
             collect_diagnostics: Once::of(
-                (&analyzers::CheckForDuplicateExports)
-                    .and(&analyzers::CheckAllReferencesAreDefined)
-                    .and(&analyzers::CheckForFailedTypeInference),
+                (analyzers::CheckForDuplicateExports)
+                    .and(analyzers::CheckAllReferencesAreDefined)
+                    .and(analyzers::CheckForFailedTypeInference),
             ),
-            find_declaration: Memo::of(&analyzers::FindDeclaration),
-            get_type_of_expression: Memo::of(&analyzers::GetTypeOfExpression),
+            find_declaration: Memo::of(analyzers::FindDeclaration),
+            get_type_of_expression: Memo::of(analyzers::GetTypeOfExpression),
         }
     }
 
@@ -71,7 +68,7 @@ impl Module {
 
     async fn run_analyzer<A: Analyzer>(
         self: &Arc<Self>,
-        analyzer: A,
+        analyzer: &A,
         input: A::Input,
     ) -> A::Output {
         let ctx = AnalysisContext {
