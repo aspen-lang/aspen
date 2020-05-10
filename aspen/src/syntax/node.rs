@@ -20,6 +20,10 @@ pub trait Node: fmt::Debug + Send + Sync {
     fn as_reference_expression(self: Arc<Self>) -> Option<Arc<ReferenceExpression>> {
         None
     }
+
+    fn as_expression(self: Arc<Self>) -> Option<Arc<Expression>> {
+        None
+    }
 }
 
 fn hash_node<N: Node, H: Hasher>(node: &N, state: &mut H) {
@@ -430,6 +434,10 @@ impl Node for Expression {
         match self {
             Expression::Reference(n) => Children::Single(Some(n.clone())),
         }
+    }
+
+    fn as_expression(self: Arc<Self>) -> Option<Arc<Expression>> {
+        Some(self)
     }
 }
 

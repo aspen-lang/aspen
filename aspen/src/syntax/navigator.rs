@@ -1,4 +1,4 @@
-use crate::syntax::Node;
+use crate::syntax::{Expression, Node};
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -69,6 +69,11 @@ impl Navigator {
         }
 
         None
+    }
+
+    pub fn all_expressions(self: &Arc<Self>) -> impl Iterator<Item = Arc<Expression>> {
+        self.traverse()
+            .filter_map(|n| n.node.clone().as_expression())
     }
 }
 

@@ -1,4 +1,5 @@
 use crate::generation::GenResult;
+use crate::semantics::types::Type;
 use crate::semantics::{Host, Module as HostModule};
 use crate::syntax;
 use futures::executor::block_on;
@@ -221,41 +222,45 @@ impl<'ctx> Generator<'ctx> {
         builder: &Builder<'ctx>,
         expression: &Arc<syntax::Expression>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
+        let type_ = block_on(host_module.get_type_of(expression.clone()));
         match expression.as_ref() {
             syntax::Expression::Reference(r) => {
-                self.generate_reference_expression(host_module, module, builder, r)
+                self.generate_reference_expression(module, builder, r, type_)
             }
         }
     }
 
     fn generate_reference_expression(
         &self,
-        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         builder: &Builder<'ctx>,
-        expression: &Arc<syntax::ReferenceExpression>,
+        _expression: &Arc<syntax::ReferenceExpression>,
+        type_: Type,
     ) -> GenResult<BasicValueEnum<'ctx>> {
-        let declaration = block_on(host_module.declaration_referenced_by(expression)).unwrap();
+        match type_ {
+            Type::Object(o) => {
+                let symbol = o.symbol();
 
-        let symbol = declaration.symbol();
+                let type_ = module.get_struct_type(symbol).unwrap();
 
-        let type_ = module.get_struct_type(symbol).unwrap();
+                let new_fn_name = format!("{}::New", symbol);
+                let new_fn = module
+                    .get_function(new_fn_name.as_str())
+                    .unwrap_or_else(|| {
+                        module.add_function(
+                            new_fn_name.as_str(),
+                            self.void_type
+                                .fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
+                            Some(Linkage::External),
+                        )
+                    });
 
-        let new_fn_name = format!("{}::New", symbol);
-        let new_fn = module
-            .get_function(new_fn_name.as_str())
-            .unwrap_or_else(|| {
-                module.add_function(
-                    new_fn_name.as_str(),
-                    self.void_type
-                        .fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
-                    Some(Linkage::External),
-                )
-            });
-
-        let instance = builder.build_alloca(type_, "instance");
-        builder.build_call(new_fn, &[instance.into()], "");
-        Ok(instance.into())
+                let instance = builder.build_alloca(type_, "instance");
+                builder.build_call(new_fn, &[instance.into()], "");
+                Ok(instance.into())
+            }
+            t => unimplemented!("generation for references to {:?}", t),
+        }
     }
 
     fn generate_declaration(

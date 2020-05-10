@@ -2,11 +2,15 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::syntax::{ObjectDeclaration, ClassDeclaration};
+use crate::syntax::{ClassDeclaration, ObjectDeclaration};
+
+mod trace;
+
+pub use self::trace::*;
 
 #[derive(Clone, Debug)]
 pub enum Type {
-    Failed,
+    Failed { diagnosed: bool },
     Object(Arc<ObjectDeclaration>),
     Unbounded(String, usize),
 }
@@ -15,9 +19,11 @@ impl Type {
     fn check_equality(&self, other: &Type) -> TypeCheck {
         use Type::*;
         match (self, other) {
-            (Failed, _) | (_, Failed) => Ok(()),
+            (Failed { .. }, _) | (_, Failed { .. }) => Ok(()),
             (Unbounded(_, a), Unbounded(_, b)) if a == b => Ok(()),
-            (Unbounded(_, _), _) | (_, Unbounded(_, _)) => Err(TypeError::TypesAreNotEqual(self.clone(), other.clone())),
+            (Unbounded(_, _), _) | (_, Unbounded(_, _)) => {
+                Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+            }
             (Object(a), Object(b)) => {
                 if Arc::ptr_eq(a, b) {
                     Ok(())
@@ -31,11 +37,14 @@ impl Type {
     fn check_assignability(&self, other: &Type) -> TypeCheck {
         use Type::*;
         match (self, other) {
-            (Failed, _) | (_, Failed) => Ok(()),
+            (Failed { .. }, _) | (_, Failed { .. }) => Ok(()),
             (Unbounded(_, _), Unbounded(_, _)) => Ok(()),
             (Object(_), Object(_)) => self.check_equality(other),
             (Unbounded(_, _), Object(_)) => Ok(()),
-            (Object(object), Unbounded(_, _)) => Err(TypeError::ObjectsHaveNoSubTypes(object.clone(), other.clone())),
+            (Object(object), Unbounded(_, _)) => Err(TypeError::ObjectsHaveNoSubTypes(
+                object.clone(),
+                other.clone(),
+            )),
         }
     }
 }
@@ -83,25 +92,33 @@ impl TypeSlot {
         *opt = Some(required);
     }
 
+    pub async fn get_apparent(&self) -> Option<Type> {
+        self.apparent.lock().await.clone()
+    }
+
+    pub async fn get_required(&self) -> Option<Type> {
+        self.required.lock().await.clone()
+    }
+
+    pub async fn wait_for_apparent(&self) -> Type {
+        loop {
+            if let Some(t) = self.get_apparent().await {
+                return t;
+            }
+        }
+    }
+
+    pub async fn wait_for_required(&self) -> Type {
+        loop {
+            if let Some(t) = self.get_required().await {
+                return t.clone();
+            }
+        }
+    }
+
     pub async fn check(&self) -> TypeCheck {
-        let apparent;
-        let required;
-        loop {
-            if let Some(a) = self.apparent.lock().await.as_ref() {
-                apparent = a.clone();
-                break;
-            } else {
-                continue;
-            }
-        }
-        loop {
-            if let Some(r) = self.required.lock().await.as_ref() {
-                required = r.clone();
-                break;
-            } else {
-                continue;
-            }
-        }
+        let apparent = self.wait_for_apparent().await;
+        let required = self.wait_for_required().await;
 
         match self.variance {
             Variance::Invariant => required.check_equality(&apparent)?,
@@ -127,8 +144,8 @@ pub enum TypeError {
 mod tests {
     use tokio::task;
 
-    use crate::Source;
     use crate::syntax::{Declaration, Parser, Root};
+    use crate::Source;
 
     use super::*;
 

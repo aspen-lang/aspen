@@ -1,5 +1,6 @@
+use crate::semantics::types::Type;
 use crate::semantics::*;
-use crate::syntax::{Declaration, Navigator, Parser, ReferenceExpression, Root};
+use crate::syntax::{Declaration, Expression, Navigator, Parser, ReferenceExpression, Root};
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
 use std::sync::Arc;
@@ -16,11 +17,15 @@ pub struct Module {
     exported_declarations: MemoOut<&'static analyzers::GetExportedDeclarations>,
     collect_diagnostics: Once<
         MergeTwo<
-            &'static analyzers::CheckForDuplicateExports,
-            &'static analyzers::CheckAllReferencesAreDefined,
+            MergeTwo<
+                &'static analyzers::CheckForDuplicateExports,
+                &'static analyzers::CheckAllReferencesAreDefined,
+            >,
+            &'static analyzers::CheckForFailedTypeInference,
         >,
     >,
     find_declaration: Memo<&'static analyzers::FindDeclaration, usize>,
+    get_type_of_expression: Memo<&'static analyzers::GetTypeOfExpression, usize>,
 }
 
 impl Module {
@@ -36,9 +41,11 @@ impl Module {
             exported_declarations: MemoOut::of(&analyzers::GetExportedDeclarations),
             collect_diagnostics: Once::of(
                 (&analyzers::CheckForDuplicateExports)
-                    .and(&analyzers::CheckAllReferencesAreDefined),
+                    .and(&analyzers::CheckAllReferencesAreDefined)
+                    .and(&analyzers::CheckForFailedTypeInference),
             ),
             find_declaration: Memo::of(&analyzers::FindDeclaration),
+            get_type_of_expression: Memo::of(&analyzers::GetTypeOfExpression),
         }
     }
 
@@ -95,11 +102,16 @@ impl Module {
 
     pub async fn declaration_referenced_by(
         self: &Arc<Self>,
-        reference: &Arc<ReferenceExpression>,
+        reference: Arc<ReferenceExpression>,
     ) -> Option<Arc<Declaration>> {
-        self.run_analyzer(&self.find_declaration, reference.clone())
+        self.run_analyzer(&self.find_declaration, reference)
             .await
             .ok()
+    }
+
+    pub async fn get_type_of(self: &Arc<Self>, expression: Arc<Expression>) -> Type {
+        self.run_analyzer(&self.get_type_of_expression, expression.clone())
+            .await
     }
 }
 
