@@ -178,18 +178,18 @@ impl Node for Module {
 /// ```bnf
 /// Inline :=
 ///   Declaration |
-///   Expression
+///   (Expression PERIOD)
 /// ```
 pub enum Inline {
     Declaration(Arc<Declaration>),
-    Expression(Arc<Expression>),
+    Expression(Arc<Expression>, Option<Arc<Token>>),
 }
 
 impl fmt::Debug for Inline {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Inline::Declaration(n) => f.debug_tuple("Inline::Declaration").field(n).finish(),
-            Inline::Expression(n) => f.debug_tuple("Inline::Expression").field(n).finish(),
+            Inline::Expression(n, _) => f.debug_tuple("Inline::Expression").field(n).finish(),
         }
     }
 }
@@ -198,21 +198,27 @@ impl Node for Inline {
     fn source(&self) -> &Arc<Source> {
         match self {
             Inline::Declaration(n) => n.source(),
-            Inline::Expression(n) => n.source(),
+            Inline::Expression(n, _) => n.source(),
         }
     }
 
     fn range(&self) -> Range {
         match self {
             Inline::Declaration(n) => n.range(),
-            Inline::Expression(n) => n.range(),
+            Inline::Expression(n, p) => {
+                let range = n.range();
+                match p {
+                    Some(p) => range.through(p.range.clone()),
+                    None => range,
+                }
+            }
         }
     }
 
     fn children(&self) -> Children {
         match self {
             Inline::Declaration(n) => Children::Single(Some(n.clone())),
-            Inline::Expression(n) => Children::Single(Some(n.clone())),
+            Inline::Expression(n, _) => Children::Single(Some(n.clone())),
         }
     }
 }

@@ -161,7 +161,7 @@ impl<'ctx> Generator<'ctx> {
         inline: &Arc<syntax::Inline>,
     ) -> GenResult<Option<FunctionValue<'ctx>>> {
         match inline.as_ref() {
-            syntax::Inline::Expression(expression) => {
+            syntax::Inline::Expression(expression, _) => {
                 let builder = self.context.create_builder();
 
                 let run_fn =

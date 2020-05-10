@@ -93,3 +93,9 @@ impl<T> PartialOrd for ParseResult<T> {
         })
     }
 }
+
+impl<T> From<T> for ParseResult<T> {
+    fn from(t: T) -> ParseResult<T> {
+        ParseResult::Succeeded(Diagnostics::new(), t)
+    }
+}

@@ -95,10 +95,20 @@ struct ParseInline;
 #[async_trait]
 impl ParseStrategy<Arc<Inline>> for ParseInline {
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Inline>> {
-        ParseExpression
-            .map(Inline::Expression)
-            .or(ParseDeclaration.map(Inline::Declaration))
+        ParseDeclaration
+            .map(Inline::Declaration)
+            .or(ParseExpression.map(|e| Inline::Expression(e, None)))
             .parse(parser)
+            .await
+            .and_then(async move |inline| {
+                if let Inline::Expression(e, _) = inline {
+                    let mut diagnostics = Diagnostics::new();
+                    let period = parser.expect_optional_period(&mut diagnostics);
+                    Inline::Expression(e, period).into()
+                } else {
+                    inline.into()
+                }
+            })
             .await
             .map(Arc::new)
     }
