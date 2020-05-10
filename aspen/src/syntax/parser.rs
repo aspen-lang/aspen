@@ -288,27 +288,4 @@ mod tests {
 
         assert_eq!(module.as_module().unwrap().declarations.len(), 1)
     }
-
-    #[tokio::test]
-    async fn two_object_declarations() {
-        let source = Source::new("test:two-object-declarations", "object A. object B.");
-        let mut parser = Parser::new(source);
-        let (module, _) = parser.parse().await;
-
-        assert_eq!(
-            format!("{:#?}", module),
-            r#"
-            two-object-declarations (Module) [
-                ObjectDeclaration {
-                    symbol: Symbol("A"),
-                },
-                ObjectDeclaration {
-                    symbol: Symbol("B"),
-                },
-            ]
-            "#
-            .trim()
-            .replace("\n            ", "\n")
-        );
-    }
 }
