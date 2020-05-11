@@ -8,4 +8,7 @@ edition = "2018"
 name = "aspen_runtime"
 crate-type = ["staticlib"]
 
+[features]
+at-runtime = []
+
 [dependencies]
