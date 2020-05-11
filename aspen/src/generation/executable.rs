@@ -1,7 +1,6 @@
 use crate::generation::{GenError, GenResult, Generator, ObjectFile};
 use crate::semantics::Host;
 use futures::future::join_all;
-use std::env::consts::ARCH;
 use std::env::{current_dir, current_exe};
 use std::fmt;
 use std::path::PathBuf;
@@ -55,14 +54,17 @@ impl Executable {
         runtime_path.pop();
         runtime_path.push("libaspen_runtime.a");
 
-        let mut ld = tokio::process::Command::new("/usr/local/opt/llvm/bin/ld64.lld");
+        let mut ld = tokio::process::Command::new("ld");
 
-        ld.arg("-sdk_version")
-            .arg("10.0.0")
-            .arg("-arch")
-            .arg(ARCH)
-            .arg("-lSystem")
-            .arg(runtime_path);
+        if cfg!(target_os = "macos") {
+            ld.arg("-lSystem");
+        }
+
+        if cfg!(target_os = "linux") {
+            ld.arg("-lc");
+        }
+
+        ld.arg(runtime_path);
 
         for object in objects.iter() {
             ld.arg(&object.path);
