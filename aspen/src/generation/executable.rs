@@ -52,25 +52,26 @@ impl Executable {
     pub(crate) async fn write(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
         let mut runtime_path = current_exe()?;
         runtime_path.pop();
-        runtime_path.push("libaspen_runtime.a");
 
-        let mut ld = tokio::process::Command::new("ld");
+        let mut ld = tokio::process::Command::new("cc");
 
-        if cfg!(target_os = "macos") {
-            ld.arg("-lSystem");
-        }
-
-        if cfg!(target_os = "linux") {
-            ld.arg("-lc");
-        }
-
-        ld.arg(runtime_path);
+        ld.arg("-static");
 
         for object in objects.iter() {
             ld.arg(&object.path);
         }
 
-        let status = ld.arg("-o").arg(&path).spawn()?.await?;
+        ld.arg(format!("-L{}", runtime_path.display())).arg("-laspen_runtime");
+
+        if cfg!(target_os = "macos") {
+        }
+
+        if cfg!(target_os = "linux") {
+        }
+
+        ld.arg("-o").arg(&path);
+
+        let status = ld.spawn()?.await?;
 
         if !status.success() {
             return Err(GenError::FailedToLink);

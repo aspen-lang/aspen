@@ -8,7 +8,13 @@ edition = "2018"
 name = "aspen_runtime"
 crate-type = ["staticlib"]
 
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+
 [features]
-at-runtime = []
+standalone = []
 
 [dependencies]
