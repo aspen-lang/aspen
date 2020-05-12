@@ -9,7 +9,7 @@ pub type GenResult<T> = Result<T, GenError>;
 pub enum GenError {
     Multi(Vec<GenError>),
     IO(io::Error),
-    FailedToLink,
+    FailedToLink(String),
     NoTargetMachine(TargetTriple),
     LLVM(String),
     UndefinedReference,

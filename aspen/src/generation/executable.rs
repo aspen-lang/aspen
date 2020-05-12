@@ -53,25 +53,27 @@ impl Executable {
         let mut runtime_path = current_exe()?;
         runtime_path.pop();
 
-        let mut ld = tokio::process::Command::new("cc");
+        let mut cc = std::process::Command::new("cc");
 
         if cfg!(target_os = "linux") {
-            ld.arg("-static");
+            cc.arg("-static");
         }
 
         for object in objects.iter() {
-            ld.arg(&object.path);
+            cc.arg(&object.path);
         }
 
-        ld.arg(format!("-L{}", runtime_path.display()))
+        cc.arg(format!("-L{}", runtime_path.display()))
             .arg("-laspen_runtime");
 
-        ld.arg("-o").arg(&path);
+        cc.arg("-o").arg(&path);
 
-        let status = ld.spawn()?.await?;
+        let command = format!("{:?}", cc);
+
+        let status = tokio::process::Command::from(cc).spawn()?.await?;
 
         if !status.success() {
-            return Err(GenError::FailedToLink);
+            return Err(GenError::FailedToLink(command));
         }
 
         Ok(Executable { objects, path })
