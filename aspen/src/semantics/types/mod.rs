@@ -12,6 +12,7 @@ pub use self::trace::*;
 pub enum Type {
     Failed { diagnosed: bool },
     Object(Arc<ObjectDeclaration>),
+    Class(Arc<ClassDeclaration>),
     Unbounded(String, usize),
 }
 
@@ -31,6 +32,8 @@ impl Type {
                     Err(TypeError::ObjectsAreNotEqual(a.clone(), b.clone()))
                 }
             }
+            // TODO: Class type checking
+            (Class(_), _) | (_, Class(_)) => Ok(()),
         }
     }
 
@@ -45,6 +48,8 @@ impl Type {
                 object.clone(),
                 other.clone(),
             )),
+            // TODO: Class type checking
+            (Class(_), _) | (_, Class(_)) => Ok(()),
         }
     }
 }

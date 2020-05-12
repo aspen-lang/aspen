@@ -2,6 +2,7 @@ use crate::semantics::types::Type;
 use crate::semantics::*;
 use crate::syntax::{
     Declaration, Expression, Navigator, Parser, ReferenceExpression, ReferenceTypeExpression, Root,
+    TypeExpression,
 };
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
@@ -19,13 +20,23 @@ pub struct Module {
     exported_declarations: MemoOut<analyzers::GetExportedDeclarations>,
     collect_diagnostics: Once<
         MergeTwo<
-            MergeTwo<analyzers::CheckForDuplicateExports, analyzers::CheckAllReferencesAreDefined>,
-            analyzers::CheckForFailedTypeInference,
+            MergeTwo<
+                MergeTwo<
+                    MergeTwo<
+                        analyzers::CheckForDuplicateExports,
+                        analyzers::CheckAllReferencesAreDefined,
+                    >,
+                    analyzers::CheckForFailedExpressionTypeInference,
+                >,
+                analyzers::CheckForFailedTypeExpressionTypeInference,
+            >,
+            analyzers::CheckOnlyClassTypesInRHSOfInstance,
         >,
     >,
     find_declaration: Memo<analyzers::FindDeclaration, usize>,
     find_type_declaration: Memo<analyzers::FindTypeDeclaration, usize>,
     get_type_of_expression: Memo<analyzers::GetTypeOfExpression, usize>,
+    get_type_of_type_expression: Memo<analyzers::GetTypeOfTypeExpression, usize>,
 }
 
 impl Module {
@@ -42,11 +53,14 @@ impl Module {
             collect_diagnostics: Once::of(
                 (analyzers::CheckForDuplicateExports)
                     .and(analyzers::CheckAllReferencesAreDefined)
-                    .and(analyzers::CheckForFailedTypeInference),
+                    .and(analyzers::CheckForFailedExpressionTypeInference)
+                    .and(analyzers::CheckForFailedTypeExpressionTypeInference)
+                    .and(analyzers::CheckOnlyClassTypesInRHSOfInstance),
             ),
             find_declaration: Memo::of(analyzers::FindDeclaration),
             find_type_declaration: Memo::of(analyzers::FindTypeDeclaration),
             get_type_of_expression: Memo::of(analyzers::GetTypeOfExpression),
+            get_type_of_type_expression: Memo::of(analyzers::GetTypeOfTypeExpression),
         }
     }
 
@@ -121,6 +135,11 @@ impl Module {
 
     pub async fn get_type_of(self: &Arc<Self>, expression: Arc<Expression>) -> Type {
         self.run_analyzer(&self.get_type_of_expression, expression.clone())
+            .await
+    }
+
+    pub async fn resolve_type(self: &Arc<Self>, expression: Arc<TypeExpression>) -> Type {
+        self.run_analyzer(&self.get_type_of_type_expression, expression.clone())
             .await
     }
 }

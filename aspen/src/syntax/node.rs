@@ -24,7 +24,15 @@ pub trait Node: fmt::Debug + Send + Sync {
         None
     }
 
+    fn as_type_expression(self: Arc<Self>) -> Option<Arc<TypeExpression>> {
+        None
+    }
+
     fn as_reference_type_expression(self: Arc<Self>) -> Option<Arc<ReferenceTypeExpression>> {
+        None
+    }
+
+    fn as_instance_declaration(self: Arc<Self>) -> Option<Arc<InstanceDeclaration>> {
         None
     }
 }
@@ -422,6 +430,10 @@ impl Node for InstanceDeclaration {
             vec![self.lhs.clone().into_node(), self.rhs.clone().into_node()].into_iter(),
         ))
     }
+
+    fn as_instance_declaration(self: Arc<Self>) -> Option<Arc<InstanceDeclaration>> {
+        Some(self)
+    }
 }
 
 /// ```bnf
@@ -459,6 +471,10 @@ impl Node for TypeExpression {
         match self {
             TypeExpression::Reference(n) => Children::Single(Some(n.clone())),
         }
+    }
+
+    fn as_type_expression(self: Arc<Self>) -> Option<Arc<TypeExpression>> {
+        Some(self)
     }
 }
 

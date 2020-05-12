@@ -5,10 +5,10 @@ use crate::{Diagnostic, Diagnostics, Range, Severity, Source};
 use futures::FutureExt;
 use std::sync::Arc;
 
-pub struct CheckForFailedTypeInference;
+pub struct CheckForFailedExpressionTypeInference;
 
 #[async_trait]
-impl Analyzer for CheckForFailedTypeInference {
+impl Analyzer for CheckForFailedExpressionTypeInference {
     type Input = ();
     type Output = Diagnostics;
 
@@ -22,7 +22,7 @@ impl Analyzer for CheckForFailedTypeInference {
         .await;
         for (type_, e) in types {
             if let Type::Failed { diagnosed: false } = type_ {
-                diagnostics.push(TypeInferenceFailed(e));
+                diagnostics.push(ExpressionTypeInferenceFailed(e));
             }
         }
         diagnostics
@@ -30,9 +30,9 @@ impl Analyzer for CheckForFailedTypeInference {
 }
 
 #[derive(Debug)]
-struct TypeInferenceFailed(Arc<Expression>);
+struct ExpressionTypeInferenceFailed(Arc<Expression>);
 
-impl Diagnostic for TypeInferenceFailed {
+impl Diagnostic for ExpressionTypeInferenceFailed {
     fn severity(&self) -> Severity {
         Severity::Error
     }
