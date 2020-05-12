@@ -55,19 +55,16 @@ impl Executable {
 
         let mut ld = tokio::process::Command::new("cc");
 
-        ld.arg("-static");
+        if cfg!(target_os = "linux") {
+            ld.arg("-static");
+        }
 
         for object in objects.iter() {
             ld.arg(&object.path);
         }
 
-        ld.arg(format!("-L{}", runtime_path.display())).arg("-laspen_runtime");
-
-        if cfg!(target_os = "macos") {
-        }
-
-        if cfg!(target_os = "linux") {
-        }
+        ld.arg(format!("-L{}", runtime_path.display()))
+            .arg("-laspen_runtime");
 
         ld.arg("-o").arg(&path);
 
