@@ -1,15 +1,12 @@
 use aspen::semantics::Host;
+use aspen::syntax::Node;
 use aspen::{Context, Location, Range, Source, URI};
 use clap::{App, ArgMatches};
 use futures::future::{AbortHandle, Abortable};
 use log::info;
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
-use lsp_types::notification::{Cancel, DidChangeTextDocument, PublishDiagnostics};
-use lsp_types::{
-    request::GotoDefinition, DidChangeTextDocumentParams, InitializeParams, NumberOrString,
-    PublishDiagnosticsParams, SaveOptions, ServerCapabilities,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Url,
-};
+use lsp_types::notification::{Cancel, DidChangeTextDocument, PublishDiagnostics, DidOpenTextDocument};
+use lsp_types::{request::GotoDefinition, DidChangeTextDocumentParams, GotoDefinitionResponse, InitializeParams, NumberOrString, PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Url, WorkspaceCapability, WorkspaceFolderCapability, DidOpenTextDocumentParams};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -25,14 +22,18 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
     let connection = Arc::new(connection);
 
     let mut text_document_sync = TextDocumentSyncOptions::default();
-    text_document_sync.save = Some(SaveOptions {
-        include_text: Some(false),
-    });
+    text_document_sync.open_close = Some(true);
     text_document_sync.change = Some(TextDocumentSyncKind::Incremental);
 
     let mut capabilities = ServerCapabilities::default();
     capabilities.definition_provider = Some(true);
     capabilities.text_document_sync = Some(TextDocumentSyncCapability::Options(text_document_sync));
+    capabilities.workspace = Some(WorkspaceCapability {
+        workspace_folders: Some(WorkspaceFolderCapability {
+            supported: Some(true),
+            change_notifications: None,
+        }),
+    });
 
     let initialization_params: InitializeParams = serde_json::from_value(
         connection
@@ -64,7 +65,6 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
     }
 
     for msg in &connection.receiver {
-        info!("msg: {:?}", msg);
         if let Message::Request(req) = &msg {
             if connection.handle_shutdown(req).unwrap() {
                 break;
@@ -171,16 +171,58 @@ impl ServerState {
 
         let req = match cast_request::<GotoDefinition>(req) {
             Err(req) => req,
-            Ok((id, _params)) => {
-                self.connection
+            Ok((id, params)) => {
+                let uri = params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .as_str()
+                    .into();
+                let module = self.host.get(&uri).await;
+                let mut result: Option<GotoDefinitionResponse> = None;
+                if let Some(module) = module {
+                    let location = lsp_position_to_location(
+                        &module.source,
+                        params.text_document_position_params.position,
+                    );
+
+                    if let Some(nav) = module.navigate().to_location(&location) {
+                        if let Some(reference) = nav.up_to_cast(|n| n.as_reference_expression()) {
+                            if let Some(dec) = module.declaration_referenced_by(reference).await {
+                                result = Some(GotoDefinitionResponse::Scalar(lsp_types::Location {
+                                    uri: params
+                                        .text_document_position_params
+                                        .text_document
+                                        .uri
+                                        .clone(),
+                                    range: range_to_lsp_range(dec.range()),
+                                }))
+                            }
+                        }
+
+                        if let Some(reference) =
+                            nav.up_to_cast(|n| n.as_reference_type_expression())
+                        {
+                            if let Some(dec) =
+                                module.declaration_referenced_by_type(reference).await
+                            {
+                                result = Some(GotoDefinitionResponse::Scalar(lsp_types::Location {
+                                    uri: params
+                                        .text_document_position_params
+                                        .text_document
+                                        .uri
+                                        .clone(),
+                                    range: range_to_lsp_range(dec.range()),
+                                }))
+                            }
+                        }
+                    }
+                }
+                return self
+                    .connection
                     .sender
-                    .send(Message::Response(Response::new_err(
-                        id,
-                        INTERNAL_ERROR,
-                        "blubbi!".into(),
-                    )))
+                    .send(Message::Response(Response::new_ok(id, result)))
                     .unwrap();
-                return;
             }
         };
 
@@ -225,9 +267,9 @@ impl ServerState {
         let not = match cast_notification::<DidChangeTextDocument>(not) {
             Err(not) => not,
             Ok(DidChangeTextDocumentParams {
-                text_document,
-                content_changes,
-            }) => {
+                   text_document,
+                   content_changes,
+               }) => {
                 let uri: URI = text_document.uri.as_str().into();
                 let module = self.host.get(&uri).await;
                 if let Some(module) = module {
@@ -242,6 +284,19 @@ impl ServerState {
                         )
                         .await;
                 }
+                self.schedule_check(uri).await;
+                return;
+            }
+        };
+
+        let not = match cast_notification::<DidOpenTextDocument>(not) {
+            Err(not) => not,
+            Ok(DidOpenTextDocumentParams {
+                text_document,
+            }) => {
+                let source = Source::new(text_document.uri.as_str(), text_document.text);
+                let uri = source.uri().clone();
+                self.host.set(source).await;
                 self.schedule_check(uri).await;
                 return;
             }

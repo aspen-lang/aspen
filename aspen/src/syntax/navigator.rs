@@ -1,4 +1,5 @@
 use crate::syntax::{Expression, InstanceDeclaration, Node, TypeExpression};
+use crate::Location;
 use std::sync::Arc;
 
 #[derive(Clone, Debug)]
@@ -34,6 +35,22 @@ impl Navigator {
         }
     }
 
+    pub fn to_location(self: &Arc<Self>, location: &Location) -> Option<Arc<Navigator>> {
+        let mut result = None;
+        for nav in self.traverse() {
+            let range = nav.node.range();
+
+            if &range.start <= location && &range.end > location {
+                result = Some(nav.clone())
+            }
+
+            if &range.start > location {
+                break;
+            }
+        }
+        result
+    }
+
     pub fn down_to(self: &Arc<Self>, node: &Arc<dyn Node>) -> Option<Arc<Navigator>> {
         for nav in self.traverse() {
             if nav.node.range() == node.range() {
@@ -48,6 +65,17 @@ impl Navigator {
             if let Some(r) = f(nav.node.clone()) {
                 return Some(r);
             }
+        }
+        None
+    }
+
+    pub fn up_to_cast<R, F: Fn(Arc<dyn Node>) -> Option<R>>(self: &Arc<Self>, f: F) -> Option<R> {
+        let mut current = Some(self.clone());
+        while let Some(nav) = current {
+            if let Some(n) = f(nav.node.clone()) {
+                return Some(n);
+            }
+            current = nav.parent.clone();
         }
         None
     }
