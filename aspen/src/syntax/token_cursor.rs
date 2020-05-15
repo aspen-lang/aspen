@@ -26,6 +26,10 @@ impl TokenCursor {
         cursor
     }
 
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
     fn move_past_whitespace(&mut self) {
         while self.sees(Whitespace) {
             self.offset += 1;

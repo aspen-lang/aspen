@@ -1,4 +1,4 @@
-use crate::{Diagnostic, Diagnostics};
+use crate::{Diagnostic, Diagnostics, Range, Severity, Source};
 use std::cmp::Ordering;
 use std::future::Future;
 use std::sync::Arc;
@@ -97,5 +97,26 @@ impl<T> PartialOrd for ParseResult<T> {
 impl<T> From<T> for ParseResult<T> {
     fn from(t: T) -> ParseResult<T> {
         ParseResult::Succeeded(Diagnostics::new(), t)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Expected(pub String, pub Arc<Source>, pub Range);
+
+impl Diagnostic for Expected {
+    fn severity(&self) -> Severity {
+        Severity::Error
+    }
+
+    fn source(&self) -> &Arc<Source> {
+        &self.1
+    }
+
+    fn range(&self) -> Range {
+        self.2.clone()
+    }
+
+    fn message(&self) -> String {
+        format!("Expected {}", self.0)
     }
 }

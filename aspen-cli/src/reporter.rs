@@ -81,7 +81,7 @@ pub fn report(diagnostics: Diagnostics) {
                 } else {
                     use TokenKind::*;
                     match token.kind {
-                        ObjectKeyword | ClassKeyword => {
+                        ObjectKeyword | ClassKeyword | InstanceKeyword | OfKeyword => {
                             lexeme.blue();
                         }
                         _ => {}

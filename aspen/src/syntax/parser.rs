@@ -1,6 +1,6 @@
 use crate::syntax::ParseResult::*;
 use crate::syntax::*;
-use crate::{Diagnostics, Expected, Source, SourceKind};
+use crate::{Diagnostics, Source, SourceKind};
 use std::sync::Arc;
 
 pub struct Parser {
@@ -63,7 +63,8 @@ impl Parser {
     }
 
     pub fn expected<S: Into<String>>(&mut self, message: S) -> Expected {
-        Expected(message.into(), self.tokens.clone_next_insignificant())
+        let token = self.tokens.clone_next_insignificant();
+        Expected(message.into(), token.source.clone(), token.range.clone())
     }
 
     pub fn expect_optional_period(&mut self, diagnostics: &mut Diagnostics) -> Option<Arc<Token>> {
@@ -74,12 +75,20 @@ impl Parser {
             None
         }
     }
+
+    pub fn offset(&self) -> usize {
+        self.tokens.offset()
+    }
 }
 
 struct ParseRoot;
 
 #[async_trait]
 impl ParseStrategy<Arc<Root>> for ParseRoot {
+    fn describe(&self) -> String {
+        "source".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Root>> {
         match parser.source.kind {
             SourceKind::Inline => ParseInline.map(Root::Inline).parse(parser),
@@ -94,6 +103,10 @@ struct ParseInline;
 
 #[async_trait]
 impl ParseStrategy<Arc<Inline>> for ParseInline {
+    fn describe(&self) -> String {
+        "inline code".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Inline>> {
         ParseDeclaration
             .map(Inline::Declaration)
@@ -118,6 +131,10 @@ struct ParseModule;
 
 #[async_trait]
 impl ParseStrategy<Arc<Module>> for ParseModule {
+    fn describe(&self) -> String {
+        "declarations".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Module>> {
         let mut diagnostics = Diagnostics::new();
         let mut declarations = vec![];
@@ -158,6 +175,10 @@ struct ParseDeclaration;
 
 #[async_trait]
 impl ParseStrategy<Arc<Declaration>> for ParseDeclaration {
+    fn describe(&self) -> String {
+        "object, class, or instance declaration".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Declaration>> {
         ParseObjectDeclaration
             .map(Declaration::Object)
@@ -173,6 +194,10 @@ struct ParseObjectDeclaration;
 
 #[async_trait]
 impl ParseStrategy<Arc<ObjectDeclaration>> for ParseObjectDeclaration {
+    fn describe(&self) -> String {
+        "object declaration".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ObjectDeclaration>> {
         parser
             .expect(TokenKind::ObjectKeyword, "object declaration")
@@ -205,6 +230,10 @@ struct ParseInstanceDeclaration;
 
 #[async_trait]
 impl ParseStrategy<Arc<InstanceDeclaration>> for ParseInstanceDeclaration {
+    fn describe(&self) -> String {
+        "instance declaration".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<InstanceDeclaration>> {
         parser
             .expect(TokenKind::InstanceKeyword, "instance declaration")
@@ -251,6 +280,10 @@ struct ParseTypeExpression;
 
 #[async_trait]
 impl ParseStrategy<Arc<TypeExpression>> for ParseTypeExpression {
+    fn describe(&self) -> String {
+        "type expression".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<TypeExpression>> {
         ParseReferenceTypeExpression
             .parse(parser)
@@ -264,6 +297,10 @@ struct ParseReferenceTypeExpression;
 
 #[async_trait]
 impl ParseStrategy<Arc<ReferenceTypeExpression>> for ParseReferenceTypeExpression {
+    fn describe(&self) -> String {
+        "type reference".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ReferenceTypeExpression>> {
         ParseSymbol.parse(parser).await.map(|symbol| {
             Arc::new(ReferenceTypeExpression {
@@ -278,6 +315,10 @@ struct ParseClassDeclaration;
 
 #[async_trait]
 impl ParseStrategy<Arc<ClassDeclaration>> for ParseClassDeclaration {
+    fn describe(&self) -> String {
+        "class declaration".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ClassDeclaration>> {
         parser
             .expect(TokenKind::ClassKeyword, "class declaration")
@@ -310,6 +351,10 @@ struct ParseSymbol;
 
 #[async_trait]
 impl ParseStrategy<Arc<Symbol>> for ParseSymbol {
+    fn describe(&self) -> String {
+        "symbol".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Symbol>> {
         if !parser.tokens.sees(TokenKind::Identifier) {
             parser.fail_expecting("symbol")
@@ -329,6 +374,10 @@ struct ParseExpression;
 
 #[async_trait]
 impl ParseStrategy<Arc<Expression>> for ParseExpression {
+    fn describe(&self) -> String {
+        "expression".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Expression>> {
         ParseReferenceExpression
             .map(Expression::Reference)
@@ -342,6 +391,10 @@ struct ParseReferenceExpression;
 
 #[async_trait]
 impl ParseStrategy<Arc<ReferenceExpression>> for ParseReferenceExpression {
+    fn describe(&self) -> String {
+        "reference".into()
+    }
+
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ReferenceExpression>> {
         ParseSymbol.parse(parser).await.map(|symbol| {
             Arc::new(ReferenceExpression {

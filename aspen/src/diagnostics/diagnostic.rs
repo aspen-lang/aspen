@@ -1,4 +1,4 @@
-use crate::syntax::{Node, Token};
+use crate::syntax::Node;
 use crate::{Range, Source};
 use std::fmt::{self, Debug, Display};
 use std::sync::Arc;
@@ -30,27 +30,6 @@ impl<'a> Display for &'a dyn Diagnostic {
             self.severity(),
             self.message()
         )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Expected(pub String, pub Arc<Token>);
-
-impl Diagnostic for Expected {
-    fn severity(&self) -> Severity {
-        Severity::Error
-    }
-
-    fn source(&self) -> &Arc<Source> {
-        &self.1.source
-    }
-
-    fn range(&self) -> Range {
-        self.1.range.clone()
-    }
-
-    fn message(&self) -> String {
-        format!("Expected {} but encountered {:?}", self.0, self.1)
     }
 }
 
