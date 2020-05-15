@@ -177,6 +177,20 @@ impl Source {
         }
     }
 
+    pub fn location_at_coords(&self, line: usize, character: usize) -> Location {
+        let offset = if line == 1 {
+            character - 1
+        } else {
+            self.line_breaks[line - 2] + character
+        };
+
+        Location {
+            offset,
+            line,
+            character,
+        }
+    }
+
     pub fn slice<R: Into<std::ops::Range<usize>>>(&self, range: R) -> &str {
         let range = range.into();
         if range.end > self.len {
@@ -222,6 +236,29 @@ impl Source {
             },
             end: self.eof_location(),
         }
+    }
+
+    pub fn apply_edits<I: IntoIterator<Item = (Option<Range>, String)>>(
+        &self,
+        edits: I,
+    ) -> Arc<Source> {
+        let range_all = self.range_all();
+        let mut edits = edits
+            .into_iter()
+            .map(|(r, s)| (r.unwrap_or(range_all.clone()), s))
+            .collect::<Vec<_>>();
+        edits.sort_by_key(|(range, _)| range.start.offset);
+
+        let mut new_code = String::new();
+        let mut offset = 0;
+        for (range, text) in edits {
+            new_code.push_str(self.slice(offset..range.start.offset));
+            new_code.push_str(text.as_str());
+            offset = range.end.offset;
+        }
+        new_code.push_str(self.slice(offset..self.len));
+
+        Self::new(self.uri.clone(), new_code)
     }
 }
 

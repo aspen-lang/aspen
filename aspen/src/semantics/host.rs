@@ -1,5 +1,5 @@
 use crate::semantics::Module;
-use crate::{Context, Diagnostics, Source, URI};
+use crate::{Context, Diagnostics, Range, Source, URI};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -62,6 +62,18 @@ impl Host {
         match modules.get(uri) {
             None => return None,
             Some(m) => Some(m.clone()),
+        }
+    }
+
+    pub async fn apply_edits<I: IntoIterator<Item = (Option<Range>, String)>>(
+        &self,
+        uri: &URI,
+        edits: I,
+    ) {
+        if let Some(module) = self.get(uri).await {
+            let new = module.source.apply_edits(edits);
+
+            self.set(new).await;
         }
     }
 }

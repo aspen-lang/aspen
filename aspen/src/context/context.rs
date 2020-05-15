@@ -63,7 +63,11 @@ impl Context {
     }
 
     pub async fn infer() -> io::Result<Arc<Context>> {
-        let mut local = Self::from(current_dir()?).await?;
+        Self::infer_from(current_dir()?).await
+    }
+
+    pub async fn infer_from(root: PathBuf) -> io::Result<Arc<Context>> {
+        let mut local = Self::from(root).await?;
         if local.is_global() {
             local = Arc::new(Self::temporary(Some(local))?);
         }
@@ -138,7 +142,7 @@ impl Context {
         }
     }
 
-    fn root_dir(&self) -> io::Result<PathBuf> {
+    pub fn root_dir(&self) -> io::Result<PathBuf> {
         match &self.kind {
             ContextKind::Temporary(_) => current_dir(),
             ContextKind::Directory(dir) => dir.canonicalize(),

@@ -53,6 +53,10 @@ impl URI {
 
         &self.uri[index..]
     }
+
+    pub fn uri(&self) -> &str {
+        self.uri.as_str()
+    }
 }
 
 impl fmt::Debug for URI {

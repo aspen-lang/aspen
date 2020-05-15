@@ -158,6 +158,7 @@ where
                 all_diagnostics.sort_by(|a, b| a.range().start.cmp(&b.range().end));
                 let first_diagnostic = &all_diagnostics[0];
 
+                *parser = a_parser;
                 ParseResult::Failed(
                     vec![Arc::new(Expected(
                         description,
@@ -168,8 +169,12 @@ where
                 )
             }
 
-            (ParseResult::Succeeded(d, t), ParseResult::Failed(_), _)
-            | (ParseResult::Failed(_), ParseResult::Succeeded(d, t), _) => {
+            (ParseResult::Succeeded(d, t), ParseResult::Failed(_), _) => {
+                *parser = a_parser;
+                ParseResult::Succeeded(d, t)
+            }
+            (ParseResult::Failed(_), ParseResult::Succeeded(d, t), _) => {
+                *parser = b_parser;
                 ParseResult::Succeeded(d, t)
             }
 

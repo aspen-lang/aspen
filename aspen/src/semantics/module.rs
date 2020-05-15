@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use tokio::sync::Mutex;
 
 pub struct Module {
-    source: Arc<Source>,
+    pub source: Arc<Source>,
     root_node: Arc<Root>,
     diagnostics: Mutex<Diagnostics>,
     pub host: Host,
