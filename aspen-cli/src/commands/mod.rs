@@ -1,5 +1,6 @@
 use clap::{App, ArgMatches};
 
+pub mod auth;
 pub mod build;
 pub mod context;
 pub mod live;
@@ -14,6 +15,7 @@ pub fn app() -> App<'static, 'static> {
         .subcommand(context::app())
         .subcommand(run::app())
         .subcommand(server::app())
+        .subcommand(auth::app())
 }
 
 pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
@@ -23,9 +25,11 @@ pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
         ("context", Some(matches)) => context::main(matches).await,
         ("run", Some(matches)) => run::main(matches).await,
         ("server", Some(matches)) => server::main(matches).await,
+        ("auth", Some(matches)) => auth::main(matches).await,
 
-        _ => Ok(eprintln!(
-            "Usage: aspen [COMMAND]. Use --help to find out how to use this program."
-        )),
+        _ => {
+            app().print_help()?;
+            Ok(println!())
+        }
     }
 }

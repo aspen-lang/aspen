@@ -1,0 +1,31 @@
+query Me {
+  me {
+    ...SignedInUser
+  }
+}
+
+mutation SignUp($username: String!, $email: String!, $password: String!) {
+  signUp(username: $username, email: $email, password: $password) {
+    ...SignedInUser
+  }
+}
+
+mutation SignIn($usernameOrEmail: String!, $password: String!) {
+  signIn(usernameOrEmail: $usernameOrEmail, password: $password) {
+    ...SignedInUser
+  }
+}
+
+mutation SignOut {
+  signOut
+}
+
+mutation RemoveAccount($password: String!) {
+  removeAccount(password: $password)
+}
+
+fragment SignedInUser on User {
+  id
+  email
+  username
+}

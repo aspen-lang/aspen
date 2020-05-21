@@ -35,3 +35,8 @@ test: aspen-runtime/target/$(PROFILE)/libaspen_runtime.a
 	( cd aspen; cargo test --lib )
 	( cd aspen-cli; cargo test )
 	( cd aspen-runtime; cargo test --lib )
+
+.PHONY: download-platform-schema
+download-platform-schema:
+	echo '# GENERATED FILE – DO NOT EDIT' > aspen-cli/src/platform/schema.graphql
+	npx get-graphql-schema https://platform.aspen-lang.com >> aspen-cli/src/platform/schema.graphql

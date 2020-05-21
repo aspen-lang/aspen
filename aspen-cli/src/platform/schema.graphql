@@ -1,0 +1,31 @@
+# GENERATED FILE – DO NOT EDIT
+type Mutation {
+  signUp(username: String!, email: String!, password: String!): User!
+  signOut: NoOp!
+  signIn(usernameOrEmail: String!, password: String!): User!
+  removeAccount(password: String!): NoOp!
+  me(email: String, username: String, password: PasswordChange): User!
+}
+
+enum NoOp {
+  OK
+}
+
+input PasswordChange {
+  current: String!
+  new: String!
+}
+
+type Query {
+  me: User
+}
+
+type User {
+  id: Uuid!
+  username: String!
+  email: String
+}
+
+"""Uuid"""
+scalar Uuid
+

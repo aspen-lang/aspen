@@ -5,8 +5,15 @@ use clap::{App, ArgMatches};
 use futures::future::{AbortHandle, Abortable};
 use log::info;
 use lsp_server::{Connection, Message, Notification, Request, RequestId, Response};
-use lsp_types::notification::{Cancel, DidChangeTextDocument, PublishDiagnostics, DidOpenTextDocument};
-use lsp_types::{request::GotoDefinition, DidChangeTextDocumentParams, GotoDefinitionResponse, InitializeParams, NumberOrString, PublishDiagnosticsParams, ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions, Url, WorkspaceCapability, WorkspaceFolderCapability, DidOpenTextDocumentParams};
+use lsp_types::notification::{
+    Cancel, DidChangeTextDocument, DidOpenTextDocument, PublishDiagnostics,
+};
+use lsp_types::{
+    request::GotoDefinition, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
+    GotoDefinitionResponse, InitializeParams, NumberOrString, PublishDiagnosticsParams,
+    ServerCapabilities, TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
+    Url, WorkspaceCapability, WorkspaceFolderCapability,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -267,9 +274,9 @@ impl ServerState {
         let not = match cast_notification::<DidChangeTextDocument>(not) {
             Err(not) => not,
             Ok(DidChangeTextDocumentParams {
-                   text_document,
-                   content_changes,
-               }) => {
+                text_document,
+                content_changes,
+            }) => {
                 let uri: URI = text_document.uri.as_str().into();
                 let module = self.host.get(&uri).await;
                 if let Some(module) = module {
@@ -291,9 +298,7 @@ impl ServerState {
 
         let not = match cast_notification::<DidOpenTextDocument>(not) {
             Err(not) => not,
-            Ok(DidOpenTextDocumentParams {
-                text_document,
-            }) => {
+            Ok(DidOpenTextDocumentParams { text_document }) => {
                 let source = Source::new(text_document.uri.as_str(), text_document.text);
                 let uri = source.uri().clone();
                 self.host.set(source).await;

@@ -1,6 +1,7 @@
 #![feature(async_closure)]
 
 mod commands;
+mod platform;
 mod reporter;
 
 #[tokio::main]

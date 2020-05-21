@@ -1,0 +1,19 @@
+{
+  "schemaPath": "./schema.graphql",
+  "extensions": {
+    "endpoints": {
+      "Production": {
+        "url": "https://platform.aspen-lang.com",
+        "introspect": false
+      },
+      "Staging": {
+        "url": "https://staging.platform.aspen-lang.com",
+        "introspect": false
+      },
+      "Development": {
+        "url": "http://localhost:8000",
+        "introspect": false
+      }
+    }
+  }
+}
