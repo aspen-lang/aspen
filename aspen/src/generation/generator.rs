@@ -32,6 +32,8 @@ pub struct Generator<'ctx> {
     // u32
     tag_type: IntType<'ctx>,
 
+    // { tag: ValueTag::Object, ptr: *Object }
+    object_ref_type: StructType<'ctx>,
     // { tag: ValueTag::Integer, value: i128 }
     integer_type: StructType<'ctx>,
     // { tag: ValueTag::Float, value: f64 }
@@ -55,7 +57,13 @@ impl<'ctx> Generator<'ctx> {
         let i128_type = context.i128_type();
         let f64_type = context.f64_type();
 
+        let object_type = context.opaque_struct_type("Object");
+        let object_ptr_type = object_type.ptr_type(AddressSpace::Generic);
+
         let tag_type = i32_type;
+
+        let object_ref_type = context.opaque_struct_type("Object");
+        object_ref_type.set_body(&[tag_type.into(), object_ptr_type.into()], false);
 
         let integer_type = context.opaque_struct_type("Integer");
         integer_type.set_body(&[tag_type.into(), i128_type.into()], false);
@@ -79,6 +87,7 @@ impl<'ctx> Generator<'ctx> {
             i128_type,
             f64_type,
             tag_type,
+            object_ref_type,
             integer_type,
             float_type,
             value_ptr_type,
@@ -253,7 +262,12 @@ impl<'ctx> Generator<'ctx> {
             syntax::TokenKind::IntegerLiteral(n, _) => *n,
             _ => return Err(GenError::BadNode),
         };
-        builder.build_store(value, self.i128_type.const_int(n as u64, true));
+
+        let words = [n as u64, n.wrapping_shr(64) as u64];
+        builder.build_store(
+            value,
+            self.i128_type.const_int_arbitrary_precision(words.as_ref()),
+        );
 
         Ok(builder
             .build_pointer_cast(ptr, self.value_ptr_type, "value")
@@ -314,7 +328,17 @@ impl<'ctx> Generator<'ctx> {
 
                 let object = builder.build_alloca(type_, "object");
                 builder.build_call(new_fn, &[object.into()], "");
-                Ok(object.into())
+
+                let object_ref = builder.build_alloca(self.object_ref_type, "object_ref");
+                let tag = builder.build_struct_gep(object_ref, 0, "tag").unwrap();
+                let ptr = builder.build_struct_gep(object_ref, 1, "ptr").unwrap();
+
+                builder.build_store(tag, self.tag_type.const_int(0xf0, false));
+                builder.build_store(ptr, object);
+
+                Ok(builder
+                    .build_pointer_cast(object_ref, self.value_ptr_type, "value")
+                    .into())
             }
             t => unimplemented!("generation for references to {:?}", t),
         }
