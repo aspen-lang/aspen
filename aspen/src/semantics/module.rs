@@ -19,16 +19,16 @@ pub struct Module {
     // Analyzers
     exported_declarations: MemoOut<analyzers::GetExportedDeclarations>,
     collect_diagnostics: Once<
+        MergeTwo<
             MergeTwo<
                 MergeTwo<
-                    MergeTwo<
-                        analyzers::CheckForDuplicateExports,
-                        analyzers::CheckAllReferencesAreDefined,
-                    >,
-                    analyzers::CheckForFailedExpressionTypeInference,
+                    analyzers::CheckForDuplicateExports,
+                    analyzers::CheckAllReferencesAreDefined,
                 >,
-                analyzers::CheckForFailedTypeExpressionTypeInference,
+                analyzers::CheckForFailedExpressionTypeInference,
             >,
+            analyzers::CheckForFailedTypeExpressionTypeInference,
+        >,
     >,
     find_declaration: Memo<analyzers::FindDeclaration, usize>,
     find_type_declaration: Memo<analyzers::FindTypeDeclaration, usize>,

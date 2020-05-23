@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::syntax::{ObjectDeclaration};
+use crate::syntax::ObjectDeclaration;
 
 mod trace;
 

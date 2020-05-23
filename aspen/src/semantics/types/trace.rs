@@ -50,11 +50,9 @@ impl TypeTracer {
             .await
         {
             None => Type::Failed { diagnosed: true },
-            Some(declaration) => {
-                match declaration.as_ref() {
-                    Declaration::Object(o) => Type::Object(o.clone()),
-                }
-            }
+            Some(declaration) => match declaration.as_ref() {
+                Declaration::Object(o) => Type::Object(o.clone()),
+            },
         }
     }
 

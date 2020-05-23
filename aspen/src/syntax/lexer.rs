@@ -40,8 +40,18 @@ impl<'a> Lexer<'a> {
         self.chars.peek().map(|(_, c)| *c).unwrap_or("")
     }
 
+    fn peek_next(&mut self) -> &str {
+        let result = self.chars.peek_next().map(|(_, c)| *c).unwrap_or("");
+        self.chars.reset_view();
+        result
+    }
+
     fn peek_char(&mut self) -> char {
         self.peek().chars().next().unwrap_or(0 as char)
+    }
+
+    fn peek_next_char(&mut self) -> char {
+        self.peek_next().chars().next().unwrap_or(0 as char)
     }
 
     fn take(&mut self) -> &str {
@@ -70,6 +80,11 @@ impl<'a> Lexer<'a> {
             c if c.is_whitespace() => {
                 self.skip_whitespace();
                 kind = Whitespace;
+            }
+
+            c if c.is_numeric() || (c == '-' && self.peek_next_char().is_numeric()) => {
+                kind = self.take_number();
+                println!("{:?}", kind);
             }
 
             c if c.is_alphabetic() => {
@@ -124,6 +139,70 @@ impl<'a> Lexer<'a> {
 
             break;
         }
+    }
+
+    fn take_number(&mut self) -> TokenKind {
+        let mut positive = true;
+        if self.peek_char() == '-' {
+            self.skip();
+            positive = false;
+        }
+
+        let mut radix_or_integer = String::new();
+        while self.peek_char().is_numeric() {
+            radix_or_integer.push_str(self.take());
+        }
+
+        let mut radix = 10u32;
+        let mut number;
+        if self.peek_char() == '#' {
+            self.skip();
+            radix = match radix_or_integer.parse() {
+                Ok(n) if n >= 2 && n <= 36 => n,
+                _ => radix,
+            };
+            number = self.take_digits(radix);
+        } else {
+            number = radix_or_integer;
+        }
+
+        if !positive {
+            number.insert(0, '-');
+        }
+
+        if self.peek_char() != '.' {
+            return match i128::from_str_radix(&number, radix) {
+                Ok(n) => TokenKind::IntegerLiteral(n, true),
+                Err(_) => TokenKind::IntegerLiteral(0, false),
+            };
+        }
+        self.take();
+        let fraction = self.take_digits(radix);
+        let precision = fraction.len();
+        number.push_str(fraction.as_str());
+
+        return match i64::from_str_radix(&number, radix) {
+            Ok(n) => {
+                TokenKind::FloatLiteral((n as f64) / f64::from(radix).powi(precision as i32), true)
+            }
+            Err(_) => TokenKind::FloatLiteral(f64::NAN, false),
+        };
+    }
+
+    fn take_digits(&mut self, radix: u32) -> String {
+        const DIGITS: [char; 36] = [
+            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G',
+            'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
+            'Y', 'Z',
+        ];
+
+        let valid_digits = &DIGITS[0..(radix as usize)];
+
+        let mut digits = String::new();
+        while valid_digits.contains(&self.peek_char().to_ascii_uppercase()) {
+            digits.push_str(self.take());
+        }
+        digits
     }
 }
 

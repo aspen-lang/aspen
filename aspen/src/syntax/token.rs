@@ -55,6 +55,9 @@ pub enum TokenKind {
 
     Period,
 
+    IntegerLiteral(i128, bool),
+    FloatLiteral(f64, bool),
+
     Identifier,
 
     ObjectKeyword,
