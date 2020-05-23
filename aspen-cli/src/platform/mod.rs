@@ -5,11 +5,11 @@ use uuid::Uuid;
 
 #[derive(GraphQLQuery)]
 #[graphql(
-schema_path = "src/platform/schema.graphql",
-query_path = "src/platform/queries.graphql",
-response_derives = "Debug"
+    schema_path = "src/platform/schema.graphql",
+    query_path = "src/platform/queries.graphql",
+    response_derives = "Debug"
 )]
-pub struct Me;
+pub struct MeQuery;
 
 #[derive(GraphQLQuery)]
 #[graphql(
@@ -17,7 +17,31 @@ pub struct Me;
     query_path = "src/platform/queries.graphql",
     response_derives = "Debug"
 )]
-pub struct SignIn;
+pub struct SignUpMutation;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "src/platform/schema.graphql",
+    query_path = "src/platform/queries.graphql",
+    response_derives = "Debug"
+)]
+pub struct SignInMutation;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "src/platform/schema.graphql",
+    query_path = "src/platform/queries.graphql",
+    response_derives = "Debug"
+)]
+pub struct SignOutMutation;
+
+#[derive(GraphQLQuery)]
+#[graphql(
+    schema_path = "src/platform/schema.graphql",
+    query_path = "src/platform/queries.graphql",
+    response_derives = "Debug"
+)]
+pub struct RemoveAccountMutation;
 
 static APP_USER_AGENT: &str = concat!(env!("CARGO_PKG_NAME"), "/", env!("CARGO_PKG_VERSION"));
 
@@ -42,7 +66,10 @@ impl PlatformClient {
     pub fn new(url: Url) -> Result<PlatformClient, ClientError> {
         Ok(PlatformClient {
             url,
-            client: Client::builder().cookie_store(true).user_agent(APP_USER_AGENT).build()?,
+            client: Client::builder()
+                .cookie_store(true)
+                .user_agent(APP_USER_AGENT)
+                .build()?,
         })
     }
 

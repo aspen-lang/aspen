@@ -6,7 +6,7 @@ use rustyline::error::ReadlineError;
 use rustyline::Editor;
 
 pub fn app() -> App<'static, 'static> {
-    App::new("live")
+    App::new("live").about("Starts a live programming environment in the terminal")
 }
 
 pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {

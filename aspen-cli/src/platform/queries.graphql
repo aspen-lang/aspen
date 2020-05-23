@@ -1,30 +1,30 @@
-query Me {
+query MeQuery {
   me {
-    ...SignedInUser
+    ...SignedInUserFragment
   }
 }
 
-mutation SignUp($username: String!, $email: String!, $password: String!) {
+mutation SignUpMutation($username: String!, $email: String!, $password: String!) {
   signUp(username: $username, email: $email, password: $password) {
-    ...SignedInUser
+    ...SignedInUserFragment
   }
 }
 
-mutation SignIn($usernameOrEmail: String!, $password: String!) {
+mutation SignInMutation($usernameOrEmail: String!, $password: String!) {
   signIn(usernameOrEmail: $usernameOrEmail, password: $password) {
-    ...SignedInUser
+    ...SignedInUserFragment
   }
 }
 
-mutation SignOut {
+mutation SignOutMutation {
   signOut
 }
 
-mutation RemoveAccount($password: String!) {
+mutation RemoveAccountMutation($password: String!) {
   removeAccount(password: $password)
 }
 
-fragment SignedInUser on User {
+fragment SignedInUserFragment on User {
   id
   email
   username

@@ -5,7 +5,9 @@ use aspen::Source;
 use clap::{App, Arg, ArgMatches};
 
 pub fn app() -> App<'static, 'static> {
-    App::new("run").arg(Arg::with_name("MAIN").takes_value(true))
+    App::new("run")
+        .about("Runs the application directly, compiling Just-In-Time (JIT)")
+        .arg(Arg::with_name("MAIN").takes_value(true))
 }
 
 pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {

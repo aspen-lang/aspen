@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 pub fn app() -> App<'static, 'static> {
-    App::new("server")
+    App::new("server").about("Starts the Aspen Language Server using the stdio interface")
 }
 
 pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
