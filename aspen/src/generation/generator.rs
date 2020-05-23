@@ -8,8 +8,10 @@ use inkwell::context::Context;
 use inkwell::execution_engine::ExecutionEngine;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
-use inkwell::types::{FloatType, FunctionType, IntType, PointerType, StructType, VoidType};
-use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::types::{
+    BasicType, FloatType, FunctionType, IntType, PointerType, StructType, VoidType,
+};
+use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
 use inkwell::AddressSpace;
 use std::fmt;
 use std::sync::Arc;
@@ -28,17 +30,19 @@ pub struct Generator<'ctx> {
     i128_type: IntType<'ctx>,
     // f64
     f64_type: FloatType<'ctx>,
+    // usize
+    usize_type: IntType<'ctx>,
 
     // u32
     tag_type: IntType<'ctx>,
 
-    // { tag: ValueTag::Object, ptr: *Object }
+    // { tag: ValueTag::Object, ref_count: *usize, ptr: *Object }
     object_ref_type: StructType<'ctx>,
-    // { tag: ValueTag::Integer, value: i128 }
+    // { tag: ValueTag::Integer, ref_count: *usize, value: i128 }
     integer_type: StructType<'ctx>,
-    // { tag: ValueTag::Float, value: f64 }
+    // { tag: ValueTag::Float, ref_count: *usize, value: f64 }
     float_type: StructType<'ctx>,
-    // *{ tag: u32, ... }
+    // *{ tag: usize, ref_count: *usize, ... }
     value_ptr_type: PointerType<'ctx>,
 
     // () -> void
@@ -56,23 +60,51 @@ impl<'ctx> Generator<'ctx> {
 
         let i128_type = context.i128_type();
         let f64_type = context.f64_type();
+        let usize_type = context.custom_width_int_type((std::mem::size_of::<usize>() * 8) as u32);
 
         let object_type = context.opaque_struct_type("Object");
         let object_ptr_type = object_type.ptr_type(AddressSpace::Generic);
 
-        let tag_type = i32_type;
+        let tag_type = usize_type;
 
         let object_ref_type = context.opaque_struct_type("Object");
-        object_ref_type.set_body(&[tag_type.into(), object_ptr_type.into()], false);
+        object_ref_type.set_body(
+            &[
+                tag_type.into(),
+                usize_type.ptr_type(AddressSpace::Generic).into(),
+                object_ptr_type.into(),
+            ],
+            false,
+        );
 
         let integer_type = context.opaque_struct_type("Integer");
-        integer_type.set_body(&[tag_type.into(), i128_type.into()], false);
+        integer_type.set_body(
+            &[
+                tag_type.into(),
+                usize_type.ptr_type(AddressSpace::Generic).into(),
+                i128_type.into(),
+            ],
+            false,
+        );
 
         let float_type = context.opaque_struct_type("Float");
-        float_type.set_body(&[tag_type.into(), f64_type.into()], false);
+        float_type.set_body(
+            &[
+                tag_type.into(),
+                usize_type.ptr_type(AddressSpace::Generic).into(),
+                f64_type.into(),
+            ],
+            false,
+        );
 
         let value_type = context.opaque_struct_type("Value");
-        value_type.set_body(&[tag_type.into()], false);
+        value_type.set_body(
+            &[
+                tag_type.into(),
+                usize_type.ptr_type(AddressSpace::Generic).into(),
+            ],
+            false,
+        );
 
         let value_ptr_type = value_type.ptr_type(AddressSpace::Generic);
 
@@ -84,6 +116,7 @@ impl<'ctx> Generator<'ctx> {
             host,
             void_type,
             str_type,
+            usize_type,
             i128_type,
             f64_type,
             tag_type,
@@ -122,11 +155,15 @@ impl<'ctx> Generator<'ctx> {
                 .fn_type(&[main_type.ptr_type(AddressSpace::Generic).into()], false),
             Some(Linkage::External),
         );
-        let print_fn = self.print_fn(&module);
 
-        let main_obj = builder.build_alloca(main_type, "main_obj");
-        builder.build_call(main_init_fn, &[], "");
-        builder.build_call(print_fn, &[main_obj.into()], "");
+        let (value_ptr, object_ptr) = self.generate_object_box(&builder, main_type);
+        builder.build_call(main_init_fn, &[object_ptr.into()], "");
+
+        let print_fn = self.print_fn(&module);
+        let drop_reference_fn = self.drop_reference_fn(&module);
+
+        builder.build_call(print_fn, &[value_ptr.into()], "");
+        builder.build_call(drop_reference_fn, &[value_ptr.into()], "");
 
         let status_code = context.i32_type().const_int(13, false);
         builder.build_return(Some(&status_code));
@@ -157,6 +194,32 @@ impl<'ctx> Generator<'ctx> {
         module.get_function("print").unwrap_or_else(|| {
             module.add_function(
                 "print",
+                self.void_type.fn_type(&[self.value_ptr_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn drop_reference_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[repr(C)]
+        struct Value {
+            _private: [u8; 0],
+        }
+
+        #[cfg(not(test))]
+        #[link(name = "aspen_runtime")]
+        extern "C" {
+            fn drop_reference(value: *mut Value);
+        }
+        {
+            #[cfg(not(test))]
+            #[used]
+            static USED: unsafe extern "C" fn(*mut Value) = drop_reference;
+        }
+
+        module.get_function("drop_reference").unwrap_or_else(|| {
+            module.add_function(
+                "drop_reference",
                 self.void_type.fn_type(&[self.value_ptr_type.into()], false),
                 Some(Linkage::External),
             )
@@ -210,8 +273,10 @@ impl<'ctx> Generator<'ctx> {
                         self.generate_expression(host_module, module, &builder, expression)?;
 
                     let print_fn = self.print_fn(module);
+                    let drop_reference_fn = self.drop_reference_fn(module);
 
                     builder.build_call(print_fn, &[object], "");
+                    builder.build_call(drop_reference_fn, &[object], "");
 
                     builder.build_return(None);
                 }
@@ -247,17 +312,9 @@ impl<'ctx> Generator<'ctx> {
         builder: &Builder<'ctx>,
         integer: &Arc<syntax::Integer>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
-        // Allocate the boxed integer
-        let ptr = builder.build_alloca(self.integer_type, "int");
+        let ptr = self.generate_value(builder, 0xf1, self.integer_type);
+        let value = builder.build_struct_gep(ptr, 2, "value").unwrap();
 
-        // Get pointers to the element of the box
-        let tag = builder.build_struct_gep(ptr, 0, "tag").unwrap();
-        let value = builder.build_struct_gep(ptr, 1, "value").unwrap();
-
-        // Tag the struct as an integer
-        builder.build_store(tag, self.tag_type.const_int(0xf1, false));
-
-        // Store the literal in the box
         let n = match &integer.literal.kind {
             syntax::TokenKind::IntegerLiteral(n, _) => *n,
             _ => return Err(GenError::BadNode),
@@ -274,22 +331,44 @@ impl<'ctx> Generator<'ctx> {
             .into())
     }
 
+    fn generate_value(
+        &self,
+        builder: &Builder<'ctx>,
+        tag: usize,
+        type_: impl BasicType<'ctx>,
+    ) -> PointerValue<'ctx> {
+        // Allocate the boxed value
+        let ptr = builder.build_malloc(type_, "ptr").unwrap();
+
+        {
+            let tag_ptr = builder.build_struct_gep(ptr, 0, "tag").unwrap();
+
+            // Store the tag in the box
+            builder.build_store(tag_ptr, self.tag_type.const_int(tag as u64, false));
+        }
+
+        {
+            let ref_count_ptr_ptr = builder.build_struct_gep(ptr, 1, "ref_count").unwrap();
+
+            // Allocate the reference counter
+            let ref_count_ptr = builder.build_malloc(self.usize_type, "ref_count").unwrap();
+
+            // Initialize the reference counter with 1
+            builder.build_store(ref_count_ptr, self.usize_type.const_int(1, false));
+            builder.build_store(ref_count_ptr_ptr, ref_count_ptr);
+        }
+
+        ptr
+    }
+
     fn generate_float(
         &self,
         builder: &Builder<'ctx>,
         float: &Arc<syntax::Float>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
-        // Allocate the boxed integer
-        let ptr = builder.build_alloca(self.float_type, "float");
+        let ptr = self.generate_value(builder, 0xf2, self.float_type);
+        let value = builder.build_struct_gep(ptr, 2, "value").unwrap();
 
-        // Get pointers to the element of the box
-        let tag = builder.build_struct_gep(ptr, 0, "tag").unwrap();
-        let value = builder.build_struct_gep(ptr, 1, "value").unwrap();
-
-        // Tag the struct as a float
-        builder.build_store(tag, self.tag_type.const_int(0xf2, false));
-
-        // Store the literal in the box
         let n = match &float.literal.kind {
             syntax::TokenKind::FloatLiteral(n, _) => *n,
             _ => return Err(GenError::BadNode),
@@ -299,6 +378,26 @@ impl<'ctx> Generator<'ctx> {
         Ok(builder
             .build_pointer_cast(ptr, self.value_ptr_type, "value")
             .into())
+    }
+
+    fn generate_object_box(
+        &self,
+        builder: &Builder<'ctx>,
+        object_type: StructType<'ctx>,
+    ) -> (PointerValue<'ctx>, PointerValue<'ctx>) {
+        let object_ptr = builder.build_malloc(object_type, "object").unwrap();
+        let object_box_ptr = self.generate_value(builder, 0xf0, self.object_ref_type);
+
+        // Pointer to the pointer slot within the object ref box
+        let object_box_ptr_ptr = builder.build_struct_gep(object_box_ptr, 2, "ptr").unwrap();
+        builder.build_store(object_box_ptr_ptr, object_ptr);
+
+        (
+            builder
+                .build_bitcast(object_box_ptr, self.value_ptr_type, "")
+                .into_pointer_value(),
+            object_ptr,
+        )
     }
 
     fn generate_reference_expression(
@@ -326,19 +425,10 @@ impl<'ctx> Generator<'ctx> {
                         )
                     });
 
-                let object = builder.build_alloca(type_, "object");
-                builder.build_call(new_fn, &[object.into()], "");
+                let (value_ptr, object_ptr) = self.generate_object_box(builder, type_);
+                builder.build_call(new_fn, &[object_ptr.into()], "");
 
-                let object_ref = builder.build_alloca(self.object_ref_type, "object_ref");
-                let tag = builder.build_struct_gep(object_ref, 0, "tag").unwrap();
-                let ptr = builder.build_struct_gep(object_ref, 1, "ptr").unwrap();
-
-                builder.build_store(tag, self.tag_type.const_int(0xf0, false));
-                builder.build_store(ptr, object);
-
-                Ok(builder
-                    .build_pointer_cast(object_ref, self.value_ptr_type, "value")
-                    .into())
+                Ok(value_ptr.into())
             }
             t => unimplemented!("generation for references to {:?}", t),
         }

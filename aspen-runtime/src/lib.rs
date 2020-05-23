@@ -1,9 +1,13 @@
 #![no_std]
 #![feature(arbitrary_self_types, lang_items)]
+
+use core::ffi::c_void;
+
 mod standalone;
 
 extern "C" {
     fn printf(format: *const u8, ...) -> i32;
+    fn free(ptr: *const c_void);
 }
 
 macro_rules! print {
@@ -19,7 +23,7 @@ macro_rules! println {
     }
 }
 
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ValueTag {
     ObjectRef = 0xf0,
@@ -31,6 +35,7 @@ pub enum ValueTag {
 #[derive(Clone, Copy)]
 pub struct Value {
     tag: ValueTag,
+    ref_count: *mut usize,
 }
 
 impl Value {
@@ -56,9 +61,23 @@ impl Value {
 }
 
 #[repr(C)]
+pub struct Object {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ObjectRef {
+    tag: ValueTag,
+    ref_count: *mut usize,
+    ptr: *const Object,
+}
+
+#[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Integer {
     tag: ValueTag,
+    ref_count: *mut usize,
     value: i128,
 }
 
@@ -66,6 +85,7 @@ pub struct Integer {
 #[derive(Clone, Copy)]
 pub struct Float {
     tag: ValueTag,
+    ref_count: *mut usize,
     value: f64,
 }
 
@@ -76,4 +96,21 @@ pub unsafe extern "C" fn print(val: *const Value) {
         ValueTag::Integer => println!("%lld", val.int_value()),
         ValueTag::Float => println!("%.15f", val.float_value()),
     };
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn drop_reference(val: *mut Value) {
+    // TODO: Make this reference counter atomic
+
+    let ref_count = &mut *(*val).ref_count;
+
+    *ref_count -= 1;
+    if *ref_count == 0 {
+        if (*val).tag == ValueTag::ObjectRef {
+            free((*(val as *const ObjectRef)).ptr as *const c_void);
+        }
+
+        free(ref_count as *const _ as *const c_void);
+        free(val as *const c_void);
+    }
 }
