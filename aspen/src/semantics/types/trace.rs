@@ -24,6 +24,7 @@ impl TypeTracer {
             Expression::Reference(reference) => self.trace_reference(reference).await,
             Expression::Integer(_) => Type::Integer,
             Expression::Float(_) => Type::Float,
+            Expression::MessageSend(_) => Type::Failed { diagnosed: true },
         };
 
         self.slot.resolve_apparent(t.clone()).await;

@@ -291,6 +291,35 @@ impl ParseStrategy<Arc<Expression>> for ParseExpression {
     }
 
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Expression>> {
+        ParseTerm
+            .parse(parser)
+            .await
+            .and_then(async move |mut expression| {
+                let mut diagnostics = Diagnostics::new();
+                while let Succeeded(d, message) = ParseTerm.parse(parser).await {
+                    diagnostics.push_all(d);
+                    expression = Arc::new(Expression::MessageSend(Arc::new(MessageSend {
+                        source: parser.source.clone(),
+                        receiver: expression,
+                        message,
+                    })));
+                }
+
+                Succeeded(diagnostics, expression)
+            })
+            .await
+    }
+}
+
+struct ParseTerm;
+
+#[async_trait]
+impl ParseStrategy<Arc<Expression>> for ParseTerm {
+    fn describe(&self) -> String {
+        "expression".into()
+    }
+
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Expression>> {
         match &parser.tokens.peek().kind {
             TokenKind::IntegerLiteral(_, _) => Succeeded(
                 Diagnostics::new(),

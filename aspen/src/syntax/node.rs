@@ -437,12 +437,14 @@ impl AsRef<str> for Symbol {
 /// Expression :=
 ///   Integer |
 ///   Float |
-///   ReferenceExpression
+///   ReferenceExpression |
+///   MessageSend
 /// ```
 pub enum Expression {
     Integer(Arc<Integer>),
     Float(Arc<Float>),
     Reference(Arc<ReferenceExpression>),
+    MessageSend(Arc<MessageSend>),
 }
 
 impl fmt::Debug for Expression {
@@ -451,6 +453,9 @@ impl fmt::Debug for Expression {
             Expression::Reference(n) => f.debug_tuple("Expression::Reference").field(n).finish(),
             Expression::Integer(n) => f.debug_tuple("Expression::Integer").field(n).finish(),
             Expression::Float(n) => f.debug_tuple("Expression::Float").field(n).finish(),
+            Expression::MessageSend(n) => {
+                f.debug_tuple("Expression::MessageSend").field(n).finish()
+            }
         }
     }
 }
@@ -461,6 +466,7 @@ impl Node for Expression {
             Expression::Reference(n) => n.source(),
             Expression::Integer(n) => n.source(),
             Expression::Float(n) => n.source(),
+            Expression::MessageSend(n) => n.source(),
         }
     }
 
@@ -469,6 +475,7 @@ impl Node for Expression {
             Expression::Reference(n) => n.range(),
             Expression::Integer(n) => n.range(),
             Expression::Float(n) => n.range(),
+            Expression::MessageSend(n) => n.range(),
         }
     }
 
@@ -477,11 +484,50 @@ impl Node for Expression {
             Expression::Reference(n) => Children::Single(Some(n.clone())),
             Expression::Integer(n) => Children::Single(Some(n.clone())),
             Expression::Float(n) => Children::Single(Some(n.clone())),
+            Expression::MessageSend(n) => Children::Single(Some(n.clone())),
         }
     }
 
     fn as_expression(self: Arc<Self>) -> Option<Arc<Expression>> {
         Some(self)
+    }
+}
+
+/// ```bnf
+/// MessageSend :=
+///   Expression
+///   Expression
+/// ```
+pub struct MessageSend {
+    pub source: Arc<Source>,
+    pub receiver: Arc<Expression>,
+    pub message: Arc<Expression>,
+}
+
+impl fmt::Debug for MessageSend {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("MessageSend")
+            .field("receiver", &self.receiver)
+            .field("message", &self.message)
+            .finish()
+    }
+}
+
+impl Node for MessageSend {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.receiver.range().through(self.message.range())
+    }
+
+    fn children(&self) -> Children {
+        Children::Iter(Box::new(
+            vec![self.receiver.clone(), self.message.clone()]
+                .into_iter()
+                .map(IntoNode::into_node),
+        ))
     }
 }
 

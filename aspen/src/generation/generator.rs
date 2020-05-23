@@ -149,6 +149,8 @@ impl<'ctx> Generator<'ctx> {
         builder.position_at_end(entry_block);
 
         let main_type = context.opaque_struct_type(main);
+        main_type.set_body(&[], false);
+
         let main_init_fn = module.add_function(
             format!("{}::New", main).as_str(),
             self.void_type
@@ -171,6 +173,36 @@ impl<'ctx> Generator<'ctx> {
         Ok(EmittedModule {
             module,
             init_fn: Some(main_fn),
+        })
+    }
+
+    fn send_message_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[repr(C)]
+        struct Value {
+            _private: [u8; 0],
+        }
+
+        #[cfg(not(test))]
+        #[link(name = "aspen_runtime")]
+        extern "C" {
+            fn send_message(receiver: *const Value, message: *const Value) -> *const Value;
+        }
+        {
+            #[cfg(not(test))]
+            #[used]
+            static USED: unsafe extern "C" fn(*const Value, *const Value) -> *const Value =
+                send_message;
+        }
+
+        module.get_function("send_message").unwrap_or_else(|| {
+            module.add_function(
+                "send_message",
+                self.value_ptr_type.fn_type(
+                    &[self.value_ptr_type.into(), self.value_ptr_type.into()],
+                    false,
+                ),
+                Some(Linkage::External),
+            )
         })
     }
 
@@ -269,14 +301,20 @@ impl<'ctx> Generator<'ctx> {
                     let entry_block = self.context.append_basic_block(run_fn, "entry");
                     builder.position_at_end(entry_block);
 
-                    let object =
-                        self.generate_expression(host_module, module, &builder, expression)?;
+                    let mut locals = vec![];
+
+                    let object = self.generate_expression(
+                        host_module,
+                        module,
+                        &builder,
+                        &mut locals,
+                        expression,
+                    )?;
 
                     let print_fn = self.print_fn(module);
-                    let drop_reference_fn = self.drop_reference_fn(module);
-
                     builder.build_call(print_fn, &[object], "");
-                    builder.build_call(drop_reference_fn, &[object], "");
+
+                    self.generate_end_of_scope(module, &builder, locals);
 
                     builder.build_return(None);
                 }
@@ -290,11 +328,25 @@ impl<'ctx> Generator<'ctx> {
         }
     }
 
+    fn generate_end_of_scope(
+        &self,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: Vec<BasicValueEnum<'ctx>>,
+    ) {
+        let drop_reference_fn = self.drop_reference_fn(module);
+
+        for local in locals {
+            builder.build_call(drop_reference_fn, &[local], "");
+        }
+    }
+
     fn generate_expression(
         &self,
         host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
         expression: &Arc<syntax::Expression>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
         let type_ = block_on(host_module.get_type_of(expression.clone()));
@@ -304,7 +356,36 @@ impl<'ctx> Generator<'ctx> {
             }
             syntax::Expression::Integer(i) => self.generate_integer(builder, i),
             syntax::Expression::Float(f) => self.generate_float(builder, f),
+            syntax::Expression::MessageSend(send) => {
+                self.generate_message_send(host_module, module, builder, locals, send)
+            }
         }
+    }
+
+    fn generate_message_send(
+        &self,
+        host_module: &Arc<HostModule>,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
+        send: &Arc<syntax::MessageSend>,
+    ) -> GenResult<BasicValueEnum<'ctx>> {
+        let message =
+            self.generate_expression(host_module, module, builder, locals, &send.message)?;
+        let receiver =
+            self.generate_expression(host_module, module, builder, locals, &send.receiver)?;
+
+        let send_message_fn = self.send_message_fn(module);
+
+        let reply = builder
+            .build_call(send_message_fn, &[receiver, message], "reply")
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        locals.push(reply);
+
+        Ok(reply)
     }
 
     fn generate_integer(
