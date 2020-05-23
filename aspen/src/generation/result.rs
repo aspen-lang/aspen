@@ -13,6 +13,7 @@ pub enum GenError {
     NoTargetMachine(TargetTriple),
     LLVM(String),
     UndefinedReference,
+    BadNode,
 }
 
 impl From<io::Error> for GenError {

@@ -155,7 +155,10 @@ async fn sign_in(matches: &ArgMatches<'_>) -> clap::Result<()> {
 
     let data = client
         .query::<SignInMutation>(sign_in_mutation::Variables {
-            username_or_email: value_or_ask("Username or Email", matches.value_of(USERNAME_OR_EMAIL)),
+            username_or_email: value_or_ask(
+                "Username or Email",
+                matches.value_of(USERNAME_OR_EMAIL),
+            ),
             password: stdin_or_ask_hidden("Password", read_password_from_stdin),
         })
         .await

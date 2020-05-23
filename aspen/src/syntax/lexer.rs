@@ -84,7 +84,6 @@ impl<'a> Lexer<'a> {
 
             c if c.is_numeric() || (c == '-' && self.peek_next_char().is_numeric()) => {
                 kind = self.take_number();
-                println!("{:?}", kind);
             }
 
             c if c.is_alphabetic() => {

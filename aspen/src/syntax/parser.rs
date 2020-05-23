@@ -291,11 +291,28 @@ impl ParseStrategy<Arc<Expression>> for ParseExpression {
     }
 
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Expression>> {
-        ParseReferenceExpression
-            .map(Expression::Reference)
-            .parse(parser)
-            .await
-            .map(Arc::new)
+        match &parser.tokens.peek().kind {
+            TokenKind::IntegerLiteral(_, _) => Succeeded(
+                Diagnostics::new(),
+                Arc::new(Expression::Integer(Arc::new(Integer {
+                    source: parser.source.clone(),
+                    literal: parser.tokens.take(),
+                }))),
+            ),
+            TokenKind::FloatLiteral(_, _) => Succeeded(
+                Diagnostics::new(),
+                Arc::new(Expression::Float(Arc::new(Float {
+                    source: parser.source.clone(),
+                    literal: parser.tokens.take(),
+                }))),
+            ),
+            TokenKind::Identifier => ParseReferenceExpression
+                .map(Expression::Reference)
+                .parse(parser)
+                .await
+                .map(Arc::new),
+            _ => parser.fail_expecting("expression"),
+        }
     }
 }
 

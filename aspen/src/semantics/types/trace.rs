@@ -21,9 +21,10 @@ impl TypeTracer {
         }
 
         let t = match expression.as_ref() {
-            Expression::Reference(reference) => self.trace_reference(reference),
-        }
-        .await;
+            Expression::Reference(reference) => self.trace_reference(reference).await,
+            Expression::Integer(_) => Type::Integer,
+            Expression::Float(_) => Type::Float,
+        };
 
         self.slot.resolve_apparent(t.clone()).await;
         t

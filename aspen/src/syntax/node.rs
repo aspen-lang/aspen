@@ -435,9 +435,13 @@ impl AsRef<str> for Symbol {
 
 /// ```bnf
 /// Expression :=
+///   Integer |
+///   Float |
 ///   ReferenceExpression
 /// ```
 pub enum Expression {
+    Integer(Arc<Integer>),
+    Float(Arc<Float>),
     Reference(Arc<ReferenceExpression>),
 }
 
@@ -445,6 +449,8 @@ impl fmt::Debug for Expression {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Expression::Reference(n) => f.debug_tuple("Expression::Reference").field(n).finish(),
+            Expression::Integer(n) => f.debug_tuple("Expression::Integer").field(n).finish(),
+            Expression::Float(n) => f.debug_tuple("Expression::Float").field(n).finish(),
         }
     }
 }
@@ -453,23 +459,87 @@ impl Node for Expression {
     fn source(&self) -> &Arc<Source> {
         match self {
             Expression::Reference(n) => n.source(),
+            Expression::Integer(n) => n.source(),
+            Expression::Float(n) => n.source(),
         }
     }
 
     fn range(&self) -> Range {
         match self {
             Expression::Reference(n) => n.range(),
+            Expression::Integer(n) => n.range(),
+            Expression::Float(n) => n.range(),
         }
     }
 
     fn children(&self) -> Children {
         match self {
             Expression::Reference(n) => Children::Single(Some(n.clone())),
+            Expression::Integer(n) => Children::Single(Some(n.clone())),
+            Expression::Float(n) => Children::Single(Some(n.clone())),
         }
     }
 
     fn as_expression(self: Arc<Self>) -> Option<Arc<Expression>> {
         Some(self)
+    }
+}
+
+/// ```bnf
+/// Integer :=
+///   INTEGER_LITERAL
+/// ```
+pub struct Integer {
+    pub source: Arc<Source>,
+    pub literal: Arc<Token>,
+}
+
+impl fmt::Debug for Integer {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("Integer").field(&self.literal).finish()
+    }
+}
+
+impl Node for Integer {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.literal.range.clone()
+    }
+
+    fn children(&self) -> Children {
+        Children::None
+    }
+}
+
+/// ```bnf
+/// Float :=
+///   FLOAT_LITERAL
+/// ```
+pub struct Float {
+    pub source: Arc<Source>,
+    pub literal: Arc<Token>,
+}
+
+impl fmt::Debug for Float {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_tuple("Float").field(&self.literal).finish()
+    }
+}
+
+impl Node for Float {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.literal.range.clone()
+    }
+
+    fn children(&self) -> Children {
+        Children::None
     }
 }
 

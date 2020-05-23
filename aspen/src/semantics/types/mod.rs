@@ -13,6 +13,8 @@ pub enum Type {
     Failed { diagnosed: bool },
     Object(Arc<ObjectDeclaration>),
     Unbounded(String, usize),
+    Integer,
+    Float,
 }
 
 impl Type {
@@ -31,6 +33,14 @@ impl Type {
                     Err(TypeError::ObjectsAreNotEqual(a.clone(), b.clone()))
                 }
             }
+            (Integer, Integer) => Ok(()),
+            (Integer, _) | (_, Integer) => {
+                Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+            }
+            (Float, Float) => Ok(()),
+            (Float, _) | (_, Float) => {
+                Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+            }
         }
     }
 
@@ -45,6 +55,14 @@ impl Type {
                 object.clone(),
                 other.clone(),
             )),
+            (Integer, Integer) => Ok(()),
+            (Integer, _) | (_, Integer) => {
+                Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+            }
+            (Float, Float) => Ok(()),
+            (Float, _) | (_, Float) => {
+                Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+            }
         }
     }
 }
