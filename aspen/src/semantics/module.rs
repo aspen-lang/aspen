@@ -19,7 +19,6 @@ pub struct Module {
     // Analyzers
     exported_declarations: MemoOut<analyzers::GetExportedDeclarations>,
     collect_diagnostics: Once<
-        MergeTwo<
             MergeTwo<
                 MergeTwo<
                     MergeTwo<
@@ -30,8 +29,6 @@ pub struct Module {
                 >,
                 analyzers::CheckForFailedTypeExpressionTypeInference,
             >,
-            analyzers::CheckOnlyClassTypesInRHSOfInstance,
-        >,
     >,
     find_declaration: Memo<analyzers::FindDeclaration, usize>,
     find_type_declaration: Memo<analyzers::FindTypeDeclaration, usize>,
@@ -54,8 +51,7 @@ impl Module {
                 (analyzers::CheckForDuplicateExports)
                     .and(analyzers::CheckAllReferencesAreDefined)
                     .and(analyzers::CheckForFailedExpressionTypeInference)
-                    .and(analyzers::CheckForFailedTypeExpressionTypeInference)
-                    .and(analyzers::CheckOnlyClassTypesInRHSOfInstance),
+                    .and(analyzers::CheckForFailedTypeExpressionTypeInference),
             ),
             find_declaration: Memo::of(analyzers::FindDeclaration),
             find_type_declaration: Memo::of(analyzers::FindTypeDeclaration),
@@ -170,7 +166,7 @@ mod tests {
     #[tokio::test]
     async fn duplicated_export() {
         let host = Host::new(Arc::new(Context::test()));
-        host.set(Source::new("test:x", "object X. class X.")).await;
+        host.set(Source::new("test:x", "object X. object X.")).await;
         let module = host.get(&"test:x".into()).await.unwrap();
 
         let diagnostics = module.diagnostics().await;

@@ -31,10 +31,6 @@ pub trait Node: fmt::Debug + Send + Sync {
     fn as_reference_type_expression(self: Arc<Self>) -> Option<Arc<ReferenceTypeExpression>> {
         None
     }
-
-    fn as_instance_declaration(self: Arc<Self>) -> Option<Arc<InstanceDeclaration>> {
-        None
-    }
 }
 
 pub trait IntoNode {
@@ -233,22 +229,16 @@ impl Node for Inline {
 
 /// ```bnf
 /// Declaration :=
-///   ObjectDeclaration |
-///   ClassDeclaration |
-///   InstanceDeclaration
+///   ObjectDeclaration
 /// ```
 pub enum Declaration {
     Object(Arc<ObjectDeclaration>),
-    Class(Arc<ClassDeclaration>),
-    Instance(Arc<InstanceDeclaration>),
 }
 
 impl fmt::Debug for Declaration {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Declaration::Object(n) => f.debug_tuple("Declaration::Object").field(n).finish(),
-            Declaration::Class(n) => f.debug_tuple("Declaration::Class").field(n).finish(),
-            Declaration::Instance(n) => f.debug_tuple("Declaration::Instance").field(n).finish(),
         }
     }
 }
@@ -257,8 +247,6 @@ impl Declaration {
     pub fn symbol(&self) -> &str {
         match self {
             Declaration::Object(n) => n.symbol(),
-            Declaration::Class(n) => n.symbol(),
-            Declaration::Instance(_) => "",
         }
     }
 }
@@ -267,24 +255,18 @@ impl Node for Declaration {
     fn source(&self) -> &Arc<Source> {
         match self {
             Declaration::Object(n) => n.source(),
-            Declaration::Class(n) => n.source(),
-            Declaration::Instance(n) => n.source(),
         }
     }
 
     fn range(&self) -> Range {
         match self {
             Declaration::Object(n) => n.range(),
-            Declaration::Class(n) => n.range(),
-            Declaration::Instance(n) => n.range(),
         }
     }
 
     fn children(&self) -> Children {
         match self {
             Declaration::Object(n) => Children::Single(Some(n.clone())),
-            Declaration::Class(n) => Children::Single(Some(n.clone())),
-            Declaration::Instance(n) => Children::Single(Some(n.clone())),
         }
     }
 
@@ -336,103 +318,6 @@ impl Node for ObjectDeclaration {
 
     fn children(&self) -> Children {
         Children::Single(Some(self.symbol.clone().into_node()))
-    }
-}
-
-/// ```bnf
-/// ClassDeclaration :=
-///   CLASS_KEYWORD
-///   Symbol
-///   PERIOD
-/// ```
-pub struct ClassDeclaration {
-    pub source: Arc<Source>,
-    pub keyword: Arc<Token>,
-    pub symbol: Arc<Symbol>,
-    pub period: Option<Arc<Token>>,
-}
-
-impl fmt::Debug for ClassDeclaration {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ClassDeclaration")
-            .field("symbol", &self.symbol)
-            .finish()
-    }
-}
-
-impl ClassDeclaration {
-    pub fn symbol(&self) -> &str {
-        (*self.symbol).as_ref()
-    }
-}
-
-impl Node for ClassDeclaration {
-    fn source(&self) -> &Arc<Source> {
-        &self.source
-    }
-
-    fn range(&self) -> Range {
-        self.keyword.range.through(
-            self.period
-                .as_ref()
-                .map(|t| t.range.clone())
-                .unwrap_or(self.symbol.range()),
-        )
-    }
-
-    fn children(&self) -> Children {
-        Children::Single(Some(self.symbol.clone().into_node()))
-    }
-}
-
-/// ```bnf
-/// InstanceDeclaration :=
-///   INSTANCE_KEYWORD
-///   TypeExpression
-///   OF_KEYWORD
-///   TypeExpression
-///   PERIOD
-/// ```
-pub struct InstanceDeclaration {
-    pub source: Arc<Source>,
-    pub instance_keyword: Arc<Token>,
-    pub lhs: Arc<TypeExpression>,
-    pub of_keyword: Arc<Token>,
-    pub rhs: Arc<TypeExpression>,
-    pub period: Option<Arc<Token>>,
-}
-
-impl fmt::Debug for InstanceDeclaration {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("InstanceDeclaration")
-            .field("lhs", &self.lhs)
-            .field("rhs", &self.rhs)
-            .finish()
-    }
-}
-
-impl Node for InstanceDeclaration {
-    fn source(&self) -> &Arc<Source> {
-        &self.source
-    }
-
-    fn range(&self) -> Range {
-        self.instance_keyword.range.through(
-            self.period
-                .as_ref()
-                .map(|t| t.range.clone())
-                .unwrap_or(self.rhs.range()),
-        )
-    }
-
-    fn children(&self) -> Children {
-        Children::Iter(Box::new(
-            vec![self.lhs.clone().into_node(), self.rhs.clone().into_node()].into_iter(),
-        ))
-    }
-
-    fn as_instance_declaration(self: Arc<Self>) -> Option<Arc<InstanceDeclaration>> {
-        Some(self)
     }
 }
 

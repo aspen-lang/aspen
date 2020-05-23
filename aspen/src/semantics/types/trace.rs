@@ -53,11 +53,6 @@ impl TypeTracer {
             Some(declaration) => {
                 match declaration.as_ref() {
                     Declaration::Object(o) => Type::Object(o.clone()),
-
-                    // TODO: Class references
-                    Declaration::Class(_) => Type::Failed { diagnosed: false },
-
-                    Declaration::Instance(_) => Type::Failed { diagnosed: false },
                 }
             }
         }
@@ -72,10 +67,6 @@ impl TypeTracer {
             None => Type::Failed { diagnosed: true },
             Some(declaration) => match declaration.as_ref() {
                 Declaration::Object(o) => Type::Object(o.clone()),
-
-                Declaration::Class(c) => Type::Class(c.clone()),
-
-                Declaration::Instance(_) => Type::Failed { diagnosed: false },
             },
         }
     }

@@ -255,9 +255,9 @@ impl<'ctx> Generator<'ctx> {
                         )
                     });
 
-                let instance = builder.build_alloca(type_, "instance");
-                builder.build_call(new_fn, &[instance.into()], "");
-                Ok(instance.into())
+                let object = builder.build_alloca(type_, "object");
+                builder.build_call(new_fn, &[object.into()], "");
+                Ok(object.into())
             }
             t => unimplemented!("generation for references to {:?}", t),
         }
@@ -273,8 +273,6 @@ impl<'ctx> Generator<'ctx> {
             syntax::Declaration::Object(d) => {
                 self.generate_object_declaration(host_module, module, d)
             }
-            syntax::Declaration::Class(d) => self.generate_class_declaration(d),
-            syntax::Declaration::Instance(_) => Ok(()),
         }
     }
 
@@ -302,8 +300,8 @@ impl<'ctx> Generator<'ctx> {
             let entry_block = self.context.append_basic_block(init_fn, "entry");
             builder.position_at_end(entry_block);
 
-            let _instance = init_fn.get_first_param().unwrap();
-            // TODO: Initialize all fields on instance
+            let _object = init_fn.get_first_param().unwrap();
+            // TODO: Initialize all fields on object
 
             builder.build_return(None);
         }
@@ -318,8 +316,8 @@ impl<'ctx> Generator<'ctx> {
             let entry_block = self.context.append_basic_block(to_string_fn, "entry");
             builder.position_at_end(entry_block);
 
-            let _instance = to_string_fn.get_first_param().unwrap();
-            // TODO: Recursively call the ToString method for each field on the instance
+            let _object = to_string_fn.get_first_param().unwrap();
+            // TODO: Recursively call the ToString method for each field on the object
 
             let as_string = builder.build_global_string_ptr(qn, "as_string");
 
@@ -327,18 +325,10 @@ impl<'ctx> Generator<'ctx> {
         }
         Ok(())
     }
-
-    fn generate_class_declaration(
-        &self,
-        _declaration: &Arc<syntax::ClassDeclaration>,
-    ) -> GenResult<()> {
-        Ok(())
-    }
 }
 
 pub struct EmittedModule<'ctx> {
     pub module: Module<'ctx>,
-    // Either () -> i32
     init_fn: Option<FunctionValue<'ctx>>,
 }
 

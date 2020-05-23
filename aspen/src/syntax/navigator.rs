@@ -1,4 +1,4 @@
-use crate::syntax::{Expression, InstanceDeclaration, Node, TypeExpression};
+use crate::syntax::{Expression, Node, TypeExpression};
 use crate::Location;
 use std::sync::Arc;
 
@@ -107,13 +107,6 @@ impl Navigator {
     pub fn all_type_expressions(self: &Arc<Self>) -> impl Iterator<Item = Arc<TypeExpression>> {
         self.traverse()
             .filter_map(|n| n.node.clone().as_type_expression())
-    }
-
-    pub fn all_instance_declarations(
-        self: &Arc<Self>,
-    ) -> impl Iterator<Item = Arc<InstanceDeclaration>> {
-        self.traverse()
-            .filter_map(|n| n.node.clone().as_instance_declaration())
     }
 }
 

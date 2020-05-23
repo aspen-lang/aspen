@@ -94,9 +94,6 @@ impl<'a> Lexer<'a> {
     fn take_symbol_or_keyword(&mut self) -> TokenKind {
         match self.take_symbol() {
             "object" => ObjectKeyword,
-            "class" => ClassKeyword,
-            "instance" => InstanceKeyword,
-            "of" => OfKeyword,
             _ => Identifier,
         }
     }

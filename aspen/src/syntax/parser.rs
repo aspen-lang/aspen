@@ -176,14 +176,12 @@ struct ParseDeclaration;
 #[async_trait]
 impl ParseStrategy<Arc<Declaration>> for ParseDeclaration {
     fn describe(&self) -> String {
-        "object, class, or instance declaration".into()
+        "object declaration".into()
     }
 
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Declaration>> {
         ParseObjectDeclaration
             .map(Declaration::Object)
-            .or(ParseClassDeclaration.map(Declaration::Class))
-            .or(ParseInstanceDeclaration.map(Declaration::Instance))
             .parse(parser)
             .await
             .map(Arc::new)
@@ -226,56 +224,6 @@ impl ParseStrategy<Arc<ObjectDeclaration>> for ParseObjectDeclaration {
     }
 }
 
-struct ParseInstanceDeclaration;
-
-#[async_trait]
-impl ParseStrategy<Arc<InstanceDeclaration>> for ParseInstanceDeclaration {
-    fn describe(&self) -> String {
-        "instance declaration".into()
-    }
-
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<InstanceDeclaration>> {
-        parser
-            .expect(TokenKind::InstanceKeyword, "instance declaration")
-            .and_then(async move |instance_keyword| {
-                ParseTypeExpression
-                    .parse(parser)
-                    .await
-                    .and_then(async move |lhs| {
-                        parser
-                            .expect(TokenKind::OfKeyword, "`of` keyword")
-                            .and_then(async move |of_keyword| {
-                                ParseTypeExpression
-                                    .parse(parser)
-                                    .await
-                                    .and_then(async move |rhs| {
-                                        let mut diagnostics = Diagnostics::new();
-
-                                        let period =
-                                            parser.expect_optional_period(&mut diagnostics);
-
-                                        Succeeded(
-                                            diagnostics,
-                                            Arc::new(InstanceDeclaration {
-                                                source: parser.source.clone(),
-                                                instance_keyword,
-                                                lhs,
-                                                of_keyword,
-                                                rhs,
-                                                period,
-                                            }),
-                                        )
-                                    })
-                                    .await
-                            })
-                            .await
-                    })
-                    .await
-            })
-            .await
-    }
-}
-
 struct ParseTypeExpression;
 
 #[async_trait]
@@ -308,42 +256,6 @@ impl ParseStrategy<Arc<ReferenceTypeExpression>> for ParseReferenceTypeExpressio
                 symbol,
             })
         })
-    }
-}
-
-struct ParseClassDeclaration;
-
-#[async_trait]
-impl ParseStrategy<Arc<ClassDeclaration>> for ParseClassDeclaration {
-    fn describe(&self) -> String {
-        "class declaration".into()
-    }
-
-    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ClassDeclaration>> {
-        parser
-            .expect(TokenKind::ClassKeyword, "class declaration")
-            .and_then(async move |keyword| {
-                ParseSymbol
-                    .parse(parser)
-                    .await
-                    .and_then(async move |symbol| {
-                        let mut diagnostics = Diagnostics::new();
-
-                        let period = parser.expect_optional_period(&mut diagnostics);
-
-                        Succeeded(
-                            diagnostics,
-                            Arc::new(ClassDeclaration {
-                                source: parser.source.clone(),
-                                keyword,
-                                symbol,
-                                period,
-                            }),
-                        )
-                    })
-                    .await
-            })
-            .await
     }
 }
 

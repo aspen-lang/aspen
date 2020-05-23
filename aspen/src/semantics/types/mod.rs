@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::syntax::{ClassDeclaration, ObjectDeclaration};
+use crate::syntax::{ObjectDeclaration};
 
 mod trace;
 
@@ -12,7 +12,6 @@ pub use self::trace::*;
 pub enum Type {
     Failed { diagnosed: bool },
     Object(Arc<ObjectDeclaration>),
-    Class(Arc<ClassDeclaration>),
     Unbounded(String, usize),
 }
 
@@ -32,8 +31,6 @@ impl Type {
                     Err(TypeError::ObjectsAreNotEqual(a.clone(), b.clone()))
                 }
             }
-            // TODO: Class type checking
-            (Class(_), _) | (_, Class(_)) => Ok(()),
         }
     }
 
@@ -48,8 +45,6 @@ impl Type {
                 object.clone(),
                 other.clone(),
             )),
-            // TODO: Class type checking
-            (Class(_), _) | (_, Class(_)) => Ok(()),
         }
     }
 }
@@ -142,7 +137,6 @@ pub enum TypeError {
     ObjectsAreNotEqual(Arc<ObjectDeclaration>, Arc<ObjectDeclaration>),
     TypesAreNotEqual(Type, Type),
     ObjectsHaveNoSubTypes(Arc<ObjectDeclaration>, Type),
-    BoundsAreNotTheSame(Vec<Arc<ClassDeclaration>>, Vec<Arc<ClassDeclaration>>),
 }
 
 #[cfg(test)]
