@@ -4,6 +4,7 @@
 
 use crate::worker::{Job, Semaphore};
 use core::ffi::c_void;
+use core::mem::size_of;
 
 #[allow(unused_unsafe)]
 macro_rules! print {
@@ -31,6 +32,12 @@ pub enum ValueTag {
     ObjectRef = 0xf0,
     Integer = 0xf1,
     Float = 0xf2,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Reply {
+    x: usize,
 }
 
 #[repr(C)]
@@ -170,9 +177,9 @@ pub unsafe extern "C" fn drop_reference(val: *mut Value) {
 static mut MASTER_SEM: Option<Semaphore> = None;
 
 #[no_mangle]
-pub unsafe extern "C" fn send_message(receiver: *mut Value, message: *const Value) -> *const Value {
-    let receiver = &mut *receiver;
-    let message = &*message;
+pub unsafe extern "C" fn send_message(receiver: *mut Value, message: *const Value) -> *mut Reply {
+    let _receiver = &mut *receiver;
+    let _message = &*message;
 
     if MASTER_SEM.is_none() {
         threads::spawn_threads_once();
@@ -187,7 +194,9 @@ pub unsafe extern "C" fn send_message(receiver: *mut Value, message: *const Valu
         MASTER_SEM.as_mut().unwrap().notify();
     }
 
-    receiver.process_message(message) as *const _
+    libc::malloc(size_of::<Reply>()) as *mut Reply
+
+    // receiver.process_message(message) as *const _
 }
 
 #[no_mangle]
@@ -232,4 +241,14 @@ pub extern "C" fn new_float(value: f64) -> &'static Value {
 
         &*(ptr as *const Value)
     }
+}
+
+#[no_mangle]
+pub extern "C" fn clone_reference(value: &mut Value) {
+    value.add_reference();
+}
+
+#[no_mangle]
+pub extern "C" fn poll_reply(_reply: &mut Reply) {
+    loop {}
 }

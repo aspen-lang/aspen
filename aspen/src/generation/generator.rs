@@ -8,10 +8,8 @@ use inkwell::context::Context;
 use inkwell::execution_engine::ExecutionEngine;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
-use inkwell::types::{
-    BasicType, FloatType, FunctionType, IntType, PointerType, StructType, VoidType,
-};
-use inkwell::values::{BasicValueEnum, FunctionValue, PointerValue};
+use inkwell::types::{FloatType, FunctionType, IntType, PointerType, VoidType};
+use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::AddressSpace;
 use std::fmt;
 use std::sync::Arc;
@@ -30,20 +28,11 @@ pub struct Generator<'ctx> {
     i128_type: IntType<'ctx>,
     // f64
     f64_type: FloatType<'ctx>,
-    // usize
-    usize_type: IntType<'ctx>,
 
-    // u32
-    tag_type: IntType<'ctx>,
-
-    // { tag: ValueTag::Object, ref_count: *usize, ptr: *Object }
-    object_ref_type: StructType<'ctx>,
-    // { tag: ValueTag::Integer, ref_count: *usize, value: i128 }
-    integer_type: StructType<'ctx>,
-    // { tag: ValueTag::Float, ref_count: *usize, value: f64 }
-    float_type: StructType<'ctx>,
-    // *{ tag: usize, ref_count: *usize, ... }
+    // *Value
     value_ptr_type: PointerType<'ctx>,
+    // *Reply
+    reply_ptr_type: PointerType<'ctx>,
 
     // () -> void
     void_fn_type: FunctionType<'ctx>,
@@ -60,52 +49,11 @@ impl<'ctx> Generator<'ctx> {
 
         let i128_type = context.i128_type();
         let f64_type = context.f64_type();
-        let usize_type = context.custom_width_int_type((std::mem::size_of::<usize>() * 8) as u32);
 
-        let object_type = context.opaque_struct_type("Object");
-        let object_ptr_type = object_type.ptr_type(AddressSpace::Generic);
-
-        let tag_type = usize_type;
-
-        let object_ref_type = context.opaque_struct_type("Object");
-        object_ref_type.set_body(
-            &[
-                tag_type.into(),
-                usize_type.ptr_type(AddressSpace::Generic).into(),
-                object_ptr_type.into(),
-            ],
-            false,
-        );
-
-        let integer_type = context.opaque_struct_type("Integer");
-        integer_type.set_body(
-            &[
-                tag_type.into(),
-                usize_type.ptr_type(AddressSpace::Generic).into(),
-                i128_type.into(),
-            ],
-            false,
-        );
-
-        let float_type = context.opaque_struct_type("Float");
-        float_type.set_body(
-            &[
-                tag_type.into(),
-                usize_type.ptr_type(AddressSpace::Generic).into(),
-                f64_type.into(),
-            ],
-            false,
-        );
+        let reply_type = context.opaque_struct_type("Reply");
+        let reply_ptr_type = reply_type.ptr_type(AddressSpace::Generic);
 
         let value_type = context.opaque_struct_type("Value");
-        value_type.set_body(
-            &[
-                tag_type.into(),
-                usize_type.ptr_type(AddressSpace::Generic).into(),
-            ],
-            false,
-        );
-
         let value_ptr_type = value_type.ptr_type(AddressSpace::Generic);
 
         let void_fn_type = void_type.fn_type(&[], false);
@@ -116,14 +64,10 @@ impl<'ctx> Generator<'ctx> {
             host,
             void_type,
             str_type,
-            usize_type,
             i128_type,
             f64_type,
-            tag_type,
-            object_ref_type,
-            integer_type,
-            float_type,
             value_ptr_type,
+            reply_ptr_type,
             void_fn_type,
             main_fn_type,
         }
@@ -140,7 +84,7 @@ impl<'ctx> Generator<'ctx> {
         })
     }
 
-    pub fn generate_main(&self, main: &str) -> GenResult<EmittedModule> {
+    pub fn generate_main(&self, _main: &str) -> GenResult<EmittedModule> {
         let context = self.context;
         let module = context.create_module("main");
         let builder = context.create_builder();
@@ -148,24 +92,18 @@ impl<'ctx> Generator<'ctx> {
         let entry_block = context.append_basic_block(main_fn, "entry");
         builder.position_at_end(entry_block);
 
-        let main_type = context.opaque_struct_type(main);
-        main_type.set_body(&[], false);
-
-        let main_init_fn = module.add_function(
-            format!("{}::New", main).as_str(),
-            self.void_type
-                .fn_type(&[main_type.ptr_type(AddressSpace::Generic).into()], false),
-            Some(Linkage::External),
-        );
-
-        let (value_ptr, object_ptr) = self.generate_object_box(&builder, main_type);
-        builder.build_call(main_init_fn, &[object_ptr.into()], "");
-
+        let new_object_fn = self.new_object_fn(&module);
         let print_fn = self.print_fn(&module);
         let drop_reference_fn = self.drop_reference_fn(&module);
 
-        builder.build_call(print_fn, &[value_ptr.into()], "");
-        builder.build_call(drop_reference_fn, &[value_ptr.into()], "");
+        let main_obj = builder
+            .build_call(new_object_fn, &[], "main_obj")
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        builder.build_call(print_fn, &[main_obj.into()], "");
+        builder.build_call(drop_reference_fn, &[main_obj.into()], "");
 
         let status_code = context.i32_type().const_int(13, false);
         builder.build_return(Some(&status_code));
@@ -173,88 +111,6 @@ impl<'ctx> Generator<'ctx> {
         Ok(EmittedModule {
             module,
             init_fn: Some(main_fn),
-        })
-    }
-
-    fn send_message_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[repr(C)]
-        struct Value {
-            _private: [u8; 0],
-        }
-
-        #[cfg(not(test))]
-        #[link(name = "aspen_runtime")]
-        extern "C" {
-            fn send_message(receiver: *const Value, message: *const Value) -> *const Value;
-        }
-        {
-            #[cfg(not(test))]
-            #[used]
-            static USED: unsafe extern "C" fn(*const Value, *const Value) -> *const Value =
-                send_message;
-        }
-
-        module.get_function("send_message").unwrap_or_else(|| {
-            module.add_function(
-                "send_message",
-                self.value_ptr_type.fn_type(
-                    &[self.value_ptr_type.into(), self.value_ptr_type.into()],
-                    false,
-                ),
-                Some(Linkage::External),
-            )
-        })
-    }
-
-    fn print_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[repr(C)]
-        struct Value {
-            _private: [u8; 0],
-        }
-
-        #[cfg(not(test))]
-        #[link(name = "aspen_runtime")]
-        extern "C" {
-            fn print(value: *const Value);
-        }
-        {
-            #[cfg(not(test))]
-            #[used]
-            static USED: unsafe extern "C" fn(*const Value) = print;
-        }
-
-        module.get_function("print").unwrap_or_else(|| {
-            module.add_function(
-                "print",
-                self.void_type.fn_type(&[self.value_ptr_type.into()], false),
-                Some(Linkage::External),
-            )
-        })
-    }
-
-    fn drop_reference_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[repr(C)]
-        struct Value {
-            _private: [u8; 0],
-        }
-
-        #[cfg(not(test))]
-        #[link(name = "aspen_runtime")]
-        extern "C" {
-            fn drop_reference(value: *mut Value);
-        }
-        {
-            #[cfg(not(test))]
-            #[used]
-            static USED: unsafe extern "C" fn(*mut Value) = drop_reference;
-        }
-
-        module.get_function("drop_reference").unwrap_or_else(|| {
-            module.add_function(
-                "drop_reference",
-                self.void_type.fn_type(&[self.value_ptr_type.into()], false),
-                Some(Linkage::External),
-            )
         })
     }
 
@@ -352,13 +208,70 @@ impl<'ctx> Generator<'ctx> {
         let type_ = block_on(host_module.get_type_of(expression.clone()));
         match expression.as_ref() {
             syntax::Expression::Reference(r) => {
-                self.generate_reference_expression(module, builder, r, type_)
+                self.generate_reference_expression(module, builder, locals, r, type_)
             }
-            syntax::Expression::Integer(i) => self.generate_integer(builder, i),
-            syntax::Expression::Float(f) => self.generate_float(builder, f),
+            syntax::Expression::Integer(i) => self.generate_integer(module, builder, locals, i),
+            syntax::Expression::Float(f) => self.generate_float(module, builder, locals, f),
             syntax::Expression::MessageSend(send) => {
                 self.generate_message_send(host_module, module, builder, locals, send)
             }
+        }
+    }
+
+    fn generate_integer(
+        &self,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
+        integer: &Arc<syntax::Integer>,
+    ) -> GenResult<BasicValueEnum<'ctx>> {
+        match integer.literal.kind {
+            syntax::TokenKind::IntegerLiteral(value, _) => {
+                let int_value = builder
+                    .build_call(
+                        self.new_int_fn(module),
+                        &[self
+                            .i128_type
+                            .const_int_arbitrary_precision(
+                                [value as u64, value.wrapping_shr(64) as u64].as_ref(),
+                            )
+                            .into()],
+                        "",
+                    )
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
+
+                locals.push(int_value);
+
+                Ok(int_value)
+            }
+            _ => Err(GenError::BadNode),
+        }
+    }
+
+    fn generate_float(
+        &self,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
+        float: &Arc<syntax::Float>,
+    ) -> GenResult<BasicValueEnum<'ctx>> {
+        match float.literal.kind {
+            syntax::TokenKind::FloatLiteral(value, _) => {
+                let float_value = builder
+                    .build_call(
+                        self.new_float_fn(module),
+                        &[self.f64_type.const_float(value).into()],
+                        "",
+                    )
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
+                locals.push(float_value);
+                Ok(float_value)
+            }
+            _ => Err(GenError::BadNode),
         }
     }
 
@@ -376,6 +289,7 @@ impl<'ctx> Generator<'ctx> {
             self.generate_expression(host_module, module, builder, locals, &send.receiver)?;
 
         let send_message_fn = self.send_message_fn(module);
+        let poll_reply = self.poll_reply_fn(module);
 
         let reply = builder
             .build_call(send_message_fn, &[receiver, message], "reply")
@@ -383,133 +297,37 @@ impl<'ctx> Generator<'ctx> {
             .left()
             .unwrap();
 
+        let object = builder
+            .build_call(poll_reply, &[reply], "")
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
         locals.push(reply);
+        locals.push(object);
 
-        Ok(reply)
-    }
-
-    fn generate_integer(
-        &self,
-        builder: &Builder<'ctx>,
-        integer: &Arc<syntax::Integer>,
-    ) -> GenResult<BasicValueEnum<'ctx>> {
-        let ptr = self.generate_value(builder, 0xf1, self.integer_type);
-        let value = builder.build_struct_gep(ptr, 2, "value").unwrap();
-
-        let n = match &integer.literal.kind {
-            syntax::TokenKind::IntegerLiteral(n, _) => *n,
-            _ => return Err(GenError::BadNode),
-        };
-
-        let words = [n as u64, n.wrapping_shr(64) as u64];
-        builder.build_store(
-            value,
-            self.i128_type.const_int_arbitrary_precision(words.as_ref()),
-        );
-
-        Ok(builder
-            .build_pointer_cast(ptr, self.value_ptr_type, "value")
-            .into())
-    }
-
-    fn generate_value(
-        &self,
-        builder: &Builder<'ctx>,
-        tag: usize,
-        type_: impl BasicType<'ctx>,
-    ) -> PointerValue<'ctx> {
-        // Allocate the boxed value
-        let ptr = builder.build_malloc(type_, "ptr").unwrap();
-
-        {
-            let tag_ptr = builder.build_struct_gep(ptr, 0, "tag").unwrap();
-
-            // Store the tag in the box
-            builder.build_store(tag_ptr, self.tag_type.const_int(tag as u64, false));
-        }
-
-        {
-            let ref_count_ptr_ptr = builder.build_struct_gep(ptr, 1, "ref_count").unwrap();
-
-            // Allocate the reference counter
-            let ref_count_ptr = builder.build_malloc(self.usize_type, "ref_count").unwrap();
-
-            // Initialize the reference counter with 1
-            builder.build_store(ref_count_ptr, self.usize_type.const_int(1, false));
-            builder.build_store(ref_count_ptr_ptr, ref_count_ptr);
-        }
-
-        ptr
-    }
-
-    fn generate_float(
-        &self,
-        builder: &Builder<'ctx>,
-        float: &Arc<syntax::Float>,
-    ) -> GenResult<BasicValueEnum<'ctx>> {
-        let ptr = self.generate_value(builder, 0xf2, self.float_type);
-        let value = builder.build_struct_gep(ptr, 2, "value").unwrap();
-
-        let n = match &float.literal.kind {
-            syntax::TokenKind::FloatLiteral(n, _) => *n,
-            _ => return Err(GenError::BadNode),
-        };
-        builder.build_store(value, self.f64_type.const_float(n));
-
-        Ok(builder
-            .build_pointer_cast(ptr, self.value_ptr_type, "value")
-            .into())
-    }
-
-    fn generate_object_box(
-        &self,
-        builder: &Builder<'ctx>,
-        object_type: StructType<'ctx>,
-    ) -> (PointerValue<'ctx>, PointerValue<'ctx>) {
-        let object_ptr = builder.build_malloc(object_type, "object").unwrap();
-        let object_box_ptr = self.generate_value(builder, 0xf0, self.object_ref_type);
-
-        // Pointer to the pointer slot within the object ref box
-        let object_box_ptr_ptr = builder.build_struct_gep(object_box_ptr, 2, "ptr").unwrap();
-        builder.build_store(object_box_ptr_ptr, object_ptr);
-
-        (
-            builder
-                .build_bitcast(object_box_ptr, self.value_ptr_type, "")
-                .into_pointer_value(),
-            object_ptr,
-        )
+        Ok(object)
     }
 
     fn generate_reference_expression(
         &self,
         module: &Module<'ctx>,
         builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
         _expression: &Arc<syntax::ReferenceExpression>,
         type_: Type,
     ) -> GenResult<BasicValueEnum<'ctx>> {
         match type_ {
-            Type::Object(o) => {
-                let symbol = o.symbol();
+            Type::Object(_) => {
+                let object_ref = builder
+                    .build_call(self.new_object_fn(module), &[], "")
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap();
 
-                let type_ = module.get_struct_type(symbol).unwrap();
+                locals.push(object_ref);
 
-                let new_fn_name = format!("{}::New", symbol);
-                let new_fn = module
-                    .get_function(new_fn_name.as_str())
-                    .unwrap_or_else(|| {
-                        module.add_function(
-                            new_fn_name.as_str(),
-                            self.void_type
-                                .fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
-                            Some(Linkage::External),
-                        )
-                    });
-
-                let (value_ptr, object_ptr) = self.generate_object_box(builder, type_);
-                builder.build_call(new_fn, &[object_ptr.into()], "");
-
-                Ok(value_ptr.into())
+                Ok(object_ref)
             }
             t => unimplemented!("generation for references to {:?}", t),
         }
@@ -600,5 +418,161 @@ impl<'ctx> fmt::Debug for EmittedModule<'ctx> {
             "{}",
             self.module.print_to_string().as_ref().to_string_lossy()
         )
+    }
+}
+
+mod runtime {
+    #[repr(C)]
+    pub struct Value {
+        _private: [u8; 0],
+    }
+
+    #[repr(C)]
+    pub struct Reply {
+        _private: [u8; 0],
+    }
+
+    #[cfg(not(test))]
+    #[link(name = "aspen_runtime")]
+    extern "C" {
+        #[allow(improper_ctypes)]
+        pub fn new_int(value: i128) -> *mut Value;
+        pub fn new_float(value: f64) -> *mut Value;
+        pub fn new_object() -> *mut Value;
+
+        pub fn clone_reference(value: *mut Value);
+        pub fn drop_reference(value: *mut Value);
+
+        pub fn send_message(receiver: *mut Value, message: *const Value) -> *mut Reply;
+        pub fn poll_reply(reply: *mut Reply) -> *mut Value;
+
+        pub fn print(value: *const Value);
+    }
+}
+
+impl<'ctx> Generator<'ctx> {
+    fn new_int_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static NEW_INT: unsafe extern "C" fn(value: i128) -> *mut runtime::Value = runtime::new_int;
+
+        module.get_function("new_int").unwrap_or_else(|| {
+            module.add_function(
+                "new_int",
+                self.value_ptr_type.fn_type(&[self.i128_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn new_float_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static NEW_FLOAT: unsafe extern "C" fn(value: f64) -> *mut runtime::Value =
+            runtime::new_float;
+
+        module.get_function("new_float").unwrap_or_else(|| {
+            module.add_function(
+                "new_float",
+                self.value_ptr_type.fn_type(&[self.f64_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn new_object_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static NEW_OBJECT: unsafe extern "C" fn() -> *mut runtime::Value = runtime::new_object;
+
+        module.get_function("new_object").unwrap_or_else(|| {
+            module.add_function(
+                "new_object",
+                self.value_ptr_type.fn_type(&[], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    #[allow(unused)]
+    fn clone_reference_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static CLONE_REFERENCE: unsafe extern "C" fn(value: *mut runtime::Value) =
+            runtime::clone_reference;
+
+        module.get_function("clone_reference").unwrap_or_else(|| {
+            module.add_function(
+                "clone_reference",
+                self.void_type.fn_type(&[self.value_ptr_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn drop_reference_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static DROP_REFERENCE: unsafe extern "C" fn(value: *mut runtime::Value) =
+            runtime::drop_reference;
+
+        module.get_function("drop_reference").unwrap_or_else(|| {
+            module.add_function(
+                "drop_reference",
+                self.void_type.fn_type(&[self.value_ptr_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn send_message_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static SEND_MESSAGE: unsafe extern "C" fn(
+            receiver: *mut runtime::Value,
+            message: *const runtime::Value,
+        ) -> *mut runtime::Reply = runtime::send_message;
+
+        module.get_function("send_message").unwrap_or_else(|| {
+            module.add_function(
+                "send_message",
+                self.reply_ptr_type.fn_type(
+                    &[self.value_ptr_type.into(), self.value_ptr_type.into()],
+                    false,
+                ),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    #[allow(unused)]
+    fn poll_reply_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static POLL_REPLY: unsafe extern "C" fn(reply: *mut runtime::Reply) -> *mut runtime::Value =
+            runtime::poll_reply;
+
+        module.get_function("poll_reply").unwrap_or_else(|| {
+            module.add_function(
+                "poll_reply",
+                self.value_ptr_type
+                    .fn_type(&[self.reply_ptr_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn print_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static PRINT: unsafe extern "C" fn(value: *const runtime::Value) = runtime::print;
+
+        module.get_function("print").unwrap_or_else(|| {
+            module.add_function(
+                "print",
+                self.void_type.fn_type(&[self.value_ptr_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
     }
 }
