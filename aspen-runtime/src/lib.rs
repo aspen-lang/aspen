@@ -1,21 +1,18 @@
 #![no_std]
 #![feature(arbitrary_self_types, lang_items)]
+#![allow(unused_unsafe)]
 
+use crate::worker::{Job, Semaphore};
 use core::ffi::c_void;
 
-mod standalone;
-
-extern "C" {
-    fn printf(format: *const u8, ...) -> i32;
-    fn free(ptr: *mut c_void);
-    fn malloc(size: usize) -> *mut c_void;
-}
-
+#[allow(unused_unsafe)]
 macro_rules! print {
-    ($format:expr $(, $args:expr)*) => {unsafe {
-        let bytes = concat!($format, "\0").as_bytes();
-        printf(bytes as *const _ as *const u8, $($args)*);
-    }}
+    ($format:expr $(, $args:expr)*) => {
+        unsafe {
+            let bytes = concat!($format, "\0").as_bytes();
+            libc::printf(bytes as *const _ as *const i8 $(, $args)*);
+        }
+    }
 }
 
 macro_rules! println {
@@ -23,6 +20,10 @@ macro_rules! println {
         print!(concat!($format, "\n") $(, $args)*)
     }
 }
+
+mod standalone;
+mod threads;
+mod worker;
 
 #[repr(C)]
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -75,7 +76,7 @@ impl Value {
                 match message.tag {
                     ValueTag::Integer => {
                         let product = self.int_value() * message.int_value();
-                        return Value::new_int(product);
+                        return new_int(product);
                     }
                     _ => {}
                 }
@@ -96,20 +97,6 @@ impl Value {
         }
     }
 
-    pub fn new_int(value: i128) -> &'static Value {
-        unsafe {
-            let ptr = malloc(core::mem::size_of::<Integer>()) as *mut Integer;
-            let integer = &mut *ptr;
-
-            integer.tag = ValueTag::Integer;
-            integer.ref_count = malloc(core::mem::size_of::<usize>()) as *mut usize;
-            *integer.ref_count = 1;
-            integer.value = value;
-
-            &*(ptr as *const Value)
-        }
-    }
-
     pub fn add_reference(&mut self) {
         // TODO: Make this reference counter atomic
 
@@ -127,11 +114,11 @@ impl Value {
             *ref_count -= 1;
             if *ref_count == 0 {
                 if self.tag == ValueTag::ObjectRef {
-                    free((*(self as *mut _ as *mut ObjectRef)).ptr as *mut c_void);
+                    libc::free((*(self as *mut _ as *mut ObjectRef)).ptr as *mut c_void);
                 }
 
-                free(ref_count as *mut _ as *mut c_void);
-                free(self as *mut _ as *mut c_void);
+                libc::free(ref_count as *mut _ as *mut c_void);
+                libc::free(self as *mut _ as *mut c_void);
             }
         }
     }
@@ -180,10 +167,69 @@ pub unsafe extern "C" fn drop_reference(val: *mut Value) {
     (&mut *val).drop_reference();
 }
 
+static mut MASTER_SEM: Option<Semaphore> = None;
+
 #[no_mangle]
 pub unsafe extern "C" fn send_message(receiver: *mut Value, message: *const Value) -> *const Value {
     let receiver = &mut *receiver;
     let message = &*message;
 
+    if MASTER_SEM.is_none() {
+        threads::spawn_threads_once();
+        unsafe {
+            MASTER_SEM = Some(Semaphore::new());
+        }
+    }
+
+    Job::enqueue(Job::new());
+
+    unsafe {
+        MASTER_SEM.as_mut().unwrap().notify();
+    }
+
     receiver.process_message(message) as *const _
+}
+
+#[no_mangle]
+pub extern "C" fn new_object() -> &'static Value {
+    unsafe {
+        let ptr = libc::malloc(core::mem::size_of::<ObjectRef>()) as *mut ObjectRef;
+        let object_ref = &mut *ptr;
+
+        object_ref.tag = ValueTag::ObjectRef;
+        object_ref.ref_count = libc::malloc(core::mem::size_of::<usize>()) as *mut usize;
+        *object_ref.ref_count = 1;
+
+        &*(ptr as *const Value)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn new_int(value: i128) -> &'static Value {
+    unsafe {
+        let ptr = libc::malloc(core::mem::size_of::<Integer>()) as *mut Integer;
+        let integer = &mut *ptr;
+
+        integer.tag = ValueTag::Integer;
+        integer.ref_count = libc::malloc(core::mem::size_of::<usize>()) as *mut usize;
+        *integer.ref_count = 1;
+        integer.value = value;
+
+        &*(ptr as *const Value)
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn new_float(value: f64) -> &'static Value {
+    unsafe {
+        let ptr = libc::malloc(core::mem::size_of::<Float>()) as *mut Float;
+        let float = &mut *ptr;
+
+        float.tag = ValueTag::Float;
+        float.ref_count = libc::malloc(core::mem::size_of::<usize>()) as *mut usize;
+        *float.ref_count = 1;
+        float.value = value;
+
+        &*(ptr as *const Value)
+    }
 }
