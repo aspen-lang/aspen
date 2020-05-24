@@ -10,7 +10,7 @@ use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::{FloatType, FunctionType, IntType, PointerType, VoidType};
 use inkwell::values::{BasicValueEnum, FunctionValue};
-use inkwell::AddressSpace;
+use inkwell::{AddressSpace, IntPredicate};
 use std::fmt;
 use std::sync::Arc;
 
@@ -21,8 +21,8 @@ pub struct Generator<'ctx> {
 
     // void
     void_type: VoidType<'ctx>,
-    // *i8
-    str_type: PointerType<'ctx>,
+    // usize
+    usize_type: IntType<'ctx>,
 
     // i128
     i128_type: IntType<'ctx>,
@@ -44,8 +44,7 @@ impl<'ctx> Generator<'ctx> {
     pub fn new(host: Host, context: &'ctx Context) -> Generator<'ctx> {
         let void_type = context.void_type();
         let i32_type = context.i32_type();
-        let i8_type = context.i8_type();
-        let str_type = i8_type.ptr_type(AddressSpace::Generic);
+        let usize_type = context.custom_width_int_type((std::mem::size_of::<usize>() * 8) as u32);
 
         let i128_type = context.i128_type();
         let f64_type = context.f64_type();
@@ -63,7 +62,7 @@ impl<'ctx> Generator<'ctx> {
             context,
             host,
             void_type,
-            str_type,
+            usize_type,
             i128_type,
             f64_type,
             value_ptr_type,
@@ -162,6 +161,7 @@ impl<'ctx> Generator<'ctx> {
                     let object = self.generate_expression(
                         host_module,
                         module,
+                        run_fn,
                         &builder,
                         &mut locals,
                         expression,
@@ -201,6 +201,7 @@ impl<'ctx> Generator<'ctx> {
         &self,
         host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
         builder: &Builder<'ctx>,
         locals: &mut Vec<BasicValueEnum<'ctx>>,
         expression: &Arc<syntax::Expression>,
@@ -213,7 +214,7 @@ impl<'ctx> Generator<'ctx> {
             syntax::Expression::Integer(i) => self.generate_integer(module, builder, locals, i),
             syntax::Expression::Float(f) => self.generate_float(module, builder, locals, f),
             syntax::Expression::MessageSend(send) => {
-                self.generate_message_send(host_module, module, builder, locals, send)
+                self.generate_message_send(host_module, module, function, builder, locals, send)
             }
         }
     }
@@ -279,17 +280,34 @@ impl<'ctx> Generator<'ctx> {
         &self,
         host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
         builder: &Builder<'ctx>,
         locals: &mut Vec<BasicValueEnum<'ctx>>,
         send: &Arc<syntax::MessageSend>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
-        let message =
-            self.generate_expression(host_module, module, builder, locals, &send.message)?;
-        let receiver =
-            self.generate_expression(host_module, module, builder, locals, &send.receiver)?;
-
         let send_message_fn = self.send_message_fn(module);
+        let clone_reference_fn = self.clone_reference_fn(module);
         let poll_reply = self.poll_reply_fn(module);
+
+        let message = self.generate_expression(
+            host_module,
+            module,
+            function,
+            builder,
+            locals,
+            &send.message,
+        )?;
+        let receiver = self.generate_expression(
+            host_module,
+            module,
+            function,
+            builder,
+            locals,
+            &send.receiver,
+        )?;
+
+        builder.build_call(clone_reference_fn, &[message], "");
+        builder.build_call(clone_reference_fn, &[receiver], "");
 
         let reply = builder
             .build_call(send_message_fn, &[receiver, message], "reply")
@@ -297,11 +315,31 @@ impl<'ctx> Generator<'ctx> {
             .left()
             .unwrap();
 
+        let poll_loop_block = self.context.append_basic_block(function, "poll_loop");
+
+        builder.build_unconditional_branch(poll_loop_block);
+        builder.position_at_end(poll_loop_block);
+
         let object = builder
             .build_call(poll_reply, &[reply], "")
             .try_as_basic_value()
             .left()
             .unwrap();
+
+        let if_reply_is_null = builder.build_int_compare(
+            IntPredicate::EQ,
+            builder.build_ptr_to_int(object.into_pointer_value(), self.usize_type, ""),
+            self.usize_type.const_zero(),
+            "if_reply_is_null",
+        );
+
+        let exit_block = self
+            .context
+            .insert_basic_block_after(poll_loop_block, "exit");
+
+        builder.build_conditional_branch(if_reply_is_null, poll_loop_block, exit_block);
+
+        builder.position_at_end(exit_block);
 
         locals.push(reply);
         locals.push(object);
@@ -349,50 +387,9 @@ impl<'ctx> Generator<'ctx> {
     fn generate_object_declaration(
         &self,
         _host_module: &Arc<HostModule>,
-        module: &Module<'ctx>,
-        declaration: &Arc<syntax::ObjectDeclaration>,
+        _module: &Module<'ctx>,
+        _declaration: &Arc<syntax::ObjectDeclaration>,
     ) -> GenResult<()> {
-        let qn = declaration.symbol();
-
-        let type_ = self.context.opaque_struct_type(qn);
-        type_.set_body(&[], false);
-
-        let builder = self.context.create_builder();
-
-        let init_fn_name = format!("{}::New", qn);
-        let init_fn = module.add_function(
-            init_fn_name.as_str(),
-            self.void_type
-                .fn_type(&[type_.ptr_type(AddressSpace::Generic).into()], false),
-            Some(Linkage::External),
-        );
-        {
-            let entry_block = self.context.append_basic_block(init_fn, "entry");
-            builder.position_at_end(entry_block);
-
-            let _object = init_fn.get_first_param().unwrap();
-            // TODO: Initialize all fields on object
-
-            builder.build_return(None);
-        }
-
-        let to_string_fn_name = format!("{}::ToString", qn);
-        let to_string_fn = module.add_function(
-            to_string_fn_name.as_str(),
-            self.str_type.fn_type(&[type_.into()], false),
-            Some(Linkage::External),
-        );
-        {
-            let entry_block = self.context.append_basic_block(to_string_fn, "entry");
-            builder.position_at_end(entry_block);
-
-            let _object = to_string_fn.get_first_param().unwrap();
-            // TODO: Recursively call the ToString method for each field on the object
-
-            let as_string = builder.build_global_string_ptr(qn, "as_string");
-
-            builder.build_return(Some(&as_string));
-        }
         Ok(())
     }
 }
@@ -494,7 +491,6 @@ impl<'ctx> Generator<'ctx> {
         })
     }
 
-    #[allow(unused)]
     fn clone_reference_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         #[cfg(not(test))]
         #[used]
@@ -545,7 +541,6 @@ impl<'ctx> Generator<'ctx> {
         })
     }
 
-    #[allow(unused)]
     fn poll_reply_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         #[cfg(not(test))]
         #[used]
