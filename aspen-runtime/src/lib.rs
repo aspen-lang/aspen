@@ -30,6 +30,13 @@ pub extern "C" fn new_float(value: f64) -> *const Value {
 }
 
 #[no_mangle]
+pub unsafe extern "C" fn new_nullary(value: *mut u8) -> *const Value {
+    let len = libc::strlen(value as *mut _);
+    let value = std::str::from_utf8(std::slice::from_raw_parts(value, len as usize)).unwrap();
+    Value::new_nullary(value).expose()
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn clone_reference(value: *const Value) {
     let a = value.enclose();
     let b = a.clone();
@@ -68,6 +75,6 @@ pub unsafe extern "C" fn poll_reply(reply: *const Reply) -> *const Value {
 #[no_mangle]
 pub extern "C" fn print(val: *const Value) {
     unsafe {
-        println!("{:?}", &*val);
+        println!("{}", &*val);
     }
 }

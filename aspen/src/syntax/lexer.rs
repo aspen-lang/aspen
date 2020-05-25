@@ -106,10 +106,19 @@ impl<'a> Lexer<'a> {
     }
 
     fn take_symbol_or_keyword(&mut self) -> TokenKind {
-        match self.take_symbol() {
+        let symbol = self.take_symbol();
+
+        let mut kind = match symbol {
             "object" => ObjectKeyword,
             _ => Identifier,
+        };
+
+        if let '!' | '?' = self.peek_char() {
+            self.skip();
+            kind = NullaryAtom;
         }
+
+        kind
     }
 
     fn take_symbol(&mut self) -> &str {

@@ -1,4 +1,5 @@
 use crate::reply::Reply;
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -29,6 +30,19 @@ pub enum Value {
     Integer(i128),
     Float(f64),
     Object(Object),
+    Nullary(&'static str),
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use Value::*;
+        match self {
+            Integer(v) => write!(f, "{}", v),
+            Float(v) => write!(f, "{}", v),
+            Object(_) => write!(f, "object"),
+            Nullary(v) => write!(f, "#{}", v),
+        }
+    }
 }
 
 impl Value {
@@ -40,6 +54,10 @@ impl Value {
         Arc::new(Value::Float(value))
     }
 
+    pub fn new_nullary(value: &'static str) -> Arc<Value> {
+        Arc::new(Value::Nullary(value))
+    }
+
     pub fn new_object() -> Arc<Value> {
         Arc::new(Value::Object(Object::new()))
     }
@@ -49,6 +67,7 @@ impl Value {
             Value::Object(o) => o.accept_message(message),
             Value::Integer(self_) => match message.as_ref() {
                 Value::Integer(other) => Ok(Value::new_int(*self_ * *other)),
+                Value::Nullary("increment!") => Ok(Value::new_int(*self_ + 1)),
 
                 _ => Ok(message.clone()),
             },

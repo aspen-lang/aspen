@@ -57,6 +57,7 @@ pub enum TokenKind {
 
     IntegerLiteral(i128, bool),
     FloatLiteral(f64, bool),
+    NullaryAtom,
 
     Identifier,
 

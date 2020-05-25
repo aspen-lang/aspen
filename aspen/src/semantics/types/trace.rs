@@ -25,6 +25,7 @@ impl TypeTracer {
             Expression::Integer(_) => Type::Integer,
             Expression::Float(_) => Type::Float,
             Expression::MessageSend(_) => Type::Failed { diagnosed: true },
+            Expression::NullaryAtom(_) => Type::Failed { diagnosed: true },
         };
 
         self.slot.resolve_apparent(t.clone()).await;

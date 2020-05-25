@@ -29,6 +29,8 @@ pub struct Generator<'ctx> {
     // f64
     f64_type: FloatType<'ctx>,
 
+    // *i8
+    str_ptr_type: PointerType<'ctx>,
     // *Value
     value_ptr_type: PointerType<'ctx>,
     // *Reply
@@ -46,8 +48,10 @@ impl<'ctx> Generator<'ctx> {
         let i32_type = context.i32_type();
         let usize_type = context.custom_width_int_type((std::mem::size_of::<usize>() * 8) as u32);
 
+        let i8_type = context.i8_type();
         let i128_type = context.i128_type();
         let f64_type = context.f64_type();
+        let str_ptr_type = i8_type.ptr_type(AddressSpace::Generic);
 
         let reply_type = context.opaque_struct_type("Reply");
         let reply_ptr_type = reply_type.ptr_type(AddressSpace::Generic);
@@ -65,6 +69,7 @@ impl<'ctx> Generator<'ctx> {
             usize_type,
             i128_type,
             f64_type,
+            str_ptr_type,
             value_ptr_type,
             reply_ptr_type,
             void_fn_type,
@@ -216,7 +221,33 @@ impl<'ctx> Generator<'ctx> {
             syntax::Expression::MessageSend(send) => {
                 self.generate_message_send(host_module, module, function, builder, locals, send)
             }
+            syntax::Expression::NullaryAtom(i) => self.generate_nullary(module, builder, locals, i),
         }
+    }
+
+    fn generate_nullary(
+        &self,
+        module: &Module<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
+        atom: &Arc<syntax::NullaryAtomExpression>,
+    ) -> GenResult<BasicValueEnum<'ctx>> {
+        let atom_value = builder
+            .build_call(
+                self.new_nullary_fn(module),
+                &[builder
+                    .build_global_string_ptr(atom.atom.lexeme(), "")
+                    .as_pointer_value()
+                    .into()],
+                "",
+            )
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        locals.push(atom_value);
+
+        Ok(atom_value)
     }
 
     fn generate_integer(
@@ -435,6 +466,7 @@ mod runtime {
         pub fn new_int(value: i128) -> *mut Value;
         pub fn new_float(value: f64) -> *mut Value;
         pub fn new_object() -> *mut Value;
+        pub fn new_nullary(value: *mut i8) -> *mut Value;
 
         pub fn clone_reference(value: *mut Value);
         pub fn drop_reference(value: *mut Value);
@@ -485,6 +517,22 @@ impl<'ctx> Generator<'ctx> {
             module.add_function(
                 "new_object",
                 self.value_ptr_type.fn_type(&[], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn new_nullary_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static NEW_NULLARY: unsafe extern "C" fn(value: *mut i8) -> *mut runtime::Value =
+            runtime::new_nullary;
+
+        module.get_function("new_nullary").unwrap_or_else(|| {
+            module.add_function(
+                "new_nullary",
+                self.value_ptr_type
+                    .fn_type(&[self.str_ptr_type.into()], false),
                 Some(Linkage::External),
             )
         })

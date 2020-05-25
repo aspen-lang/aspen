@@ -335,6 +335,13 @@ impl ParseStrategy<Arc<Expression>> for ParseTerm {
                     literal: parser.tokens.take(),
                 }))),
             ),
+            TokenKind::NullaryAtom => Succeeded(
+                Diagnostics::new(),
+                Arc::new(Expression::NullaryAtom(Arc::new(NullaryAtomExpression {
+                    source: parser.source.clone(),
+                    atom: parser.tokens.take(),
+                }))),
+            ),
             TokenKind::Identifier => ParseReferenceExpression
                 .map(Expression::Reference)
                 .parse(parser)

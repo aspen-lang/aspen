@@ -438,13 +438,15 @@ impl AsRef<str> for Symbol {
 ///   Integer |
 ///   Float |
 ///   ReferenceExpression |
-///   MessageSend
+///   MessageSend |
+///   NullaryAtomExpression
 /// ```
 pub enum Expression {
     Integer(Arc<Integer>),
     Float(Arc<Float>),
     Reference(Arc<ReferenceExpression>),
     MessageSend(Arc<MessageSend>),
+    NullaryAtom(Arc<NullaryAtomExpression>),
 }
 
 impl fmt::Debug for Expression {
@@ -456,6 +458,7 @@ impl fmt::Debug for Expression {
             Expression::MessageSend(n) => {
                 f.debug_tuple("Expression::MessageSend").field(n).finish()
             }
+            Expression::NullaryAtom(n) => f.debug_tuple("Expression::Atom").field(n).finish(),
         }
     }
 }
@@ -467,6 +470,7 @@ impl Node for Expression {
             Expression::Integer(n) => n.source(),
             Expression::Float(n) => n.source(),
             Expression::MessageSend(n) => n.source(),
+            Expression::NullaryAtom(n) => n.source(),
         }
     }
 
@@ -476,6 +480,7 @@ impl Node for Expression {
             Expression::Integer(n) => n.range(),
             Expression::Float(n) => n.range(),
             Expression::MessageSend(n) => n.range(),
+            Expression::NullaryAtom(n) => n.range(),
         }
     }
 
@@ -485,6 +490,7 @@ impl Node for Expression {
             Expression::Integer(n) => Children::Single(Some(n.clone())),
             Expression::Float(n) => Children::Single(Some(n.clone())),
             Expression::MessageSend(n) => Children::Single(Some(n.clone())),
+            Expression::NullaryAtom(n) => Children::Single(Some(n.clone())),
         }
     }
 
@@ -621,5 +627,36 @@ impl Node for ReferenceExpression {
 
     fn as_reference_expression(self: Arc<Self>) -> Option<Arc<ReferenceExpression>> {
         Some(self)
+    }
+}
+
+/// ```bnf
+/// NullaryAtomExpression :=
+///   NULLARY_ATOM
+/// ```
+pub struct NullaryAtomExpression {
+    pub source: Arc<Source>,
+    pub atom: Arc<Token>,
+}
+
+impl fmt::Debug for NullaryAtomExpression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("NullaryAtomExpression")
+            .field("atom", &self.atom)
+            .finish()
+    }
+}
+
+impl Node for NullaryAtomExpression {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.atom.range.clone()
+    }
+
+    fn children(&self) -> Children {
+        Children::None
     }
 }
