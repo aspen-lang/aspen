@@ -33,13 +33,17 @@ pub struct Generator<'ctx> {
     str_ptr_type: PointerType<'ctx>,
     // *Value
     value_ptr_type: PointerType<'ctx>,
-    // *Reply
-    reply_ptr_type: PointerType<'ctx>,
+    // *PendingReply
+    pending_reply_ptr_type: PointerType<'ctx>,
 
     // () -> void
     void_fn_type: FunctionType<'ctx>,
     // () -> i32
     main_fn_type: FunctionType<'ctx>,
+    // () -> void
+    recv_fn_type: FunctionType<'ctx>,
+    // *(() -> void)
+    recv_fn_ptr_type: PointerType<'ctx>,
 }
 
 impl<'ctx> Generator<'ctx> {
@@ -53,14 +57,17 @@ impl<'ctx> Generator<'ctx> {
         let f64_type = context.f64_type();
         let str_ptr_type = i8_type.ptr_type(AddressSpace::Generic);
 
-        let reply_type = context.opaque_struct_type("Reply");
-        let reply_ptr_type = reply_type.ptr_type(AddressSpace::Generic);
+        let pending_reply_type = context.opaque_struct_type("PendingReply");
+        let pending_reply_ptr_type = pending_reply_type.ptr_type(AddressSpace::Generic);
 
         let value_type = context.opaque_struct_type("Value");
         let value_ptr_type = value_type.ptr_type(AddressSpace::Generic);
 
         let void_fn_type = void_type.fn_type(&[], false);
         let main_fn_type = i32_type.fn_type(&[], false);
+
+        let recv_fn_type = void_type.fn_type(&[], false);
+        let recv_fn_ptr_type = recv_fn_type.ptr_type(AddressSpace::Generic);
 
         Generator {
             context,
@@ -71,9 +78,11 @@ impl<'ctx> Generator<'ctx> {
             f64_type,
             str_ptr_type,
             value_ptr_type,
-            reply_ptr_type,
+            pending_reply_ptr_type,
             void_fn_type,
             main_fn_type,
+            recv_fn_type,
+            recv_fn_ptr_type,
         }
     }
 
@@ -88,7 +97,7 @@ impl<'ctx> Generator<'ctx> {
         })
     }
 
-    pub fn generate_main(&self, _main: &str) -> GenResult<EmittedModule> {
+    pub fn generate_main(&self, main: &str) -> GenResult<EmittedModule> {
         let context = self.context;
         let module = context.create_module("main");
         let builder = context.create_builder();
@@ -100,8 +109,21 @@ impl<'ctx> Generator<'ctx> {
         let print_fn = self.print_fn(&module);
         let drop_reference_fn = self.drop_reference_fn(&module);
 
+        let main_object_recv = module
+            .add_function(
+                format!("{}::recv", main).as_str(),
+                self.recv_fn_type,
+                Some(Linkage::External),
+            )
+            .as_global_value()
+            .as_pointer_value();
+        let main_object_state_size = self.usize_type.const_int(0, false);
         let main_obj = builder
-            .build_call(new_object_fn, &[], "main_obj")
+            .build_call(
+                new_object_fn,
+                &[main_object_state_size.into(), main_object_recv.into()],
+                "main_obj",
+            )
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -340,8 +362,8 @@ impl<'ctx> Generator<'ctx> {
         builder.build_call(clone_reference_fn, &[message], "");
         builder.build_call(clone_reference_fn, &[receiver], "");
 
-        let reply = builder
-            .build_call(send_message_fn, &[receiver, message], "reply")
+        let pending_reply = builder
+            .build_call(send_message_fn, &[receiver, message], "pending_reply")
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -352,7 +374,7 @@ impl<'ctx> Generator<'ctx> {
         builder.position_at_end(poll_loop_block);
 
         let object = builder
-            .build_call(poll_reply, &[reply], "")
+            .build_call(poll_reply, &[pending_reply], "")
             .try_as_basic_value()
             .left()
             .unwrap();
@@ -386,9 +408,19 @@ impl<'ctx> Generator<'ctx> {
         type_: Type,
     ) -> GenResult<BasicValueEnum<'ctx>> {
         match type_ {
-            Type::Object(_) => {
+            Type::Object(o) => {
+                let state_size = self.usize_type.const_zero();
+                let recv = self
+                    .object_recv_fn(module, &o)
+                    .as_global_value()
+                    .as_pointer_value();
+
                 let object_ref = builder
-                    .build_call(self.new_object_fn(module), &[], "")
+                    .build_call(
+                        self.new_object_fn(module),
+                        &[state_size.into(), recv.into()],
+                        "",
+                    )
                     .try_as_basic_value()
                     .left()
                     .unwrap();
@@ -417,10 +449,30 @@ impl<'ctx> Generator<'ctx> {
     fn generate_object_declaration(
         &self,
         _host_module: &Arc<HostModule>,
-        _module: &Module<'ctx>,
-        _declaration: &Arc<syntax::ObjectDeclaration>,
+        module: &Module<'ctx>,
+        declaration: &Arc<syntax::ObjectDeclaration>,
     ) -> GenResult<()> {
+        let recv_fn = self.object_recv_fn(module, declaration);
+        let builder = self.context.create_builder();
+
+        let entry_block = self.context.append_basic_block(recv_fn, "entry");
+        builder.position_at_end(entry_block);
+
+        builder.build_return(None);
+
         Ok(())
+    }
+
+    fn object_recv_fn(
+        &self,
+        module: &Module<'ctx>,
+        declaration: &Arc<syntax::ObjectDeclaration>,
+    ) -> FunctionValue<'ctx> {
+        let name = format!("{}::recv", declaration.symbol());
+
+        module.get_function(name.as_ref()).unwrap_or_else(|| {
+            module.add_function(name.as_ref(), self.recv_fn_type, Some(Linkage::External))
+        })
     }
 }
 
@@ -455,7 +507,7 @@ mod runtime {
     }
 
     #[repr(C)]
-    pub struct Reply {
+    pub struct PendingReply {
         _private: [u8; 0],
     }
 
@@ -465,14 +517,14 @@ mod runtime {
         #[allow(improper_ctypes)]
         pub fn new_int(value: i128) -> *mut Value;
         pub fn new_float(value: f64) -> *mut Value;
-        pub fn new_object() -> *mut Value;
+        pub fn new_object(size: usize, recv: extern "C" fn()) -> *mut Value;
         pub fn new_nullary(value: *mut i8) -> *mut Value;
 
         pub fn clone_reference(value: *mut Value);
         pub fn drop_reference(value: *mut Value);
 
-        pub fn send_message(receiver: *mut Value, message: *const Value) -> *mut Reply;
-        pub fn poll_reply(reply: *mut Reply) -> *mut Value;
+        pub fn send_message(receiver: *mut Value, message: *const Value) -> *mut PendingReply;
+        pub fn poll_reply(pending_reply: *mut PendingReply) -> *mut Value;
 
         pub fn print(value: *const Value);
     }
@@ -511,12 +563,18 @@ impl<'ctx> Generator<'ctx> {
     fn new_object_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         #[cfg(not(test))]
         #[used]
-        static NEW_OBJECT: unsafe extern "C" fn() -> *mut runtime::Value = runtime::new_object;
+        static NEW_OBJECT: unsafe extern "C" fn(
+            size: usize,
+            recv: extern "C" fn(),
+        ) -> *mut runtime::Value = runtime::new_object;
 
         module.get_function("new_object").unwrap_or_else(|| {
             module.add_function(
                 "new_object",
-                self.value_ptr_type.fn_type(&[], false),
+                self.value_ptr_type.fn_type(
+                    &[self.usize_type.into(), self.recv_fn_ptr_type.into()],
+                    false,
+                ),
                 Some(Linkage::External),
             )
         })
@@ -574,12 +632,12 @@ impl<'ctx> Generator<'ctx> {
         static SEND_MESSAGE: unsafe extern "C" fn(
             receiver: *mut runtime::Value,
             message: *const runtime::Value,
-        ) -> *mut runtime::Reply = runtime::send_message;
+        ) -> *mut runtime::PendingReply = runtime::send_message;
 
         module.get_function("send_message").unwrap_or_else(|| {
             module.add_function(
                 "send_message",
-                self.reply_ptr_type.fn_type(
+                self.pending_reply_ptr_type.fn_type(
                     &[self.value_ptr_type.into(), self.value_ptr_type.into()],
                     false,
                 ),
@@ -591,14 +649,14 @@ impl<'ctx> Generator<'ctx> {
     fn poll_reply_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         #[cfg(not(test))]
         #[used]
-        static POLL_REPLY: unsafe extern "C" fn(reply: *mut runtime::Reply) -> *mut runtime::Value =
+        static POLL_REPLY: unsafe extern "C" fn(pending_reply: *mut runtime::PendingReply) -> *mut runtime::Value =
             runtime::poll_reply;
 
         module.get_function("poll_reply").unwrap_or_else(|| {
             module.add_function(
                 "poll_reply",
                 self.value_ptr_type
-                    .fn_type(&[self.reply_ptr_type.into()], false),
+                    .fn_type(&[self.pending_reply_ptr_type.into()], false),
                 Some(Linkage::External),
             )
         })

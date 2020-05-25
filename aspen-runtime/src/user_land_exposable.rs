@@ -1,4 +1,4 @@
-use crate::{Reply, Value};
+use crate::{PendingReply, Value};
 use std::sync::Arc;
 
 pub trait UserLandExposable {
@@ -12,4 +12,4 @@ pub trait UserLandExposable {
 }
 
 impl UserLandExposable for Value {}
-impl UserLandExposable for Reply {}
+impl UserLandExposable for PendingReply {}

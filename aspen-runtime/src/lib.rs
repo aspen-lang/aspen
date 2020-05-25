@@ -4,19 +4,19 @@
 extern crate lazy_static;
 
 mod job;
-mod reply;
+mod pending_reply;
 mod semaphore;
 mod user_land_exposable;
 mod value;
 
-use crate::reply::*;
+use crate::pending_reply::*;
 use crate::semaphore::*;
 use crate::user_land_exposable::*;
 use crate::value::*;
 
 #[no_mangle]
-pub extern "C" fn new_object() -> *const Value {
-    Value::new_object().expose()
+pub extern "C" fn new_object(size: usize, recv: extern "C" fn()) -> *const Value {
+    Value::new_object(size, recv).expose()
 }
 
 #[no_mangle]
@@ -54,7 +54,7 @@ pub unsafe extern "C" fn drop_reference(value: *const Value) {
 pub unsafe extern "C" fn send_message(
     receiver: *const Value,
     message: *const Value,
-) -> *const Reply {
+) -> *const PendingReply {
     let receiver = receiver.enclose();
     let message = message.enclose();
 
@@ -62,10 +62,10 @@ pub unsafe extern "C" fn send_message(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn poll_reply(reply: *const Reply) -> *const Value {
-    match (*reply).poll() {
+pub unsafe extern "C" fn poll_reply(pending_reply: *const PendingReply) -> *const Value {
+    match (*pending_reply).poll() {
         Some(value) => {
-            reply.enclose();
+            pending_reply.enclose();
             value.expose()
         }
         None => 0 as *const Value,

@@ -1,16 +1,24 @@
-use crate::reply::Reply;
+use crate::pending_reply::PendingReply;
+use std::ffi::c_void;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
 pub struct Object {
-    state: Mutex<()>,
+    state: Mutex<*mut c_void>,
+    recv: unsafe extern "C" fn(),
 }
 
+unsafe impl Send for Object {}
+unsafe impl Sync for Object {}
+
 impl Object {
-    pub fn new() -> Object {
-        Object {
-            state: Mutex::new(()),
+    pub fn new(size: usize, recv: unsafe extern "C" fn()) -> Object {
+        unsafe {
+            Object {
+                state: Mutex::new(libc::malloc(size)),
+                recv,
+            }
         }
     }
 
@@ -20,8 +28,20 @@ impl Object {
             if libc::rand() % 1000 > 1 {
                 return Err(());
             }
+            if libc::rand() % 10 < 2 {
+                panic!("panicking object!");
+            }
+            let _result = (self.recv)();
         }
         Ok(message.clone())
+    }
+}
+
+impl Drop for Object {
+    fn drop(&mut self) {
+        unsafe {
+            libc::free(*self.state.lock().unwrap());
+        }
     }
 }
 
@@ -58,8 +78,8 @@ impl Value {
         Arc::new(Value::Nullary(value))
     }
 
-    pub fn new_object() -> Arc<Value> {
-        Arc::new(Value::Object(Object::new()))
+    pub fn new_object(size: usize, recv: unsafe extern "C" fn()) -> Arc<Value> {
+        Arc::new(Value::Object(Object::new(size, recv)))
     }
 
     pub fn accept_message(&self, message: &Arc<Value>) -> Result<Arc<Value>, ()> {
@@ -75,7 +95,7 @@ impl Value {
         }
     }
 
-    pub fn schedule_message(self: Arc<Self>, message: Arc<Value>) -> Arc<Reply> {
-        Reply::new(self, message)
+    pub fn schedule_message(self: Arc<Self>, message: Arc<Value>) -> Arc<PendingReply> {
+        PendingReply::new(self, message)
     }
 }

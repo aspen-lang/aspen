@@ -3,23 +3,23 @@ use crate::Value;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 
-pub struct Reply {
+pub struct PendingReply {
     slot: Slot<Arc<Value>>,
 }
 
-impl Reply {
-    pub fn new(receiver: Arc<Value>, message: Arc<Value>) -> Arc<Reply> {
+impl PendingReply {
+    pub fn new(receiver: Arc<Value>, message: Arc<Value>) -> Arc<PendingReply> {
         let slot = Slot::new();
 
         Self::schedule(receiver, message, slot.clone());
 
-        Arc::new(Reply { slot })
+        Arc::new(PendingReply { slot })
     }
 
     fn schedule(receiver: Arc<Value>, message: Arc<Value>, slot: Slot<Arc<Value>>) {
         lazy_static! {
             static ref QUEUE: JobQueue<(Arc<Value>, Arc<Value>, Slot<Arc<Value>>)> =
-                Reply::job_queue();
+                PendingReply::job_queue();
         }
         QUEUE.schedule((receiver, message, slot));
     }
