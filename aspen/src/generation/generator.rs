@@ -341,7 +341,6 @@ impl<'ctx> Generator<'ctx> {
 
         builder.position_at_end(exit_block);
 
-        locals.push(reply);
         locals.push(object);
 
         Ok(object)

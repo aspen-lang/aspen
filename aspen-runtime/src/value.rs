@@ -2,10 +2,33 @@ use crate::reply::Reply;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
+pub struct Object {
+    state: Mutex<()>,
+}
+
+impl Object {
+    pub fn new() -> Object {
+        Object {
+            state: Mutex::new(()),
+        }
+    }
+
+    pub fn accept_message(&self, message: &Arc<Value>) -> Result<Arc<Value>, ()> {
+        let _guard = self.state.try_lock().map_err(|_| ())?;
+        unsafe {
+            if libc::rand() % 1000 > 1 {
+                return Err(());
+            }
+        }
+        Ok(message.clone())
+    }
+}
+
+#[derive(Debug)]
 pub enum Value {
     Integer(i128),
     Float(f64),
-    Object(Mutex<()>),
+    Object(Object),
 }
 
 impl Value {
@@ -18,16 +41,17 @@ impl Value {
     }
 
     pub fn new_object() -> Arc<Value> {
-        Arc::new(Value::Object(Mutex::new(())))
+        Arc::new(Value::Object(Object::new()))
     }
 
     pub fn accept_message(&self, message: &Arc<Value>) -> Result<Arc<Value>, ()> {
         match self {
-            Value::Object(m) => {
-                let _guard = m.try_lock().map_err(|_| ())?;
-                println!("MUTUALLY ACCESSES OBJECT");
-                Ok(message.clone())
-            }
+            Value::Object(o) => o.accept_message(message),
+            Value::Integer(self_) => match message.as_ref() {
+                Value::Integer(other) => Ok(Value::new_int(*self_ * *other)),
+
+                _ => Ok(message.clone()),
+            },
             _ => Ok(message.clone()),
         }
     }

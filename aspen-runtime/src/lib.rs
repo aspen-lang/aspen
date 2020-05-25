@@ -3,11 +3,14 @@
 #[macro_use]
 extern crate lazy_static;
 
+mod job;
 mod reply;
+mod semaphore;
 mod user_land_exposable;
 mod value;
 
 use crate::reply::*;
+use crate::semaphore::*;
 use crate::user_land_exposable::*;
 use crate::value::*;
 
@@ -31,8 +34,8 @@ pub unsafe extern "C" fn clone_reference(value: *const Value) {
     let a = value.enclose();
     let b = a.clone();
 
-    drop(a.expose());
-    drop(b.expose());
+    a.expose();
+    b.expose();
 }
 
 #[no_mangle]
@@ -52,14 +55,19 @@ pub unsafe extern "C" fn send_message(
 }
 
 #[no_mangle]
-pub extern "C" fn poll_reply(reply: &Reply) -> *const Value {
-    match reply.poll() {
-        Some(value) => value.expose(),
+pub unsafe extern "C" fn poll_reply(reply: *const Reply) -> *const Value {
+    match (*reply).poll() {
+        Some(value) => {
+            reply.enclose();
+            value.expose()
+        }
         None => 0 as *const Value,
     }
 }
 
 #[no_mangle]
-pub extern "C" fn print(val: &Value) {
-    println!("{:?}", val);
+pub extern "C" fn print(val: *const Value) {
+    unsafe {
+        println!("{:?}", &*val);
+    }
 }
