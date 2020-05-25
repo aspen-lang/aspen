@@ -4,18 +4,22 @@
 extern crate lazy_static;
 
 mod job;
+mod object;
 mod pending_reply;
+mod reply;
 mod semaphore;
 mod user_land_exposable;
 mod value;
 
+use crate::object::*;
 use crate::pending_reply::*;
+use crate::reply::*;
 use crate::semaphore::*;
 use crate::user_land_exposable::*;
 use crate::value::*;
 
 #[no_mangle]
-pub extern "C" fn new_object(size: usize, recv: extern "C" fn()) -> *const Value {
+pub extern "C" fn new_object(size: usize, recv: Recv) -> *const Value {
     Value::new_object(size, recv).expose()
 }
 
@@ -38,6 +42,13 @@ pub unsafe extern "C" fn new_nullary(value: *mut u8) -> *const Value {
 
 #[no_mangle]
 pub unsafe extern "C" fn clone_reference(value: *const Value) {
+    if value == 0 as usize as *const _ {
+        return;
+    }
+    if value == 'P' as usize as *const _ {
+        return;
+    }
+
     let a = value.enclose();
     let b = a.clone();
 
@@ -47,6 +58,13 @@ pub unsafe extern "C" fn clone_reference(value: *const Value) {
 
 #[no_mangle]
 pub unsafe extern "C" fn drop_reference(value: *const Value) {
+    if value == 0 as usize as *const _ {
+        return;
+    }
+    if value == 'P' as usize as *const _ {
+        return;
+    }
+
     value.enclose();
 }
 
@@ -64,16 +82,26 @@ pub unsafe extern "C" fn send_message(
 #[no_mangle]
 pub unsafe extern "C" fn poll_reply(pending_reply: *const PendingReply) -> *const Value {
     match (*pending_reply).poll() {
-        Some(value) => {
+        Reply::Pending => 0 as *const Value,
+        Reply::Answer(value) => {
             pending_reply.enclose();
             value.expose()
         }
-        None => 0 as *const Value,
+        Reply::Rejected => Value::new_nullary("didNotUnderstand!").expose(),
+        Reply::Panic => 'P' as usize as *const Value,
     }
 }
 
 #[no_mangle]
 pub extern "C" fn print(val: *const Value) {
+    if val == 0 as usize as *const _ {
+        println!("nil");
+        return;
+    }
+    if val == 'P' as usize as *const _ {
+        println!("panicked object");
+        return;
+    }
     unsafe {
         println!("{}", &*val);
     }

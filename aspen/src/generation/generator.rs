@@ -40,7 +40,7 @@ pub struct Generator<'ctx> {
     void_fn_type: FunctionType<'ctx>,
     // () -> i32
     main_fn_type: FunctionType<'ctx>,
-    // () -> void
+    // (*T, *Value) -> *Value
     recv_fn_type: FunctionType<'ctx>,
     // *(() -> void)
     recv_fn_ptr_type: PointerType<'ctx>,
@@ -66,7 +66,16 @@ impl<'ctx> Generator<'ctx> {
         let void_fn_type = void_type.fn_type(&[], false);
         let main_fn_type = i32_type.fn_type(&[], false);
 
-        let recv_fn_type = void_type.fn_type(&[], false);
+        let recv_fn_type = value_ptr_type.fn_type(
+            &[
+                context
+                    .opaque_struct_type("Object")
+                    .ptr_type(AddressSpace::Generic)
+                    .into(),
+                value_ptr_type.into(),
+            ],
+            false,
+        );
         let recv_fn_ptr_type = recv_fn_type.ptr_type(AddressSpace::Generic);
 
         Generator {
@@ -379,9 +388,11 @@ impl<'ctx> Generator<'ctx> {
             .left()
             .unwrap();
 
+        let reply_int = builder.build_ptr_to_int(object.into_pointer_value(), self.usize_type, "");
+
         let if_reply_is_null = builder.build_int_compare(
             IntPredicate::EQ,
-            builder.build_ptr_to_int(object.into_pointer_value(), self.usize_type, ""),
+            reply_int,
             self.usize_type.const_zero(),
             "if_reply_is_null",
         );
@@ -393,6 +404,14 @@ impl<'ctx> Generator<'ctx> {
         builder.build_conditional_branch(if_reply_is_null, poll_loop_block, exit_block);
 
         builder.position_at_end(exit_block);
+
+        // TODO: Have sender panic when recipient panics
+        let _if_reply_is_panic = builder.build_int_compare(
+            IntPredicate::EQ,
+            reply_int,
+            self.usize_type.const_int('P' as u64, false),
+            "if_reply_is_panic",
+        );
 
         locals.push(object);
 
@@ -458,7 +477,13 @@ impl<'ctx> Generator<'ctx> {
         let entry_block = self.context.append_basic_block(recv_fn, "entry");
         builder.position_at_end(entry_block);
 
-        builder.build_return(None);
+        let _state = recv_fn.get_nth_param(0).unwrap();
+        let message = recv_fn.get_nth_param(1).unwrap();
+
+        // TODO: Drop the message at the end of this function.
+        // Allocate new object and return it.
+
+        builder.build_return(Some(&message));
 
         Ok(())
     }
@@ -649,8 +674,9 @@ impl<'ctx> Generator<'ctx> {
     fn poll_reply_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         #[cfg(not(test))]
         #[used]
-        static POLL_REPLY: unsafe extern "C" fn(pending_reply: *mut runtime::PendingReply) -> *mut runtime::Value =
-            runtime::poll_reply;
+        static POLL_REPLY: unsafe extern "C" fn(
+            pending_reply: *mut runtime::PendingReply,
+        ) -> *mut runtime::Value = runtime::poll_reply;
 
         module.get_function("poll_reply").unwrap_or_else(|| {
             module.add_function(

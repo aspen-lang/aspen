@@ -30,15 +30,9 @@ impl<T: 'static + Send + Sync> JobQueue<T> {
         self.once.call_once(|| {
             for _ in 0..num_cpus::get() {
                 thread::spawn(move || loop {
-                    let result = std::panic::catch_unwind(|| {
-                        self.semaphore.wait();
-                        if let Ok(job) = self.queue.pop() {
-                            (self.procedure)(self, job);
-                        }
-                    });
-
-                    if let Err(_) = result {
-                        println!("object panicked!");
+                    self.semaphore.wait();
+                    if let Ok(job) = self.queue.pop() {
+                        (self.procedure)(self, job);
                     }
                 });
             }

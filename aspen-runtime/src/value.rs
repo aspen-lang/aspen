@@ -1,49 +1,6 @@
-use crate::pending_reply::PendingReply;
-use std::ffi::c_void;
+use crate::{Object, PendingReply, Recv, Reply};
 use std::fmt;
-use std::sync::{Arc, Mutex};
-
-#[derive(Debug)]
-pub struct Object {
-    state: Mutex<*mut c_void>,
-    recv: unsafe extern "C" fn(),
-}
-
-unsafe impl Send for Object {}
-unsafe impl Sync for Object {}
-
-impl Object {
-    pub fn new(size: usize, recv: unsafe extern "C" fn()) -> Object {
-        unsafe {
-            Object {
-                state: Mutex::new(libc::malloc(size)),
-                recv,
-            }
-        }
-    }
-
-    pub fn accept_message(&self, message: &Arc<Value>) -> Result<Arc<Value>, ()> {
-        let _guard = self.state.try_lock().map_err(|_| ())?;
-        unsafe {
-            if libc::rand() % 1000 > 1 {
-                return Err(());
-            }
-            if libc::rand() % 10 < 2 {
-                panic!("panicking object!");
-            }
-            let _result = (self.recv)();
-        }
-        Ok(message.clone())
-    }
-}
-
-impl Drop for Object {
-    fn drop(&mut self) {
-        unsafe {
-            libc::free(*self.state.lock().unwrap());
-        }
-    }
-}
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum Value {
@@ -78,20 +35,20 @@ impl Value {
         Arc::new(Value::Nullary(value))
     }
 
-    pub fn new_object(size: usize, recv: unsafe extern "C" fn()) -> Arc<Value> {
+    pub fn new_object(size: usize, recv: Recv) -> Arc<Value> {
         Arc::new(Value::Object(Object::new(size, recv)))
     }
 
-    pub fn accept_message(&self, message: &Arc<Value>) -> Result<Arc<Value>, ()> {
+    pub fn accept_message(&self, message: &Arc<Value>) -> Reply {
         match self {
-            Value::Object(o) => o.accept_message(message),
+            Value::Object(o) => o.accept_message(message.clone()),
             Value::Integer(self_) => match message.as_ref() {
-                Value::Integer(other) => Ok(Value::new_int(*self_ * *other)),
-                Value::Nullary("increment!") => Ok(Value::new_int(*self_ + 1)),
+                Value::Integer(other) => Reply::Answer(Value::new_int(*self_ * *other)),
+                Value::Nullary("increment!") => Reply::Answer(Value::new_int(*self_ + 1)),
 
-                _ => Ok(message.clone()),
+                _ => Reply::Rejected,
             },
-            _ => Ok(message.clone()),
+            _ => Reply::Rejected,
         }
     }
 

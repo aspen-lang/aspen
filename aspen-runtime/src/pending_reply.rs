@@ -1,10 +1,11 @@
 use crate::job::JobQueue;
+use crate::Reply;
 use crate::Value;
 use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 
 pub struct PendingReply {
-    slot: Slot<Arc<Value>>,
+    slot: Slot<Reply>,
 }
 
 impl PendingReply {
@@ -16,36 +17,43 @@ impl PendingReply {
         Arc::new(PendingReply { slot })
     }
 
-    fn schedule(receiver: Arc<Value>, message: Arc<Value>, slot: Slot<Arc<Value>>) {
+    fn schedule(receiver: Arc<Value>, message: Arc<Value>, slot: Slot<Reply>) {
         lazy_static! {
-            static ref QUEUE: JobQueue<(Arc<Value>, Arc<Value>, Slot<Arc<Value>>)> =
+            static ref QUEUE: JobQueue<(Arc<Value>, Arc<Value>, Slot<Reply>)> =
                 PendingReply::job_queue();
         }
         QUEUE.schedule((receiver, message, slot));
     }
 
-    fn job_queue() -> JobQueue<(Arc<Value>, Arc<Value>, Slot<Arc<Value>>)> {
+    fn job_queue() -> JobQueue<(Arc<Value>, Arc<Value>, Slot<Reply>)> {
         JobQueue::new(
             "/jobs".into(),
             100,
-            |queue: &'static JobQueue<(Arc<Value>, Arc<Value>, Slot<Arc<Value>>)>,
+            |queue: &'static JobQueue<(Arc<Value>, Arc<Value>, Slot<Reply>)>,
              (receiver, message, slot)| {
                 match receiver.accept_message(&message) {
-                    Err(_) => queue.schedule((receiver, message, slot)),
-                    Ok(value) => slot.fill(value),
+                    Reply::Pending => queue.schedule((receiver, message, slot)),
+                    r => slot.fill(r),
                 }
             },
         )
     }
 
-    pub fn poll(&self) -> Option<Arc<Value>> {
-        self.slot.poll()
+    pub fn poll(&self) -> Reply {
+        self.slot.poll().unwrap_or(Reply::Pending)
     }
 }
 
-#[derive(Clone)]
 struct Slot<T> {
     mutex: Arc<Mutex<Option<T>>>,
+}
+
+impl<T> Clone for Slot<T> {
+    fn clone(&self) -> Self {
+        Slot {
+            mutex: self.mutex.clone(),
+        }
+    }
 }
 
 impl<T> Slot<T> {
