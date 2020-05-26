@@ -306,6 +306,18 @@ impl ObjectDeclaration {
     pub fn symbol(&self) -> &str {
         (*self.symbol).as_ref()
     }
+
+    pub fn methods(&self) -> impl Iterator<Item = &Arc<Method>> {
+        static EMPTY: Vec<Arc<ObjectMember>> = vec![];
+        (match &self.body {
+            None => &EMPTY,
+            Some(body) => &body.members,
+        })
+        .iter()
+        .filter_map(|member| match member.as_ref() {
+            ObjectMember::Method(m) => Some(m),
+        })
+    }
 }
 
 impl Node for ObjectDeclaration {

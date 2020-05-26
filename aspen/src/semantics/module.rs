@@ -1,9 +1,6 @@
 use crate::semantics::types::{Behaviour, Type};
 use crate::semantics::*;
-use crate::syntax::{
-    Declaration, Expression, Navigator, ObjectDeclaration, Parser, ReferenceExpression,
-    ReferenceTypeExpression, Root, TypeExpression,
-};
+use crate::syntax::*;
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
 use std::sync::Arc;
@@ -180,6 +177,15 @@ impl Module {
             Type::Atom(_) => vec![],
             Type::Unbounded(_, _) => vec![],
             Type::Object(o) => self.get_behaviours_of_object(o).await,
+        }
+    }
+
+    pub async fn get_type_of_pattern(self: &Arc<Self>, pattern: Arc<Pattern>) -> Type {
+        match pattern.as_ref() {
+            Pattern::Integer(i) => match &i.literal.kind {
+                TokenKind::IntegerLiteral(i, _) => Type::Integer(Some(*i)),
+                _ => Type::Integer(None),
+            },
         }
     }
 }

@@ -492,12 +492,19 @@ impl<'ctx> Generator<'ctx> {
         let _state = recv_fn.get_nth_param(0).unwrap();
         let message = recv_fn.get_nth_param(1).unwrap();
 
-        // TODO: Allocate new object and return it.
+        for method in declaration.methods() {
+            self.generate_method(method)?;
+        }
 
         builder.build_call(drop_reference_fn, &[message], "");
 
         builder.build_return(Some(&self.value_ptr_type.const_zero()));
 
+        Ok(())
+    }
+
+    fn generate_method(&self, _method: &Arc<syntax::Method>) -> GenResult<()> {
+        // TODO: Generate pattern match branching logic
         Ok(())
     }
 
