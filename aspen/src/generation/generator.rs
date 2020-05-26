@@ -471,6 +471,8 @@ impl<'ctx> Generator<'ctx> {
         module: &Module<'ctx>,
         declaration: &Arc<syntax::ObjectDeclaration>,
     ) -> GenResult<()> {
+        let drop_reference_fn = self.drop_reference_fn(module);
+
         let recv_fn = self.object_recv_fn(module, declaration);
         let builder = self.context.create_builder();
 
@@ -480,10 +482,11 @@ impl<'ctx> Generator<'ctx> {
         let _state = recv_fn.get_nth_param(0).unwrap();
         let message = recv_fn.get_nth_param(1).unwrap();
 
-        // TODO: Drop the message at the end of this function.
-        // Allocate new object and return it.
+        // TODO: Allocate new object and return it.
 
-        builder.build_return(Some(&message));
+        builder.build_call(drop_reference_fn, &[message], "");
+
+        builder.build_return(Some(&self.value_ptr_type.const_zero()));
 
         Ok(())
     }

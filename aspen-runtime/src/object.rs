@@ -34,7 +34,13 @@ impl Object {
                     return Reply::Panic;
                 }
                 */
-                Reply::Answer((self.recv)(*guard, message.expose()).enclose())
+                let value = (self.recv)(*guard, message.expose());
+
+                if value == 0 as *const _ {
+                    Reply::Rejected
+                } else {
+                    Reply::Answer(value.enclose())
+                }
             },
         }
     }
