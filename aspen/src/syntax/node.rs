@@ -336,17 +336,21 @@ impl Node for ObjectDeclaration {
 /// ```bnf
 /// ObjectBody :=
 ///   OPEN_CURLY
+///   ObjectMember*
 ///   CLOSE_CURLY
 /// ```
 pub struct ObjectBody {
     pub source: Arc<Source>,
     pub open_curly: Arc<Token>,
+    pub members: Vec<Arc<ObjectMember>>,
     pub close_curly: Option<Arc<Token>>,
 }
 
 impl fmt::Debug for ObjectBody {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("ObjectBody").finish()
+        f.debug_struct("ObjectBody")
+            .field("members", &self.members)
+            .finish()
     }
 }
 
@@ -366,7 +370,112 @@ impl Node for ObjectBody {
     }
 
     fn children(&self) -> Children {
+        Children::Iter(Box::new(
+            self.members.clone().into_iter().map(|m| m as Arc<dyn Node>),
+        ))
+    }
+}
+
+/// ```bnf
+/// ObjectMember :=
+///   ReferenceTypeExpression
+/// ```
+pub enum ObjectMember {
+    Method(Arc<Method>),
+}
+
+impl fmt::Debug for ObjectMember {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ObjectMember::Method(n) => f.debug_tuple("ObjectMember::Method").field(n).finish(),
+        }
+    }
+}
+
+impl Node for ObjectMember {
+    fn source(&self) -> &Arc<Source> {
+        match self {
+            ObjectMember::Method(n) => n.source(),
+        }
+    }
+
+    fn range(&self) -> Range {
+        match self {
+            ObjectMember::Method(n) => n.range(),
+        }
+    }
+
+    fn children(&self) -> Children {
+        match self {
+            ObjectMember::Method(n) => Children::Single(Some(n.clone())),
+        }
+    }
+}
+
+/// ```bnf
+/// Method :=
+///   Pattern
+/// ```
+pub struct Method {
+    pub source: Arc<Source>,
+    pub pattern: Arc<Pattern>,
+}
+
+impl fmt::Debug for Method {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Method")
+            .field("pattern", &self.pattern)
+            .finish()
+    }
+}
+
+impl Node for Method {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.pattern.range()
+    }
+
+    fn children(&self) -> Children {
         Children::None
+    }
+}
+
+/// ```bnf
+/// Pattern :=
+///   Integer
+/// ```
+pub enum Pattern {
+    Integer(Arc<Integer>),
+}
+
+impl fmt::Debug for Pattern {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Pattern::Integer(n) => f.debug_tuple("Pattern::Integer").field(n).finish(),
+        }
+    }
+}
+
+impl Node for Pattern {
+    fn source(&self) -> &Arc<Source> {
+        match self {
+            Pattern::Integer(n) => n.source(),
+        }
+    }
+
+    fn range(&self) -> Range {
+        match self {
+            Pattern::Integer(n) => n.range(),
+        }
+    }
+
+    fn children(&self) -> Children {
+        match self {
+            Pattern::Integer(n) => Children::Single(Some(n.clone())),
+        }
     }
 }
 

@@ -251,6 +251,12 @@ impl ParseStrategy<Arc<ObjectBody>> for ParseObjectBody {
             .and_then(async move |open_curly| {
                 let mut diagnostics = Diagnostics::new();
 
+                let members = ParseMany::of(ParseObjectMember)
+                    .parse(parser)
+                    .await
+                    .collect_diagnostics(&mut diagnostics)
+                    .unwrap_or(vec![]);
+
                 let close_curly = parser
                     .expect(TokenKind::CloseCurly, "end of object body")
                     .collect_diagnostics(&mut diagnostics);
@@ -260,11 +266,70 @@ impl ParseStrategy<Arc<ObjectBody>> for ParseObjectBody {
                     Arc::new(ObjectBody {
                         source: parser.source.clone(),
                         open_curly,
+                        members,
                         close_curly,
                     }),
                 )
             })
             .await
+    }
+}
+
+#[derive(Clone)]
+struct ParseObjectMember;
+
+#[async_trait]
+impl ParseStrategy<Arc<ObjectMember>> for ParseObjectMember {
+    fn describe(&self) -> String {
+        "object member".into()
+    }
+
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ObjectMember>> {
+        ParseMethod
+            .parse(parser)
+            .await
+            .map(ObjectMember::Method)
+            .map(Arc::new)
+    }
+}
+
+struct ParseMethod;
+
+#[async_trait]
+impl ParseStrategy<Arc<Method>> for ParseMethod {
+    fn describe(&self) -> String {
+        "method".into()
+    }
+
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Method>> {
+        ParsePattern.parse(parser).await.map(|pattern| {
+            Arc::new(Method {
+                source: parser.source.clone(),
+                pattern,
+            })
+        })
+    }
+}
+
+struct ParsePattern;
+
+#[async_trait]
+impl ParseStrategy<Arc<Pattern>> for ParsePattern {
+    fn describe(&self) -> String {
+        "pattern".into()
+    }
+
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Pattern>> {
+        match parser.tokens.peek().kind {
+            TokenKind::IntegerLiteral(_, _) => Succeeded(
+                Diagnostics::new(),
+                Arc::new(Pattern::Integer(Arc::new(Integer {
+                    source: parser.source.clone(),
+                    literal: parser.tokens.take(),
+                }))),
+            ),
+            _ => parser.fail_expecting("pattern"),
+        }
     }
 }
 
