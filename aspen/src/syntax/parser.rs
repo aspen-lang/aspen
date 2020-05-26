@@ -206,19 +206,63 @@ impl ParseStrategy<Arc<ObjectDeclaration>> for ParseObjectDeclaration {
                     .and_then(async move |symbol| {
                         let mut diagnostics = Diagnostics::new();
 
-                        let period = parser.expect_optional_period(&mut diagnostics);
+                        if parser.tokens.sees(TokenKind::OpenCurly) {
+                            ParseObjectBody.parse(parser).await.map(|body| {
+                                Arc::new(ObjectDeclaration {
+                                    source: parser.source.clone(),
+                                    keyword,
+                                    symbol,
+                                    period: None,
+                                    body: Some(body),
+                                })
+                            })
+                        } else {
+                            let period = parser.expect_optional_period(&mut diagnostics);
 
-                        Succeeded(
-                            diagnostics,
-                            Arc::new(ObjectDeclaration {
-                                source: parser.source.clone(),
-                                keyword,
-                                symbol,
-                                period,
-                            }),
-                        )
+                            Succeeded(
+                                diagnostics,
+                                Arc::new(ObjectDeclaration {
+                                    source: parser.source.clone(),
+                                    keyword,
+                                    symbol,
+                                    period,
+                                    body: None,
+                                }),
+                            )
+                        }
                     })
                     .await
+            })
+            .await
+    }
+}
+
+struct ParseObjectBody;
+
+#[async_trait]
+impl ParseStrategy<Arc<ObjectBody>> for ParseObjectBody {
+    fn describe(&self) -> String {
+        "object body".into()
+    }
+
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<ObjectBody>> {
+        parser
+            .expect(TokenKind::OpenCurly, "object body")
+            .and_then(async move |open_curly| {
+                let mut diagnostics = Diagnostics::new();
+
+                let close_curly = parser
+                    .expect(TokenKind::CloseCurly, "end of object body")
+                    .collect_diagnostics(&mut diagnostics);
+
+                Succeeded(
+                    diagnostics,
+                    Arc::new(ObjectBody {
+                        source: parser.source.clone(),
+                        open_curly,
+                        close_curly,
+                    }),
+                )
             })
             .await
     }

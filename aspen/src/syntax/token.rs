@@ -62,4 +62,7 @@ pub enum TokenKind {
     Identifier,
 
     ObjectKeyword,
+
+    OpenCurly,
+    CloseCurly,
 }

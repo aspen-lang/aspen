@@ -283,19 +283,21 @@ impl Node for Declaration {
 /// ObjectDeclaration :=
 ///   OBJECT_KEYWORD
 ///   Symbol
-///   PERIOD
+///   (PERIOD | ObjectBody)
 /// ```
 pub struct ObjectDeclaration {
     pub source: Arc<Source>,
     pub keyword: Arc<Token>,
     pub symbol: Arc<Symbol>,
     pub period: Option<Arc<Token>>,
+    pub body: Option<Arc<ObjectBody>>,
 }
 
 impl fmt::Debug for ObjectDeclaration {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("ObjectDeclaration")
             .field("symbol", &self.symbol)
+            .field("body", &self.body)
             .finish()
     }
 }
@@ -316,12 +318,55 @@ impl Node for ObjectDeclaration {
             self.period
                 .as_ref()
                 .map(|t| t.range.clone())
+                .or_else(|| self.body.as_ref().map(|b| b.range()))
                 .unwrap_or(self.symbol.range()),
         )
     }
 
     fn children(&self) -> Children {
-        Children::Single(Some(self.symbol.clone().into_node()))
+        match &self.body {
+            None => Children::Single(Some(self.symbol.clone())),
+            Some(body) => Children::Iter(Box::new(
+                vec![self.symbol.clone().into_node(), body.clone().into_node()].into_iter(),
+            )),
+        }
+    }
+}
+
+/// ```bnf
+/// ObjectBody :=
+///   OPEN_CURLY
+///   CLOSE_CURLY
+/// ```
+pub struct ObjectBody {
+    pub source: Arc<Source>,
+    pub open_curly: Arc<Token>,
+    pub close_curly: Option<Arc<Token>>,
+}
+
+impl fmt::Debug for ObjectBody {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ObjectBody").finish()
+    }
+}
+
+impl Node for ObjectBody {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.open_curly.range.clone().through(
+            self.close_curly
+                .as_ref()
+                .unwrap_or(&self.open_curly)
+                .range
+                .clone(),
+        )
+    }
+
+    fn children(&self) -> Children {
+        Children::None
     }
 }
 

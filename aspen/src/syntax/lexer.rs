@@ -72,6 +72,16 @@ impl<'a> Lexer<'a> {
                 kind = Period;
             }
 
+            '{' => {
+                self.skip();
+                kind = OpenCurly;
+            }
+
+            '}' => {
+                self.skip();
+                kind = CloseCurly;
+            }
+
             c if c == '\n' => {
                 self.skip();
                 kind = Whitespace;
