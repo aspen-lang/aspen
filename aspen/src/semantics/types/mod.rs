@@ -1,11 +1,13 @@
+use crate::syntax::ObjectDeclaration;
+use std::cmp::Ordering;
+use std::fmt;
 use std::sync::Arc;
-
 use tokio::sync::Mutex;
 
-use crate::syntax::ObjectDeclaration;
-
+mod behaviour;
 mod trace;
 
+pub use self::behaviour::*;
 pub use self::trace::*;
 
 #[derive(Clone, Debug)]
@@ -13,8 +15,26 @@ pub enum Type {
     Failed { diagnosed: bool },
     Object(Arc<ObjectDeclaration>),
     Unbounded(String, usize),
-    Integer,
-    Float,
+    Integer(Option<i128>),
+    Float(Option<f64>),
+    Atom(Option<String>),
+}
+
+impl fmt::Display for Type {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        use Type::*;
+        match self {
+            Failed { .. } => write!(f, "?"),
+            Object(o) => write!(f, "{}", o.symbol()),
+            Unbounded(s, _) => write!(f, "{}", s),
+            Integer(Some(i)) => write!(f, "Integer ({})", i),
+            Integer(None) => write!(f, "Integer"),
+            Float(Some(v)) => write!(f, "Float ({})", v),
+            Float(None) => write!(f, "Float"),
+            Atom(Some(a)) => write!(f, "{}", a),
+            Atom(None) => write!(f, "Atom"),
+        }
+    }
 }
 
 impl Type {
@@ -33,12 +53,34 @@ impl Type {
                     Err(TypeError::ObjectsAreNotEqual(a.clone(), b.clone()))
                 }
             }
-            (Integer, Integer) => Ok(()),
-            (Integer, _) | (_, Integer) => {
+            (Integer(i), Integer(j)) => {
+                if i == j {
+                    Ok(())
+                } else {
+                    Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+                }
+            }
+            (Integer(_), _) | (_, Integer(_)) => {
                 Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
             }
-            (Float, Float) => Ok(()),
-            (Float, _) | (_, Float) => {
+            (Float(i), Float(j)) => {
+                if i == j {
+                    Ok(())
+                } else {
+                    Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+                }
+            }
+            (Float(_), _) | (_, Float(_)) => {
+                Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+            }
+            (Atom(a), Atom(b)) => {
+                if a == b {
+                    Ok(())
+                } else {
+                    Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+                }
+            }
+            (Atom(_), _) | (_, Atom(_)) => {
                 Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
             }
         }
@@ -55,14 +97,59 @@ impl Type {
                 object.clone(),
                 other.clone(),
             )),
-            (Integer, Integer) => Ok(()),
-            (Integer, _) | (_, Integer) => {
+            (Integer(None), Integer(Some(_))) => Ok(()),
+            (Integer(i), Integer(j)) => {
+                if i == j {
+                    Ok(())
+                } else {
+                    Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+                }
+            }
+            (Integer(_), _) | (_, Integer(_)) => {
                 Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
             }
-            (Float, Float) => Ok(()),
-            (Float, _) | (_, Float) => {
+            (Float(None), Float(Some(_))) => Ok(()),
+            (Float(i), Float(j)) => {
+                if i == j {
+                    Ok(())
+                } else {
+                    Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+                }
+            }
+            (Float(_), _) | (_, Float(_)) => {
                 Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
             }
+            (Atom(None), Atom(Some(_))) => Ok(()),
+            (Atom(a), Atom(b)) => {
+                if a == b {
+                    Ok(())
+                } else {
+                    Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+                }
+            }
+            (Atom(_), _) | (_, Atom(_)) => {
+                Err(TypeError::TypesAreNotEqual(self.clone(), other.clone()))
+            }
+        }
+    }
+}
+
+impl PartialEq for Type {
+    fn eq(&self, other: &Self) -> bool {
+        self.check_equality(other).is_ok()
+    }
+}
+
+impl PartialOrd for Type {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self == other {
+            Some(Ordering::Equal)
+        } else if self.check_assignability(other).is_ok() {
+            Some(Ordering::Greater)
+        } else if other.check_assignability(self).is_ok() {
+            Some(Ordering::Less)
+        } else {
+            None
         }
     }
 }
@@ -176,12 +263,16 @@ mod tests {
 
         let apparent_slot = slot.clone();
         task::spawn(async move {
-            apparent_slot.resolve_apparent(Type::Failed).await;
+            apparent_slot
+                .resolve_apparent(Type::Failed { diagnosed: false })
+                .await;
         });
 
         let required_slot = slot.clone();
         task::spawn(async move {
-            required_slot.resolve_required(Type::Failed).await;
+            required_slot
+                .resolve_required(Type::Failed { diagnosed: false })
+                .await;
         });
 
         assertion.await.unwrap();

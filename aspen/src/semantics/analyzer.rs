@@ -67,8 +67,18 @@ where
     }
 }
 
+pub trait PtrAsUsize {
+    fn ptr_as_usize(&self) -> usize;
+}
+
+impl<T> PtrAsUsize for Arc<T> {
+    fn ptr_as_usize(&self) -> usize {
+        self.as_ref() as *const _ as usize
+    }
+}
+
 pub struct Memo<A: Analyzer, K> {
-    mutex: Mutex<HashMap<K, A::Output>>,
+    mutex: Mutex<HashMap<K, Arc<Mutex<Option<A::Output>>>>>,
     analyzer: A,
 }
 
@@ -78,16 +88,6 @@ impl<A: Analyzer, K> Memo<A, K> {
             mutex: Mutex::new(HashMap::new()),
             analyzer,
         }
-    }
-}
-
-pub trait PtrAsUsize {
-    fn ptr_as_usize(&self) -> usize;
-}
-
-impl<T> PtrAsUsize for Arc<T> {
-    fn ptr_as_usize(&self) -> usize {
-        self.as_ref() as *const _ as usize
     }
 }
 
@@ -103,15 +103,38 @@ where
 
     async fn analyze(&self, ctx: AnalysisContext<Self::Input>) -> A::Output {
         let key = ctx.input.ptr_as_usize();
-        let mut map = self.mutex.lock().await;
 
-        match map.get(&key) {
-            Some(t) => return t.clone(),
-            None => {}
+        {
+            let map = self.mutex.lock().await;
+
+            if let Some(m) = map.get(&key) {
+                let opt = m.lock().await;
+                if let Some(t) = opt.as_ref() {
+                    return t.clone();
+                }
+            }
         }
+
+        let mutex = Arc::new(Mutex::new(None));
+        let clone = mutex.clone();
+        let mut opt = mutex.lock().await;
+        {
+            let mut map = self.mutex.lock().await;
+
+            if let Some(m) = map.get(&key) {
+                let opt = m.lock().await;
+                if let Some(t) = opt.as_ref() {
+                    return t.clone();
+                }
+            }
+
+            map.insert(key, clone);
+        }
+
         let analyzer = self.analyzer.clone();
         let t = analyzer.analyze(ctx).await;
-        map.insert(key, t.clone());
+        let opt: &mut Option<_> = opt.borrow_mut();
+        *opt = Some(t.clone());
         t
     }
 }

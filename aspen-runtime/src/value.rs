@@ -6,6 +6,7 @@ use std::sync::Arc;
 pub enum Value {
     Integer(i128),
     Float(f64),
+    String(String),
     Object(Object),
     Nullary(&'static str),
 }
@@ -16,6 +17,7 @@ impl fmt::Display for Value {
         match self {
             Integer(v) => write!(f, "{}", v),
             Float(v) => write!(f, "{}", v),
+            String(v) => write!(f, "{}", v),
             Object(_) => write!(f, "object"),
             Nullary(v) => write!(f, "#{}", v),
         }
@@ -29,6 +31,10 @@ impl Value {
 
     pub fn new_float(value: f64) -> Arc<Value> {
         Arc::new(Value::Float(value))
+    }
+
+    pub fn new_string(value: String) -> Arc<Value> {
+        Arc::new(Value::String(value))
     }
 
     pub fn new_nullary(value: &'static str) -> Arc<Value> {

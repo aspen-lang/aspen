@@ -194,6 +194,7 @@ impl<'ctx> Generator<'ctx> {
 
                     let mut locals = vec![];
 
+                    let type_ = block_on(host_module.get_type_of(expression.clone()));
                     let object = self.generate_expression(
                         host_module,
                         module,
@@ -205,6 +206,15 @@ impl<'ctx> Generator<'ctx> {
 
                     let print_fn = self.print_fn(module);
                     builder.build_call(print_fn, &[object], "");
+
+                    let type_ = format!(":: {}", type_);
+                    let type_ = builder.build_global_string_ptr(type_.as_ref(), "");
+                    let type_ = builder.build_call(
+                        self.new_string_fn(module),
+                        &[type_.as_pointer_value().into()],
+                        "",
+                    );
+                    builder.build_call(print_fn, &[type_.try_as_basic_value().left().unwrap()], "");
 
                     self.generate_end_of_scope(module, &builder, locals);
 
@@ -545,6 +555,7 @@ mod runtime {
         #[allow(improper_ctypes)]
         pub fn new_int(value: i128) -> *mut Value;
         pub fn new_float(value: f64) -> *mut Value;
+        pub fn new_string(value: *mut i8) -> *mut Value;
         pub fn new_object(size: usize, recv: extern "C" fn()) -> *mut Value;
         pub fn new_nullary(value: *mut i8) -> *mut Value;
 
@@ -583,6 +594,22 @@ impl<'ctx> Generator<'ctx> {
             module.add_function(
                 "new_float",
                 self.value_ptr_type.fn_type(&[self.f64_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn new_string_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static NEW_STRING: unsafe extern "C" fn(value: *mut i8) -> *mut runtime::Value =
+            runtime::new_string;
+
+        module.get_function("new_string").unwrap_or_else(|| {
+            module.add_function(
+                "new_string",
+                self.value_ptr_type
+                    .fn_type(&[self.str_ptr_type.into()], false),
                 Some(Linkage::External),
             )
         })

@@ -1,8 +1,8 @@
-use crate::semantics::types::Type;
+use crate::semantics::types::{Behaviour, Type};
 use crate::semantics::*;
 use crate::syntax::{
-    Declaration, Expression, Navigator, Parser, ReferenceExpression, ReferenceTypeExpression, Root,
-    TypeExpression,
+    Declaration, Expression, Navigator, ObjectDeclaration, Parser, ReferenceExpression,
+    ReferenceTypeExpression, Root, TypeExpression,
 };
 use crate::{Diagnostics, Source, SourceKind, URI};
 use std::fmt;
@@ -22,18 +22,22 @@ pub struct Module {
         MergeTwo<
             MergeTwo<
                 MergeTwo<
-                    analyzers::CheckForDuplicateExports,
-                    analyzers::CheckAllReferencesAreDefined,
+                    MergeTwo<
+                        analyzers::CheckForDuplicateExports,
+                        analyzers::CheckAllReferencesAreDefined,
+                    >,
+                    analyzers::CheckForFailedExpressionTypeInference,
                 >,
-                analyzers::CheckForFailedExpressionTypeInference,
+                analyzers::CheckForFailedTypeExpressionTypeInference,
             >,
-            analyzers::CheckForFailedTypeExpressionTypeInference,
+            analyzers::CheckForUnunderstandableMessages,
         >,
     >,
     find_declaration: Memo<analyzers::FindDeclaration, usize>,
     find_type_declaration: Memo<analyzers::FindTypeDeclaration, usize>,
     get_type_of_expression: Memo<analyzers::GetTypeOfExpression, usize>,
     get_type_of_type_expression: Memo<analyzers::GetTypeOfTypeExpression, usize>,
+    get_behaviours_of_object: Memo<analyzers::GetBehavioursOfObject, usize>,
 }
 
 impl Module {
@@ -51,12 +55,14 @@ impl Module {
                 (analyzers::CheckForDuplicateExports)
                     .and(analyzers::CheckAllReferencesAreDefined)
                     .and(analyzers::CheckForFailedExpressionTypeInference)
-                    .and(analyzers::CheckForFailedTypeExpressionTypeInference),
+                    .and(analyzers::CheckForFailedTypeExpressionTypeInference)
+                    .and(analyzers::CheckForUnunderstandableMessages),
             ),
             find_declaration: Memo::of(analyzers::FindDeclaration),
             find_type_declaration: Memo::of(analyzers::FindTypeDeclaration),
             get_type_of_expression: Memo::of(analyzers::GetTypeOfExpression),
             get_type_of_type_expression: Memo::of(analyzers::GetTypeOfTypeExpression),
+            get_behaviours_of_object: Memo::of(analyzers::GetBehavioursOfObject),
         }
     }
 
@@ -130,13 +136,51 @@ impl Module {
     }
 
     pub async fn get_type_of(self: &Arc<Self>, expression: Arc<Expression>) -> Type {
-        self.run_analyzer(&self.get_type_of_expression, expression.clone())
+        self.run_analyzer(&self.get_type_of_expression, expression)
             .await
     }
 
     pub async fn resolve_type(self: &Arc<Self>, expression: Arc<TypeExpression>) -> Type {
-        self.run_analyzer(&self.get_type_of_type_expression, expression.clone())
+        self.run_analyzer(&self.get_type_of_type_expression, expression)
             .await
+    }
+
+    pub async fn get_behaviours_of_object(
+        self: &Arc<Self>,
+        object: Arc<ObjectDeclaration>,
+    ) -> Vec<Behaviour> {
+        self.run_analyzer(&self.get_behaviours_of_object, object)
+            .await
+    }
+
+    pub async fn get_behaviours_of_type(self: &Arc<Self>, type_: Type) -> Vec<Behaviour> {
+        match type_ {
+            Type::Failed { .. } => vec![],
+            Type::Integer(Some(i)) => vec![
+                Behaviour {
+                    selector: Type::Atom(Some("increment!".into())),
+                    reply: Type::Integer(Some(i + 1)),
+                },
+                Behaviour {
+                    selector: Type::Integer(None),
+                    reply: Type::Integer(None),
+                },
+            ],
+            Type::Integer(None) => vec![
+                Behaviour {
+                    selector: Type::Atom(Some("increment!".into())),
+                    reply: Type::Integer(None),
+                },
+                Behaviour {
+                    selector: Type::Integer(None),
+                    reply: Type::Integer(None),
+                },
+            ],
+            Type::Float(_) => vec![],
+            Type::Atom(_) => vec![],
+            Type::Unbounded(_, _) => vec![],
+            Type::Object(o) => self.get_behaviours_of_object(o).await,
+        }
     }
 }
 

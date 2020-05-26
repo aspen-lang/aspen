@@ -31,6 +31,10 @@ pub trait Node: fmt::Debug + Send + Sync {
     fn as_reference_type_expression(self: Arc<Self>) -> Option<Arc<ReferenceTypeExpression>> {
         None
     }
+
+    fn as_message_send(self: Arc<Self>) -> Option<Arc<MessageSend>> {
+        None
+    }
 }
 
 pub trait IntoNode {
@@ -534,6 +538,10 @@ impl Node for MessageSend {
                 .into_iter()
                 .map(IntoNode::into_node),
         ))
+    }
+
+    fn as_message_send(self: Arc<Self>) -> Option<Arc<MessageSend>> {
+        Some(self)
     }
 }
 
