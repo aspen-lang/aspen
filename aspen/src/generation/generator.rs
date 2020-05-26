@@ -9,7 +9,7 @@ use inkwell::execution_engine::ExecutionEngine;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::{FloatType, FunctionType, IntType, PointerType, VoidType};
-use inkwell::values::{BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::fmt;
 use std::sync::Arc;
@@ -28,6 +28,8 @@ pub struct Generator<'ctx> {
     i128_type: IntType<'ctx>,
     // f64
     f64_type: FloatType<'ctx>,
+    // bool
+    bool_type: IntType<'ctx>,
 
     // *i8
     str_ptr_type: PointerType<'ctx>,
@@ -55,6 +57,7 @@ impl<'ctx> Generator<'ctx> {
         let i8_type = context.i8_type();
         let i128_type = context.i128_type();
         let f64_type = context.f64_type();
+        let bool_type = context.bool_type();
         let str_ptr_type = i8_type.ptr_type(AddressSpace::Generic);
 
         let pending_reply_type = context.opaque_struct_type("PendingReply");
@@ -85,6 +88,7 @@ impl<'ctx> Generator<'ctx> {
             usize_type,
             i128_type,
             f64_type,
+            bool_type,
             str_ptr_type,
             value_ptr_type,
             pending_reply_ptr_type,
@@ -477,7 +481,7 @@ impl<'ctx> Generator<'ctx> {
 
     fn generate_object_declaration(
         &self,
-        _host_module: &Arc<HostModule>,
+        host_module: &Arc<HostModule>,
         module: &Module<'ctx>,
         declaration: &Arc<syntax::ObjectDeclaration>,
     ) -> GenResult<()> {
@@ -493,19 +497,96 @@ impl<'ctx> Generator<'ctx> {
         let message = recv_fn.get_nth_param(1).unwrap();
 
         for method in declaration.methods() {
-            self.generate_method(method)?;
+            self.generate_method(host_module, module, recv_fn, &builder, message, method)?;
         }
 
         builder.build_call(drop_reference_fn, &[message], "");
-
         builder.build_return(Some(&self.value_ptr_type.const_zero()));
 
         Ok(())
     }
 
-    fn generate_method(&self, _method: &Arc<syntax::Method>) -> GenResult<()> {
-        // TODO: Generate pattern match branching logic
+    fn generate_method(
+        &self,
+        host_module: &Arc<HostModule>,
+        module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
+        builder: &Builder<'ctx>,
+        message: BasicValueEnum<'ctx>,
+        method: &Arc<syntax::Method>,
+    ) -> GenResult<()> {
+        let mut locals = vec![message];
+
+        let builder = self.generate_pattern_match(
+            module,
+            function,
+            builder,
+            &mut locals,
+            &method.pattern,
+            message,
+        )?;
+
+        let mut return_value: Option<Box<dyn BasicValue<'ctx>>> = None;
+        for statement in method.statements.iter() {
+            return_value = Some(Box::new(self.generate_expression(
+                host_module,
+                module,
+                function,
+                &builder,
+                &mut locals,
+                &statement.expression,
+            )?));
+        }
+
+        self.generate_end_of_scope(module, &builder, locals);
+        builder.build_return(return_value.as_ref().map(|b| b.as_ref()));
         Ok(())
+    }
+
+    fn generate_pattern_match(
+        &self,
+        module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
+        pattern: &Arc<syntax::Pattern>,
+        subject: BasicValueEnum<'ctx>,
+    ) -> GenResult<Builder<'ctx>> {
+        let match_fn = self.match_fn(module);
+
+        let matches = match pattern.as_ref() {
+            syntax::Pattern::Integer(i) => {
+                let pattern = self.generate_integer(module, builder, locals, i)?;
+                builder
+                    .build_call(match_fn, &[pattern, subject], "matches")
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value()
+            }
+            syntax::Pattern::Nullary(a) => {
+                let pattern = self.generate_nullary(module, builder, locals, a)?;
+                builder
+                    .build_call(match_fn, &[pattern, subject], "matches")
+                    .try_as_basic_value()
+                    .left()
+                    .unwrap()
+                    .into_int_value()
+            }
+        };
+
+        let match_block = self
+            .context
+            .append_basic_block(function, format!("if_matches={:?}", pattern).as_str());
+        let else_block = self.context.append_basic_block(function, "else");
+
+        builder.build_conditional_branch(matches, match_block, else_block);
+        builder.position_at_end(else_block);
+
+        let builder = self.context.create_builder();
+        builder.position_at_end(match_block);
+
+        Ok(builder)
     }
 
     fn object_recv_fn(
@@ -565,6 +646,8 @@ mod runtime {
         pub fn new_string(value: *mut i8) -> *mut Value;
         pub fn new_object(size: usize, recv: extern "C" fn()) -> *mut Value;
         pub fn new_nullary(value: *mut i8) -> *mut Value;
+
+        pub fn r#match(a: *const Value, b: *const Value) -> bool;
 
         pub fn clone_reference(value: *mut Value);
         pub fn drop_reference(value: *mut Value);
@@ -653,6 +736,26 @@ impl<'ctx> Generator<'ctx> {
                 "new_nullary",
                 self.value_ptr_type
                     .fn_type(&[self.str_ptr_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn match_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static MATCH: unsafe extern "C" fn(
+            a: *const runtime::Value,
+            b: *const runtime::Value,
+        ) -> bool = runtime::r#match;
+
+        module.get_function("match").unwrap_or_else(|| {
+            module.add_function(
+                "match",
+                self.bool_type.fn_type(
+                    &[self.value_ptr_type.into(), self.value_ptr_type.into()],
+                    false,
+                ),
                 Some(Linkage::External),
             )
         })

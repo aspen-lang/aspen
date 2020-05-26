@@ -7,8 +7,22 @@ pub enum Value {
     Integer(i128),
     Float(f64),
     String(String),
-    Object(Object),
     Nullary(&'static str),
+    Object(Object),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        use Value::*;
+        match (self, other) {
+            (Integer(a), Integer(b)) => a == b,
+            (Float(a), Float(b)) => a == b,
+            (String(a), String(b)) => a == b,
+            (Nullary(a), Nullary(b)) => a == b,
+            (Object(_), Object(_)) => self as *const _ == other as *const _,
+            _ => false,
+        }
+    }
 }
 
 impl fmt::Display for Value {

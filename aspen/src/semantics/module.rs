@@ -186,6 +186,10 @@ impl Module {
                 TokenKind::IntegerLiteral(i, _) => Type::Integer(Some(*i)),
                 _ => Type::Integer(None),
             },
+            Pattern::Nullary(a) => match &a.atom.kind {
+                TokenKind::NullaryAtom => Type::Atom(Some(a.atom.lexeme().into())),
+                _ => Type::Integer(None),
+            },
         }
     }
 }

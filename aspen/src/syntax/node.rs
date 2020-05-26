@@ -390,7 +390,7 @@ impl Node for ObjectBody {
 
 /// ```bnf
 /// ObjectMember :=
-///   ReferenceTypeExpression
+///   Method
 /// ```
 pub enum ObjectMember {
     Method(Arc<Method>),
@@ -427,16 +427,21 @@ impl Node for ObjectMember {
 /// ```bnf
 /// Method :=
 ///   Pattern
+///   ARROW
+///   Statement+
 /// ```
 pub struct Method {
     pub source: Arc<Source>,
     pub pattern: Arc<Pattern>,
+    pub arrow: Arc<Token>,
+    pub statements: Vec<Arc<Statement>>,
 }
 
 impl fmt::Debug for Method {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("Method")
             .field("pattern", &self.pattern)
+            .field("statements", &self.statements)
             .finish()
     }
 }
@@ -447,11 +452,25 @@ impl Node for Method {
     }
 
     fn range(&self) -> Range {
-        self.pattern.range()
+        self.pattern.range().through(
+            self.statements
+                .last()
+                .map(|s| s.range())
+                .unwrap_or(self.pattern.range()),
+        )
     }
 
     fn children(&self) -> Children {
-        Children::None
+        Children::Iter(Box::new(
+            vec![self.pattern.clone() as Arc<dyn Node>]
+                .into_iter()
+                .chain(
+                    self.statements
+                        .clone()
+                        .into_iter()
+                        .map(|s| s as Arc<dyn Node>),
+                ),
+        ))
     }
 }
 
@@ -461,12 +480,14 @@ impl Node for Method {
 /// ```
 pub enum Pattern {
     Integer(Arc<Integer>),
+    Nullary(Arc<NullaryAtomExpression>),
 }
 
 impl fmt::Debug for Pattern {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Pattern::Integer(n) => f.debug_tuple("Pattern::Integer").field(n).finish(),
+            Pattern::Nullary(n) => f.debug_tuple("Pattern::Nullary").field(n).finish(),
         }
     }
 }
@@ -475,19 +496,59 @@ impl Node for Pattern {
     fn source(&self) -> &Arc<Source> {
         match self {
             Pattern::Integer(n) => n.source(),
+            Pattern::Nullary(n) => n.source(),
         }
     }
 
     fn range(&self) -> Range {
         match self {
             Pattern::Integer(n) => n.range(),
+            Pattern::Nullary(n) => n.range(),
         }
     }
 
     fn children(&self) -> Children {
         match self {
             Pattern::Integer(n) => Children::Single(Some(n.clone())),
+            Pattern::Nullary(n) => Children::Single(Some(n.clone())),
         }
+    }
+}
+
+/// ```bnf
+/// Statement :=
+///   Expression
+///   PERIOD
+/// ```
+pub struct Statement {
+    pub source: Arc<Source>,
+    pub expression: Arc<Expression>,
+    pub period: Option<Arc<Token>>,
+}
+
+impl fmt::Debug for Statement {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("Statement")
+            .field("expression", &self.expression)
+            .finish()
+    }
+}
+
+impl Node for Statement {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        let r = self.expression.range();
+        match self.period.as_ref() {
+            None => r,
+            Some(p) => r.through(p.range.clone()),
+        }
+    }
+
+    fn children(&self) -> Children {
+        Children::Single(Some(self.expression.clone()))
     }
 }
 

@@ -9,6 +9,16 @@ pub struct Lexer<'a> {
     chars: PeekMoreIterator<Graphemes<'a>>,
 }
 
+const DIGITS: [char; 36] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
+    'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
+];
+
+fn is_valid_digit(c: char, radix: u32) -> bool {
+    let valid_digits = &DIGITS[0..(radix as usize)];
+    valid_digits.contains(&c.to_ascii_uppercase())
+}
+
 impl<'a> Lexer<'a> {
     pub fn tokenize(source: &Arc<Source>) -> Arc<Vec<Arc<Token>>> {
         let chars = source.graphemes().peekmore();
@@ -80,6 +90,12 @@ impl<'a> Lexer<'a> {
             '}' => {
                 self.skip();
                 kind = CloseCurly;
+            }
+
+            '-' if self.peek_next_char() == '>' => {
+                self.skip();
+                self.skip();
+                kind = Arrow;
             }
 
             c if c == '\n' => {
@@ -188,7 +204,7 @@ impl<'a> Lexer<'a> {
             number.insert(0, '-');
         }
 
-        if self.peek_char() != '.' {
+        if self.peek_char() != '.' || !is_valid_digit(self.peek_next_char(), radix) {
             return match i128::from_str_radix(&number, radix) {
                 Ok(n) => TokenKind::IntegerLiteral(n, true),
                 Err(_) => TokenKind::IntegerLiteral(0, false),
@@ -208,12 +224,6 @@ impl<'a> Lexer<'a> {
     }
 
     fn take_digits(&mut self, radix: u32) -> String {
-        const DIGITS: [char; 36] = [
-            '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G',
-            'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X',
-            'Y', 'Z',
-        ];
-
         let valid_digits = &DIGITS[0..(radix as usize)];
 
         let mut digits = String::new();

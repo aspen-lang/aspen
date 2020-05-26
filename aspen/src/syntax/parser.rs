@@ -302,12 +302,65 @@ impl ParseStrategy<Arc<Method>> for ParseMethod {
     }
 
     async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Method>> {
-        ParsePattern.parse(parser).await.map(|pattern| {
-            Arc::new(Method {
-                source: parser.source.clone(),
-                pattern,
+        ParsePattern
+            .parse(parser)
+            .await
+            .and_then(async move |pattern| {
+                parser
+                    .expect(TokenKind::Arrow, "method body")
+                    .and_then(async move |arrow| {
+                        ParseMany::of(ParseStatement)
+                            .parse(parser)
+                            .await
+                            .and_then(async move |statements| {
+                                if statements.len() == 0 {
+                                    return parser.fail_expecting("statement");
+                                }
+                                Succeeded(
+                                    Diagnostics::new(),
+                                    Arc::new(Method {
+                                        source: parser.source.clone(),
+                                        pattern,
+                                        arrow,
+                                        statements,
+                                    }),
+                                )
+                            })
+                            .await
+                    })
+                    .await
             })
-        })
+            .await
+    }
+}
+
+#[derive(Clone)]
+struct ParseStatement;
+
+#[async_trait]
+impl ParseStrategy<Arc<Statement>> for ParseStatement {
+    fn describe(&self) -> String {
+        "statement".into()
+    }
+
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<Statement>> {
+        ParseExpression
+            .parse(parser)
+            .await
+            .and_then(async move |expression| {
+                let mut diagnostics = Diagnostics::new();
+                let period = parser.expect_optional_period(&mut diagnostics);
+
+                Succeeded(
+                    diagnostics,
+                    Arc::new(Statement {
+                        source: parser.source.clone(),
+                        expression,
+                        period,
+                    }),
+                )
+            })
+            .await
     }
 }
 
@@ -326,6 +379,13 @@ impl ParseStrategy<Arc<Pattern>> for ParsePattern {
                 Arc::new(Pattern::Integer(Arc::new(Integer {
                     source: parser.source.clone(),
                     literal: parser.tokens.take(),
+                }))),
+            ),
+            TokenKind::NullaryAtom => Succeeded(
+                Diagnostics::new(),
+                Arc::new(Pattern::Nullary(Arc::new(NullaryAtomExpression {
+                    source: parser.source.clone(),
+                    atom: parser.tokens.take(),
                 }))),
             ),
             _ => parser.fail_expecting("pattern"),

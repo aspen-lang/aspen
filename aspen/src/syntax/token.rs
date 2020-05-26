@@ -54,6 +54,7 @@ pub enum TokenKind {
     Whitespace,
 
     Period,
+    Arrow,
 
     IntegerLiteral(i128, bool),
     FloatLiteral(f64, bool),

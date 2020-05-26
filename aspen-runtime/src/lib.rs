@@ -34,6 +34,11 @@ pub extern "C" fn new_float(value: f64) -> *const Value {
 }
 
 #[no_mangle]
+pub extern "C" fn r#match(a: &Value, b: &Value) -> bool {
+    a == b
+}
+
+#[no_mangle]
 pub unsafe extern "C" fn new_string(value: *mut u8) -> *const Value {
     let len = libc::strlen(value as *mut _);
     let value = std::str::from_utf8(std::slice::from_raw_parts(value, len as usize)).unwrap();
