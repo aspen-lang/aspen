@@ -511,6 +511,11 @@ impl ParseStrategy<Arc<Expression>> for ParseTerm {
                     atom: parser.tokens.take(),
                 }))),
             ),
+            TokenKind::Hat => ParseAnswerExpression
+                .map(Expression::Answer)
+                .parse(parser)
+                .await
+                .map(Arc::new),
             TokenKind::Identifier => ParseReferenceExpression
                 .map(Expression::Reference)
                 .parse(parser)
@@ -518,6 +523,30 @@ impl ParseStrategy<Arc<Expression>> for ParseTerm {
                 .map(Arc::new),
             _ => parser.fail_expecting("expression"),
         }
+    }
+}
+
+struct ParseAnswerExpression;
+
+#[async_trait]
+impl ParseStrategy<Arc<AnswerExpression>> for ParseAnswerExpression {
+    fn describe(&self) -> String {
+        "answer".into()
+    }
+
+    async fn parse(self, parser: &mut Parser) -> ParseResult<Arc<AnswerExpression>> {
+        parser
+            .expect(TokenKind::Hat, "answer")
+            .and_then(async move |hat| {
+                ParseExpression.parse(parser).await.map(|expression| {
+                    Arc::new(AnswerExpression {
+                        source: parser.source.clone(),
+                        hat,
+                        expression,
+                    })
+                })
+            })
+            .await
     }
 }
 

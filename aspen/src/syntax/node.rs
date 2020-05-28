@@ -678,6 +678,7 @@ pub enum Expression {
     Reference(Arc<ReferenceExpression>),
     MessageSend(Arc<MessageSend>),
     NullaryAtom(Arc<NullaryAtomExpression>),
+    Answer(Arc<AnswerExpression>),
 }
 
 impl fmt::Debug for Expression {
@@ -690,6 +691,7 @@ impl fmt::Debug for Expression {
                 f.debug_tuple("Expression::MessageSend").field(n).finish()
             }
             Expression::NullaryAtom(n) => f.debug_tuple("Expression::Atom").field(n).finish(),
+            Expression::Answer(n) => f.debug_tuple("Expression::Answer").field(n).finish(),
         }
     }
 }
@@ -702,6 +704,7 @@ impl Node for Expression {
             Expression::Float(n) => n.source(),
             Expression::MessageSend(n) => n.source(),
             Expression::NullaryAtom(n) => n.source(),
+            Expression::Answer(n) => n.source(),
         }
     }
 
@@ -712,6 +715,7 @@ impl Node for Expression {
             Expression::Float(n) => n.range(),
             Expression::MessageSend(n) => n.range(),
             Expression::NullaryAtom(n) => n.range(),
+            Expression::Answer(n) => n.range(),
         }
     }
 
@@ -722,11 +726,45 @@ impl Node for Expression {
             Expression::Float(n) => Children::Single(Some(n.clone())),
             Expression::MessageSend(n) => Children::Single(Some(n.clone())),
             Expression::NullaryAtom(n) => Children::Single(Some(n.clone())),
+            Expression::Answer(n) => Children::Single(Some(n.clone())),
         }
     }
 
     fn as_expression(self: Arc<Self>) -> Option<Arc<Expression>> {
         Some(self)
+    }
+}
+
+/// ```bnf
+/// AnswerExpression :=
+///   HAT
+///   Expression
+/// ```
+pub struct AnswerExpression {
+    pub source: Arc<Source>,
+    pub hat: Arc<Token>,
+    pub expression: Arc<Expression>,
+}
+
+impl fmt::Debug for AnswerExpression {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("AnswerExpression")
+            .field("expression", &self.expression)
+            .finish()
+    }
+}
+
+impl Node for AnswerExpression {
+    fn source(&self) -> &Arc<Source> {
+        &self.source
+    }
+
+    fn range(&self) -> Range {
+        self.hat.range.through(self.expression.range())
+    }
+
+    fn children(&self) -> Children {
+        Children::Single(Some(self.expression.clone()))
     }
 }
 

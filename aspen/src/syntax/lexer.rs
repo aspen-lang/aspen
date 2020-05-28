@@ -92,6 +92,11 @@ impl<'a> Lexer<'a> {
                 kind = CloseCurly;
             }
 
+            '^' => {
+                self.skip();
+                kind = Hat;
+            }
+
             '-' if self.peek_next_char() == '>' => {
                 self.skip();
                 self.skip();

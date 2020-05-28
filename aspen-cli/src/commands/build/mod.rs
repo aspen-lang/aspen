@@ -5,16 +5,22 @@ use aspen::semantics::Host;
 use aspen::Source;
 use clap::{App, Arg, ArgMatches};
 
+const MAIN: &str = "MAIN";
+
 pub fn app() -> App<'static, 'static> {
     App::new("build")
         .about("Builds a single executable")
-        .arg(Arg::with_name("MAIN").takes_value(true))
+        .arg(
+            Arg::with_name(MAIN)
+                .help("The name of the entrypoint object")
+                .takes_value(true),
+        )
 }
 
 pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {
     let context = aspen::Context::infer().await?;
     let main = matches
-        .value_of("MAIN")
+        .value_of(MAIN)
         .map(ToString::to_string)
         .or(context.name())
         .expect("Couldn't infer main object name");

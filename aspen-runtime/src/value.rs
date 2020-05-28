@@ -1,4 +1,4 @@
-use crate::{Object, PendingReply, Recv, Reply};
+use crate::{Object, PendingReply, Recv, Reply, Slot};
 use std::fmt;
 use std::sync::Arc;
 
@@ -59,9 +59,10 @@ impl Value {
         Arc::new(Value::Object(Object::new(size, recv)))
     }
 
-    pub fn accept_message(&self, message: &Arc<Value>) -> Reply {
-        match self {
-            Value::Object(o) => o.accept_message(message.clone()),
+    pub fn accept_message(&self, message: &Arc<Value>, slot: &Slot<Reply>) -> bool {
+        slot.fill(match self {
+            Value::Object(o) => return o.accept_message(message.clone(), slot),
+
             Value::Integer(self_) => match message.as_ref() {
                 Value::Integer(other) => Reply::Answer(Value::new_int(*self_ * *other)),
                 Value::Nullary("increment!") => Reply::Answer(Value::new_int(*self_ + 1)),
@@ -69,7 +70,8 @@ impl Value {
                 _ => Reply::Rejected,
             },
             _ => Reply::Rejected,
-        }
+        });
+        true
     }
 
     pub fn schedule_message(self: Arc<Self>, message: Arc<Value>) -> Arc<PendingReply> {

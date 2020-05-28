@@ -1,8 +1,8 @@
-use crate::{Reply, UserLandExposable, Value};
+use crate::{Reply, Slot, UserLandExposable, Value};
 use std::ffi::c_void;
 use std::sync::{Arc, Mutex};
 
-pub type Recv = unsafe extern "C" fn(*mut c_void, *const Value) -> *const Value;
+pub type Recv = unsafe extern "C" fn(*mut c_void, *const Value, *const Slot<Reply>);
 
 #[derive(Debug)]
 pub struct Object {
@@ -23,9 +23,9 @@ impl Object {
         }
     }
 
-    pub fn accept_message(&self, message: Arc<Value>) -> Reply {
+    pub fn accept_message(&self, message: Arc<Value>, slot: &Slot<Reply>) -> bool {
         match self.state.try_lock() {
-            Err(_) => Reply::Pending,
+            Err(_) => false,
             Ok(guard) => unsafe {
                 /*
                 if libc::rand() % 10 < 2 {
@@ -34,13 +34,8 @@ impl Object {
                     return Reply::Panic;
                 }
                 */
-                let value = (self.recv)(*guard, message.expose());
-
-                if value == 0 as *const _ {
-                    Reply::Rejected
-                } else {
-                    Reply::Answer(value.enclose())
-                }
+                (self.recv)(*guard, message.expose(), slot as *const _);
+                true
             },
         }
     }

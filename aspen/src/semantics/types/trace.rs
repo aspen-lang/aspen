@@ -34,6 +34,7 @@ impl TypeTracer {
             },
             Expression::NullaryAtom(a) => Type::Atom(Some(a.atom.lexeme().into())),
             Expression::MessageSend(m) => self.trace_message_send(m).await,
+            Expression::Answer(a) => self.module.get_type_of(a.expression.clone()).await,
         };
 
         self.slot.resolve_apparent(t.clone()).await;

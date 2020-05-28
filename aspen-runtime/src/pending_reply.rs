@@ -31,9 +31,8 @@ impl PendingReply {
             100,
             |queue: &'static JobQueue<(Arc<Value>, Arc<Value>, Slot<Reply>)>,
              (receiver, message, slot)| {
-                match receiver.accept_message(&message) {
-                    Reply::Pending => queue.schedule((receiver, message, slot)),
-                    r => slot.fill(r),
+                if !receiver.accept_message(&message, &slot) {
+                    queue.schedule((receiver, message, slot));
                 }
             },
         )
@@ -44,7 +43,7 @@ impl PendingReply {
     }
 }
 
-struct Slot<T> {
+pub struct Slot<T> {
     mutex: Arc<Mutex<Option<T>>>,
 }
 

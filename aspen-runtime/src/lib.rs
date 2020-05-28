@@ -118,3 +118,8 @@ pub extern "C" fn print(val: *const Value) {
         println!("{}", &*val);
     }
 }
+
+#[no_mangle]
+pub unsafe extern "C" fn answer(slot: &Slot<Reply>, value: *const Value) {
+    slot.fill(Reply::Answer(value.enclose()));
+}

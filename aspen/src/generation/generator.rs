@@ -9,7 +9,7 @@ use inkwell::execution_engine::ExecutionEngine;
 use inkwell::module::Linkage;
 use inkwell::module::Module;
 use inkwell::types::{FloatType, FunctionType, IntType, PointerType, VoidType};
-use inkwell::values::{BasicValue, BasicValueEnum, FunctionValue};
+use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::fmt;
 use std::sync::Arc;
@@ -35,6 +35,8 @@ pub struct Generator<'ctx> {
     str_ptr_type: PointerType<'ctx>,
     // *Value
     value_ptr_type: PointerType<'ctx>,
+    // *Slot
+    slot_ptr_type: PointerType<'ctx>,
     // *PendingReply
     pending_reply_ptr_type: PointerType<'ctx>,
 
@@ -66,16 +68,20 @@ impl<'ctx> Generator<'ctx> {
         let value_type = context.opaque_struct_type("Value");
         let value_ptr_type = value_type.ptr_type(AddressSpace::Generic);
 
+        let slot_type = context.opaque_struct_type("Slot");
+        let slot_ptr_type = slot_type.ptr_type(AddressSpace::Generic);
+
         let void_fn_type = void_type.fn_type(&[], false);
         let main_fn_type = i32_type.fn_type(&[], false);
 
-        let recv_fn_type = value_ptr_type.fn_type(
+        let recv_fn_type = void_type.fn_type(
             &[
                 context
                     .opaque_struct_type("Object")
                     .ptr_type(AddressSpace::Generic)
                     .into(),
                 value_ptr_type.into(),
+                slot_ptr_type.into(),
             ],
             false,
         );
@@ -91,6 +97,7 @@ impl<'ctx> Generator<'ctx> {
             bool_type,
             str_ptr_type,
             value_ptr_type,
+            slot_ptr_type,
             pending_reply_ptr_type,
             void_fn_type,
             main_fn_type,
@@ -120,8 +127,6 @@ impl<'ctx> Generator<'ctx> {
 
         let new_object_fn = self.new_object_fn(&module);
         let print_fn = self.print_fn(&module);
-        let drop_reference_fn = self.drop_reference_fn(&module);
-
         let main_object_recv = module
             .add_function(
                 format!("{}::recv", main).as_str(),
@@ -141,8 +146,33 @@ impl<'ctx> Generator<'ctx> {
             .left()
             .unwrap();
 
-        builder.build_call(print_fn, &[main_obj.into()], "");
-        builder.build_call(drop_reference_fn, &[main_obj.into()], "");
+        let run_atom = builder
+            .build_call(
+                self.new_nullary_fn(&module),
+                &[builder
+                    .build_global_string_ptr("run!", "run_atom_name")
+                    .as_pointer_value()
+                    .into()],
+                "run_atom",
+            )
+            .try_as_basic_value()
+            .left()
+            .unwrap();
+
+        let mut locals = vec![main_obj, run_atom];
+
+        let result = self.generate_message_send_impl(
+            &module,
+            main_fn,
+            &builder,
+            &mut locals,
+            main_obj,
+            run_atom,
+        )?;
+
+        builder.build_call(print_fn, &[result.into()], "");
+
+        self.generate_end_of_scope(&module, &builder, locals);
 
         let status_code = context.i32_type().const_int(13, false);
         builder.build_return(Some(&status_code));
@@ -266,8 +296,37 @@ impl<'ctx> Generator<'ctx> {
             syntax::Expression::MessageSend(send) => {
                 self.generate_message_send(host_module, module, function, builder, locals, send)
             }
-            syntax::Expression::NullaryAtom(i) => self.generate_nullary(module, builder, locals, i),
+            syntax::Expression::NullaryAtom(i) => {
+                self.generate_nullary(module, builder, locals, i.atom.lexeme())
+            }
+            syntax::Expression::Answer(a) => {
+                self.generate_answer(host_module, module, function, builder, locals, a)
+            }
         }
+    }
+
+    fn generate_answer(
+        &self,
+        host_module: &Arc<HostModule>,
+        module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
+        answer: &Arc<syntax::AnswerExpression>,
+    ) -> GenResult<BasicValueEnum<'ctx>> {
+        let value = self.generate_expression(
+            host_module,
+            module,
+            function,
+            builder,
+            locals,
+            &answer.expression,
+        )?;
+
+        let slot = function.get_nth_param(2).unwrap();
+        builder.build_call(self.clone_reference_fn(module), &[value], "");
+        builder.build_call(self.answer_fn(module), &[slot, value], "");
+        Ok(value)
     }
 
     fn generate_nullary(
@@ -275,13 +334,13 @@ impl<'ctx> Generator<'ctx> {
         module: &Module<'ctx>,
         builder: &Builder<'ctx>,
         locals: &mut Vec<BasicValueEnum<'ctx>>,
-        atom: &Arc<syntax::NullaryAtomExpression>,
+        atom: &str,
     ) -> GenResult<BasicValueEnum<'ctx>> {
         let atom_value = builder
             .build_call(
                 self.new_nullary_fn(module),
                 &[builder
-                    .build_global_string_ptr(atom.atom.lexeme(), "")
+                    .build_global_string_ptr(atom, "")
                     .as_pointer_value()
                     .into()],
                 "",
@@ -361,10 +420,6 @@ impl<'ctx> Generator<'ctx> {
         locals: &mut Vec<BasicValueEnum<'ctx>>,
         send: &Arc<syntax::MessageSend>,
     ) -> GenResult<BasicValueEnum<'ctx>> {
-        let send_message_fn = self.send_message_fn(module);
-        let clone_reference_fn = self.clone_reference_fn(module);
-        let poll_reply = self.poll_reply_fn(module);
-
         let message = self.generate_expression(
             host_module,
             module,
@@ -381,6 +436,29 @@ impl<'ctx> Generator<'ctx> {
             locals,
             &send.receiver,
         )?;
+
+        self.generate_message_send_impl(
+            module,
+            function,
+            builder,
+            locals,
+            receiver,
+            message,
+        )
+    }
+
+    fn generate_message_send_impl(
+        &self,
+        module: &Module<'ctx>,
+        function: FunctionValue<'ctx>,
+        builder: &Builder<'ctx>,
+        locals: &mut Vec<BasicValueEnum<'ctx>>,
+        receiver: BasicValueEnum<'ctx>,
+        message: BasicValueEnum<'ctx>,
+    ) -> GenResult<BasicValueEnum<'ctx>> {
+        let send_message_fn = self.send_message_fn(module);
+        let clone_reference_fn = self.clone_reference_fn(module);
+        let poll_reply = self.poll_reply_fn(module);
 
         builder.build_call(clone_reference_fn, &[message], "");
         builder.build_call(clone_reference_fn, &[receiver], "");
@@ -495,9 +573,18 @@ impl<'ctx> Generator<'ctx> {
 
         let _state = recv_fn.get_nth_param(0).unwrap();
         let message = recv_fn.get_nth_param(1).unwrap();
+        let slot = recv_fn.get_nth_param(2).unwrap();
 
         for method in declaration.methods() {
-            self.generate_method(host_module, module, recv_fn, &builder, message, method)?;
+            self.generate_method(
+                host_module,
+                module,
+                recv_fn,
+                &builder,
+                message,
+                slot,
+                method,
+            )?;
         }
 
         builder.build_call(drop_reference_fn, &[message], "");
@@ -513,6 +600,7 @@ impl<'ctx> Generator<'ctx> {
         function: FunctionValue<'ctx>,
         builder: &Builder<'ctx>,
         message: BasicValueEnum<'ctx>,
+        _slot: BasicValueEnum<'ctx>,
         method: &Arc<syntax::Method>,
     ) -> GenResult<()> {
         let mut locals = vec![message];
@@ -526,9 +614,11 @@ impl<'ctx> Generator<'ctx> {
             message,
         )?;
 
-        let mut return_value: Option<Box<dyn BasicValue<'ctx>>> = None;
+        // let ok = self.generate_nullary(module, &builder, &mut locals, "ok!")?;
+        // builder.build_call(self.answer_fn(module), &[slot, ok], "");
+
         for statement in method.statements.iter() {
-            return_value = Some(Box::new(self.generate_expression(
+            Some(Box::new(self.generate_expression(
                 host_module,
                 module,
                 function,
@@ -539,7 +629,7 @@ impl<'ctx> Generator<'ctx> {
         }
 
         self.generate_end_of_scope(module, &builder, locals);
-        builder.build_return(return_value.as_ref().map(|b| b.as_ref()));
+        builder.build_return(None);
         Ok(())
     }
 
@@ -565,7 +655,7 @@ impl<'ctx> Generator<'ctx> {
                     .into_int_value()
             }
             syntax::Pattern::Nullary(a) => {
-                let pattern = self.generate_nullary(module, builder, locals, a)?;
+                let pattern = self.generate_nullary(module, builder, locals, a.atom.lexeme())?;
                 builder
                     .build_call(match_fn, &[pattern, subject], "matches")
                     .try_as_basic_value()
@@ -637,6 +727,11 @@ mod runtime {
         _private: [u8; 0],
     }
 
+    #[repr(C)]
+    pub struct Slot {
+        _private: [u8; 0],
+    }
+
     #[cfg(not(test))]
     #[link(name = "aspen_runtime")]
     extern "C" {
@@ -644,7 +739,10 @@ mod runtime {
         pub fn new_int(value: i128) -> *mut Value;
         pub fn new_float(value: f64) -> *mut Value;
         pub fn new_string(value: *mut i8) -> *mut Value;
-        pub fn new_object(size: usize, recv: extern "C" fn()) -> *mut Value;
+        pub fn new_object(
+            size: usize,
+            recv: extern "C" fn(*mut u8, *const Value, *const Slot),
+        ) -> *mut Value;
         pub fn new_nullary(value: *mut i8) -> *mut Value;
 
         pub fn r#match(a: *const Value, b: *const Value) -> bool;
@@ -654,6 +752,7 @@ mod runtime {
 
         pub fn send_message(receiver: *mut Value, message: *const Value) -> *mut PendingReply;
         pub fn poll_reply(pending_reply: *mut PendingReply) -> *mut Value;
+        pub fn answer(slot: *const Slot, value: *mut Value);
 
         pub fn print(value: *const Value);
     }
@@ -710,7 +809,7 @@ impl<'ctx> Generator<'ctx> {
         #[used]
         static NEW_OBJECT: unsafe extern "C" fn(
             size: usize,
-            recv: extern "C" fn(),
+            recv: extern "C" fn(*mut u8, *const runtime::Value, *const runtime::Slot),
         ) -> *mut runtime::Value = runtime::new_object;
 
         module.get_function("new_object").unwrap_or_else(|| {
@@ -823,6 +922,26 @@ impl<'ctx> Generator<'ctx> {
                 "poll_reply",
                 self.value_ptr_type
                     .fn_type(&[self.pending_reply_ptr_type.into()], false),
+                Some(Linkage::External),
+            )
+        })
+    }
+
+    fn answer_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
+        #[cfg(not(test))]
+        #[used]
+        static ANSWER: unsafe extern "C" fn(
+            slot: *const runtime::Slot,
+            answer: *mut runtime::Value,
+        ) = runtime::answer;
+
+        module.get_function("answer").unwrap_or_else(|| {
+            module.add_function(
+                "answer",
+                self.void_type.fn_type(
+                    &[self.value_ptr_type.into(), self.slot_ptr_type.into()],
+                    false,
+                ),
                 Some(Linkage::External),
             )
         })
