@@ -43,7 +43,7 @@ impl JIT {
                 eprintln!("------------------\n{:?}------------------", module);
             }
 
-            module.evaluate(self.engine.clone());
+            module.evaluate(&generator, self.engine.clone());
         }
         Ok(())
     }
@@ -57,7 +57,7 @@ impl JIT {
                 eprintln!("------------------\n{:?}------------------", module);
             }
 
-            module.evaluate(self.engine.clone());
+            module.evaluate(&generator, self.engine.clone());
         }
         Ok(())
     }

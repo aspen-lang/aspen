@@ -8,13 +8,11 @@ use clap::{App, Arg, ArgMatches};
 const MAIN: &str = "MAIN";
 
 pub fn app() -> App<'static, 'static> {
-    App::new("build")
-        .about("Builds a single executable")
-        .arg(
-            Arg::with_name(MAIN)
-                .help("The name of the entrypoint object")
-                .takes_value(true),
-        )
+    App::new("build").about("Builds a single executable").arg(
+        Arg::with_name(MAIN)
+            .help("The name of the entrypoint object")
+            .takes_value(true),
+    )
 }
 
 pub async fn main(matches: &ArgMatches<'_>) -> clap::Result<()> {

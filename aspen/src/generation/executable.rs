@@ -55,16 +55,19 @@ impl Executable {
 
         let mut cc = std::process::Command::new("cc");
 
-        if cfg!(target_os = "linux") {
-            cc.arg("-static");
-        }
-
         for object in objects.iter() {
             cc.arg(&object.path);
         }
 
         cc.arg(format!("-L{}", runtime_path.display()))
             .arg("-laspen_runtime");
+
+        if cfg!(target_os = "linux") {
+            cc.arg("-no-pie");
+            cc.arg("-lpthread");
+            cc.arg("-lm");
+            cc.arg("-ldl");
+        }
 
         cc.arg("-o").arg(&path);
 

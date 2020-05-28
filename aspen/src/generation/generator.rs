@@ -437,14 +437,7 @@ impl<'ctx> Generator<'ctx> {
             &send.receiver,
         )?;
 
-        self.generate_message_send_impl(
-            module,
-            function,
-            builder,
-            locals,
-            receiver,
-            message,
-        )
+        self.generate_message_send_impl(module, function, builder, locals, receiver, message)
     }
 
     fn generate_message_send_impl(
@@ -698,8 +691,11 @@ pub struct EmittedModule<'ctx> {
 }
 
 impl<'ctx> EmittedModule<'ctx> {
-    pub unsafe fn evaluate(&self, engine: ExecutionEngine<'ctx>) {
+    pub unsafe fn evaluate(&self, generator: &Generator<'ctx>, engine: ExecutionEngine<'ctx>) {
         engine.add_module(&self.module).unwrap_or(());
+
+        generator.map_runtime_in_jit(&self.module, &engine);
+
         if let Some(init_fn) = &self.init_fn {
             engine.run_function(*init_fn, &[]);
         }
@@ -733,7 +729,7 @@ mod runtime {
     }
 
     #[cfg(not(test))]
-    #[link(name = "aspen_runtime")]
+    #[link(name = "aspen_runtime", kind = "static")]
     extern "C" {
         #[allow(improper_ctypes)]
         pub fn new_int(value: i128) -> *mut Value;
@@ -759,11 +755,35 @@ mod runtime {
 }
 
 impl<'ctx> Generator<'ctx> {
-    fn new_int_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static NEW_INT: unsafe extern "C" fn(value: i128) -> *mut runtime::Value = runtime::new_int;
+    pub fn map_runtime_in_jit(&self, module: &Module<'ctx>, engine: &ExecutionEngine<'ctx>) {
+        engine.add_global_mapping(&self.new_int_fn(module), runtime::new_int as usize);
+        engine.add_global_mapping(&self.new_float_fn(module), runtime::new_float as usize);
+        engine.add_global_mapping(&self.new_string_fn(module), runtime::new_string as usize);
+        engine.add_global_mapping(&self.new_object_fn(module), runtime::new_object as usize);
+        engine.add_global_mapping(&self.new_nullary_fn(module), runtime::new_nullary as usize);
 
+        engine.add_global_mapping(&self.match_fn(module), runtime::r#match as usize);
+
+        engine.add_global_mapping(
+            &self.clone_reference_fn(module),
+            runtime::clone_reference as usize,
+        );
+        engine.add_global_mapping(
+            &self.drop_reference_fn(module),
+            runtime::drop_reference as usize,
+        );
+
+        engine.add_global_mapping(
+            &self.send_message_fn(module),
+            runtime::send_message as usize,
+        );
+        engine.add_global_mapping(&self.poll_reply_fn(module), runtime::poll_reply as usize);
+        engine.add_global_mapping(&self.answer_fn(module), runtime::answer as usize);
+
+        engine.add_global_mapping(&self.print_fn(module), runtime::print as usize);
+    }
+
+    fn new_int_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
         module.get_function("new_int").unwrap_or_else(|| {
             module.add_function(
                 "new_int",
@@ -774,11 +794,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn new_float_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static NEW_FLOAT: unsafe extern "C" fn(value: f64) -> *mut runtime::Value =
-            runtime::new_float;
-
         module.get_function("new_float").unwrap_or_else(|| {
             module.add_function(
                 "new_float",
@@ -789,11 +804,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn new_string_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static NEW_STRING: unsafe extern "C" fn(value: *mut i8) -> *mut runtime::Value =
-            runtime::new_string;
-
         module.get_function("new_string").unwrap_or_else(|| {
             module.add_function(
                 "new_string",
@@ -805,13 +815,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn new_object_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static NEW_OBJECT: unsafe extern "C" fn(
-            size: usize,
-            recv: extern "C" fn(*mut u8, *const runtime::Value, *const runtime::Slot),
-        ) -> *mut runtime::Value = runtime::new_object;
-
         module.get_function("new_object").unwrap_or_else(|| {
             module.add_function(
                 "new_object",
@@ -825,11 +828,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn new_nullary_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static NEW_NULLARY: unsafe extern "C" fn(value: *mut i8) -> *mut runtime::Value =
-            runtime::new_nullary;
-
         module.get_function("new_nullary").unwrap_or_else(|| {
             module.add_function(
                 "new_nullary",
@@ -841,13 +839,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn match_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static MATCH: unsafe extern "C" fn(
-            a: *const runtime::Value,
-            b: *const runtime::Value,
-        ) -> bool = runtime::r#match;
-
         module.get_function("match").unwrap_or_else(|| {
             module.add_function(
                 "match",
@@ -861,11 +852,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn clone_reference_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static CLONE_REFERENCE: unsafe extern "C" fn(value: *mut runtime::Value) =
-            runtime::clone_reference;
-
         module.get_function("clone_reference").unwrap_or_else(|| {
             module.add_function(
                 "clone_reference",
@@ -876,11 +862,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn drop_reference_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static DROP_REFERENCE: unsafe extern "C" fn(value: *mut runtime::Value) =
-            runtime::drop_reference;
-
         module.get_function("drop_reference").unwrap_or_else(|| {
             module.add_function(
                 "drop_reference",
@@ -891,13 +872,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn send_message_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static SEND_MESSAGE: unsafe extern "C" fn(
-            receiver: *mut runtime::Value,
-            message: *const runtime::Value,
-        ) -> *mut runtime::PendingReply = runtime::send_message;
-
         module.get_function("send_message").unwrap_or_else(|| {
             module.add_function(
                 "send_message",
@@ -911,12 +885,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn poll_reply_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static POLL_REPLY: unsafe extern "C" fn(
-            pending_reply: *mut runtime::PendingReply,
-        ) -> *mut runtime::Value = runtime::poll_reply;
-
         module.get_function("poll_reply").unwrap_or_else(|| {
             module.add_function(
                 "poll_reply",
@@ -928,13 +896,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn answer_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static ANSWER: unsafe extern "C" fn(
-            slot: *const runtime::Slot,
-            answer: *mut runtime::Value,
-        ) = runtime::answer;
-
         module.get_function("answer").unwrap_or_else(|| {
             module.add_function(
                 "answer",
@@ -948,10 +909,6 @@ impl<'ctx> Generator<'ctx> {
     }
 
     fn print_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
-        #[cfg(not(test))]
-        #[used]
-        static PRINT: unsafe extern "C" fn(value: *const runtime::Value) = runtime::print;
-
         module.get_function("print").unwrap_or_else(|| {
             module.add_function(
                 "print",
