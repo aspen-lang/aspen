@@ -142,7 +142,7 @@ impl Executable {
         let mut runtime_path = current_exe()?;
         runtime_path.pop();
 
-        let mut cc = std::process::Command::new("musl-gcc");
+        let mut cc = std::process::Command::new("cc");
         cc.arg("-static");
 
         for object in objects.iter() {
@@ -153,7 +153,6 @@ impl Executable {
             .arg("-laspen_runtime");
 
         if cfg!(target_os = "linux") {
-            cc.arg("-L/usr/lib/musl/include");
             cc.arg("-lpthread");
             cc.arg("-lm");
         }
