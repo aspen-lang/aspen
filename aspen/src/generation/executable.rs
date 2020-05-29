@@ -10,8 +10,43 @@ pub struct Executable {
     pub objects: Vec<ObjectFile>,
 }
 
+pub struct ExecutableBuilder {
+    pub host: Host,
+    pub main: Option<String>,
+    pub static_linkage: bool,
+}
+
+impl ExecutableBuilder {
+    pub fn new(host: Host) -> ExecutableBuilder {
+        ExecutableBuilder {
+            host,
+            main: None,
+            static_linkage: false,
+        }
+    }
+
+    pub fn main<M: Into<String>>(&mut self, main: M) -> &mut Self {
+        self.main = Some(main.into());
+        self
+    }
+
+    pub fn link_statically(&mut self) -> &mut Self {
+        self.static_linkage = true;
+        self
+    }
+
+    pub async fn write(&self) -> GenResult<Executable> {
+        Executable::new(self).await
+    }
+}
+
 impl Executable {
-    pub async fn new<M: AsRef<str>>(host: Host, main: M) -> GenResult<Executable> {
+    pub fn build(host: Host) -> ExecutableBuilder {
+        ExecutableBuilder::new(host)
+    }
+
+    async fn new(builder: &ExecutableBuilder) -> GenResult<Executable> {
+        let host = &builder.host;
         let modules = host.modules().await;
         let object_results =
             join_all(modules.iter().map(|module| ObjectFile::new(module.clone()))).await;
@@ -27,8 +62,10 @@ impl Executable {
         }
 
         if errors.len() > 0 {
-            Err(GenError::Multi(errors))
-        } else {
+            return Err(GenError::Multi(errors));
+        }
+
+        if let Some(main) = builder.main.as_ref() {
             let context = inkwell::context::Context::create();
             let generator = Generator::new(host.clone(), &context);
 
@@ -45,11 +82,129 @@ impl Executable {
 
             let path = host.context.binary_file_path(main.as_ref());
             host.context.ensure_binary_dir().await?;
-            Executable::write(path, objects).await
+            if builder.static_linkage {
+                Executable::link_executable_statically(path, objects).await
+            } else {
+                Executable::link_executable_dynamically(path, objects).await
+            }
+        } else {
+            host.context.ensure_binary_dir().await?;
+            if builder.static_linkage {
+                let path = host.context.binary_archive_file_path()?;
+                Executable::link_archive(path, objects).await
+            } else {
+                let path = host.context.binary_dylib_file_path()?;
+                Executable::link_dylib(path, objects).await
+            }
         }
     }
 
-    pub(crate) async fn write(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
+    async fn link_executable_dynamically(
+        path: PathBuf,
+        objects: Vec<ObjectFile>,
+    ) -> GenResult<Executable> {
+        let mut runtime_path = current_exe()?;
+        runtime_path.pop();
+
+        let mut cc = std::process::Command::new("cc");
+
+        for object in objects.iter() {
+            cc.arg(&object.path);
+        }
+
+        cc.arg(format!("-L{}", runtime_path.display()))
+            .arg("-laspen_runtime");
+
+        if cfg!(target_os = "linux") {
+            cc.arg("-no-pie");
+            cc.arg("-lpthread");
+            cc.arg("-lm");
+            cc.arg("-ldl");
+        }
+
+        cc.arg("-o").arg(&path);
+
+        let command = format!("{:?}", cc);
+
+        let status = tokio::process::Command::from(cc).spawn()?.await?;
+
+        if !status.success() {
+            return Err(GenError::FailedToLink(command));
+        }
+
+        Ok(Executable { objects, path })
+    }
+
+    async fn link_executable_statically(
+        path: PathBuf,
+        objects: Vec<ObjectFile>,
+    ) -> GenResult<Executable> {
+        let mut runtime_path = current_exe()?;
+        runtime_path.pop();
+
+        let mut cc = std::process::Command::new("musl-gcc");
+        cc.arg("-static");
+
+        for object in objects.iter() {
+            cc.arg(&object.path);
+        }
+
+        cc.arg(format!("-L{}", runtime_path.display()))
+            .arg("-laspen_runtime");
+
+        if cfg!(target_os = "linux") {
+            cc.arg("-L/usr/lib/musl/include");
+            cc.arg("-lpthread");
+            cc.arg("-lm");
+        }
+
+        cc.arg("-o").arg(&path);
+
+        let command = format!("{:?}", cc);
+
+        let status = tokio::process::Command::from(cc).spawn()?.await?;
+
+        if !status.success() {
+            return Err(GenError::FailedToLink(command));
+        }
+
+        Ok(Executable { objects, path })
+    }
+
+    async fn link_archive(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
+        let mut runtime_path = current_exe()?;
+        runtime_path.pop();
+
+        let mut cc = std::process::Command::new("cc");
+
+        for object in objects.iter() {
+            cc.arg(&object.path);
+        }
+
+        cc.arg(format!("-L{}", runtime_path.display()))
+            .arg("-laspen_runtime");
+
+        if cfg!(target_os = "linux") {
+            cc.arg("-no-pie");
+            cc.arg("-lpthread");
+            cc.arg("-lm");
+            cc.arg("-ldl");
+        }
+
+        cc.arg("-o").arg(&path);
+
+        let command = format!("{:?}", cc);
+
+        let status = tokio::process::Command::from(cc).spawn()?.await?;
+
+        if !status.success() {
+            return Err(GenError::FailedToLink(command));
+        }
+
+        Ok(Executable { objects, path })
+    }
+
+    async fn link_dylib(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
         let mut runtime_path = current_exe()?;
         runtime_path.pop();
 

@@ -2,9 +2,9 @@ use crate::semantics::Host;
 use crate::URI;
 use mktemp::Temp;
 use std::convert::TryInto;
-use std::env::consts::EXE_EXTENSION;
+use std::env::consts::{DLL_EXTENSION, DLL_PREFIX, EXE_EXTENSION};
 use std::env::current_dir;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::fs::Metadata;
 use std::io;
@@ -210,13 +210,43 @@ impl Context {
     }
 
     pub fn binary_file_path(&self, main: &str) -> PathBuf {
-        let mut path = match &self.kind {
-            ContextKind::Temporary(tmp) => self.root_dir().unwrap_or(tmp.to_path_buf()),
-            _ => self.workspace_dir(Some("out")),
-        };
+        let mut path = self.out_dir();
         path.push(main);
         path.set_extension(EXE_EXTENSION);
         path
+    }
+
+    fn out_dir(&self) -> PathBuf {
+        match &self.kind {
+            ContextKind::Temporary(tmp) => self.root_dir().unwrap_or(tmp.to_path_buf()),
+            _ => self.workspace_dir(Some("out")),
+        }
+    }
+
+    pub fn binary_archive_file_path(&self) -> io::Result<PathBuf> {
+        let current_dir = current_dir()?;
+        let mut name = OsString::new();
+        name.push(DLL_PREFIX);
+        name.push(current_dir.file_name().unwrap());
+        let mut path = self.out_dir();
+        path.push(name);
+        if cfg!(windows) {
+            path.set_extension("lib");
+        } else {
+            path.set_extension("a");
+        }
+        Ok(path)
+    }
+
+    pub fn binary_dylib_file_path(&self) -> io::Result<PathBuf> {
+        let current_dir = current_dir()?;
+        let mut name = OsString::new();
+        name.push(DLL_PREFIX);
+        name.push(current_dir.file_name().unwrap());
+        let mut path = self.out_dir();
+        path.push(name);
+        path.set_extension(DLL_EXTENSION);
+        Ok(path)
     }
 
     pub fn host(self: &Arc<Self>) -> Host {

@@ -712,6 +712,7 @@ impl<'ctx> fmt::Debug for EmittedModule<'ctx> {
     }
 }
 
+#[cfg(not(test))]
 mod runtime {
     #[repr(C)]
     pub struct Value {
@@ -728,7 +729,6 @@ mod runtime {
         _private: [u8; 0],
     }
 
-    #[cfg(not(test))]
     #[link(name = "aspen_runtime", kind = "static")]
     extern "C" {
         #[allow(improper_ctypes)]
@@ -755,6 +755,9 @@ mod runtime {
 }
 
 impl<'ctx> Generator<'ctx> {
+    #[cfg(test)]
+    pub fn map_runtime_in_jit(&self, _module: &Module<'ctx>, _engine: &ExecutionEngine<'ctx>) {}
+    #[cfg(not(test))]
     pub fn map_runtime_in_jit(&self, module: &Module<'ctx>, engine: &ExecutionEngine<'ctx>) {
         engine.add_global_mapping(&self.new_int_fn(module), runtime::new_int as usize);
         engine.add_global_mapping(&self.new_float_fn(module), runtime::new_float as usize);
