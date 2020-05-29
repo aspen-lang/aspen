@@ -88,10 +88,10 @@ impl Executable {
             host.context.ensure_binary_dir().await?;
             if builder.static_linkage {
                 let path = host.context.binary_archive_file_path()?;
-                Executable::link_archive(path, objects).await
+                Executable::link_lib(path, objects).await
             } else {
                 let path = host.context.binary_dylib_file_path()?;
-                Executable::link_dylib(path, objects).await
+                Executable::link_lib(path, objects).await
             }
         }
     }
@@ -99,13 +99,13 @@ impl Executable {
     async fn link_executable(
         path: PathBuf,
         objects: Vec<ObjectFile>,
-        statically: bool,
+        static_linkage: bool,
     ) -> GenResult<Executable> {
         let mut runtime_path = current_exe()?;
         runtime_path.pop();
 
         let mut cc = std::process::Command::new("cc");
-        if statically {
+        if static_linkage {
             cc.arg("-static");
         }
 
@@ -121,7 +121,7 @@ impl Executable {
             cc.arg("-lpthread");
             cc.arg("-lm");
 
-            if !statically {
+            if !static_linkage {
                 cc.arg("-ldl");
             }
         }
@@ -136,10 +136,9 @@ impl Executable {
             return Err(GenError::FailedToLink(command));
         }
 
-        if statically {
+        if static_linkage {
             let mut strip = std::process::Command::new("strip");
             strip.arg(&path);
-            let command = format!("{:?}", strip);
             let status = tokio::process::Command::from(strip).spawn()?.await?;
             if !status.success() {
                 eprintln!("Failed to strip static executable");
@@ -149,40 +148,7 @@ impl Executable {
         Ok(Executable { objects, path })
     }
 
-    async fn link_archive(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
-        let mut runtime_path = current_exe()?;
-        runtime_path.pop();
-
-        let mut cc = std::process::Command::new("cc");
-
-        for object in objects.iter() {
-            cc.arg(&object.path);
-        }
-
-        cc.arg(format!("-L{}", runtime_path.display()))
-            .arg("-laspen_runtime");
-
-        if cfg!(target_os = "linux") {
-            cc.arg("-no-pie");
-            cc.arg("-lpthread");
-            cc.arg("-lm");
-            cc.arg("-ldl");
-        }
-
-        cc.arg("-o").arg(&path);
-
-        let command = format!("{:?}", cc);
-
-        let status = tokio::process::Command::from(cc).spawn()?.await?;
-
-        if !status.success() {
-            return Err(GenError::FailedToLink(command));
-        }
-
-        Ok(Executable { objects, path })
-    }
-
-    async fn link_dylib(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
+    async fn link_lib(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
         let mut runtime_path = current_exe()?;
         runtime_path.pop();
 
