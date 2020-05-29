@@ -82,11 +82,8 @@ impl Executable {
 
             let path = host.context.binary_file_path(main.as_ref());
             host.context.ensure_binary_dir().await?;
-            if builder.static_linkage {
-                Executable::link_executable_statically(path, objects).await
-            } else {
-                Executable::link_executable_dynamically(path, objects).await
-            }
+
+            Executable::link_executable(path, objects, builder.static_linkage).await
         } else {
             host.context.ensure_binary_dir().await?;
             if builder.static_linkage {
@@ -99,14 +96,18 @@ impl Executable {
         }
     }
 
-    async fn link_executable_dynamically(
+    async fn link_executable(
         path: PathBuf,
         objects: Vec<ObjectFile>,
+        statically: bool,
     ) -> GenResult<Executable> {
         let mut runtime_path = current_exe()?;
         runtime_path.pop();
 
         let mut cc = std::process::Command::new("cc");
+        if statically {
+            cc.arg("-static");
+        }
 
         for object in objects.iter() {
             cc.arg(&object.path);
@@ -119,7 +120,10 @@ impl Executable {
             cc.arg("-no-pie");
             cc.arg("-lpthread");
             cc.arg("-lm");
-            cc.arg("-ldl");
+
+            if !statically {
+                cc.arg("-ldl");
+            }
         }
 
         cc.arg("-o").arg(&path);
@@ -132,39 +136,14 @@ impl Executable {
             return Err(GenError::FailedToLink(command));
         }
 
-        Ok(Executable { objects, path })
-    }
-
-    async fn link_executable_statically(
-        path: PathBuf,
-        objects: Vec<ObjectFile>,
-    ) -> GenResult<Executable> {
-        let mut runtime_path = current_exe()?;
-        runtime_path.pop();
-
-        let mut cc = std::process::Command::new("cc");
-        cc.arg("-static");
-
-        for object in objects.iter() {
-            cc.arg(&object.path);
-        }
-
-        cc.arg(format!("-L{}", runtime_path.display()))
-            .arg("-laspen_runtime");
-
-        if cfg!(target_os = "linux") {
-            cc.arg("-lpthread");
-            cc.arg("-lm");
-        }
-
-        cc.arg("-o").arg(&path);
-
-        let command = format!("{:?}", cc);
-
-        let status = tokio::process::Command::from(cc).spawn()?.await?;
-
-        if !status.success() {
-            return Err(GenError::FailedToLink(command));
+        if statically {
+            let strip = std::process::Command::new("strip")
+                .arg(&path);
+            let command = format!("{:?}", strip);
+            let status = tokio::process::Command::from(strip).spawn()?.await?;
+            if !status.success() {
+                eprintln!("Failed to strip static executable");
+            }
         }
 
         Ok(Executable { objects, path })
