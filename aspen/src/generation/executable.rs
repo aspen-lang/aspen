@@ -137,8 +137,8 @@ impl Executable {
         }
 
         if statically {
-            let strip = std::process::Command::new("strip")
-                .arg(&path);
+            let mut strip = std::process::Command::new("strip");
+            strip.arg(&path);
             let command = format!("{:?}", strip);
             let status = tokio::process::Command::from(strip).spawn()?.await?;
             if !status.success() {
