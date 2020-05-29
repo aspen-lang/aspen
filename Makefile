@@ -16,9 +16,9 @@ endif
 .PHONY: aspen-runtime/target/$(PROFILE)/libaspen_runtime.a
 aspen-runtime/target/$(PROFILE)/libaspen_runtime.a:
 ifeq ($(PROFILE), release)
-	( cd aspen-runtime; cargo build --features=standalone --release )
+	( cd aspen-runtime; cargo build --release )
 else
-	( cd aspen-runtime; cargo build --features=standalone )
+	( cd aspen-runtime; cargo build )
 endif
 
 .PHONY: fmt
