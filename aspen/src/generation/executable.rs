@@ -88,7 +88,7 @@ impl Executable {
             host.context.ensure_binary_dir().await?;
             if builder.static_linkage {
                 let path = host.context.binary_archive_file_path()?;
-                Executable::link_lib(path, objects).await
+                Executable::link_archive(path, objects).await
             } else {
                 let path = host.context.binary_dylib_file_path()?;
                 Executable::link_lib(path, objects).await
@@ -117,7 +117,6 @@ impl Executable {
             .arg("-laspen_runtime");
 
         if cfg!(target_os = "linux") {
-            cc.arg("-no-pie");
             cc.arg("-lpthread");
             cc.arg("-lm");
 
@@ -136,13 +135,11 @@ impl Executable {
             return Err(GenError::FailedToLink(command));
         }
 
-        if static_linkage {
-            let mut strip = std::process::Command::new("strip");
-            strip.arg(&path);
-            let status = tokio::process::Command::from(strip).spawn()?.await?;
-            if !status.success() {
-                eprintln!("Failed to strip static executable");
-            }
+        let mut strip = std::process::Command::new("strip");
+        strip.arg(&path);
+        let status = tokio::process::Command::from(strip).spawn()?.await?;
+        if !status.success() {
+            eprintln!("Failed to strip static executable");
         }
 
         Ok(Executable { objects, path })
@@ -153,6 +150,7 @@ impl Executable {
         runtime_path.pop();
 
         let mut cc = std::process::Command::new("cc");
+        cc.arg("-shared");
 
         for object in objects.iter() {
             cc.arg(&object.path);
@@ -162,7 +160,6 @@ impl Executable {
             .arg("-laspen_runtime");
 
         if cfg!(target_os = "linux") {
-            cc.arg("-no-pie");
             cc.arg("-lpthread");
             cc.arg("-lm");
             cc.arg("-ldl");
@@ -173,6 +170,29 @@ impl Executable {
         let command = format!("{:?}", cc);
 
         let status = tokio::process::Command::from(cc).spawn()?.await?;
+
+        if !status.success() {
+            return Err(GenError::FailedToLink(command));
+        }
+
+        Ok(Executable { objects, path })
+    }
+
+    async fn link_archive(path: PathBuf, objects: Vec<ObjectFile>) -> GenResult<Executable> {
+        let mut runtime_path = current_exe()?;
+        runtime_path.pop();
+
+        let mut ar = std::process::Command::new("ar");
+
+        ar.arg(&path);
+
+        for object in objects.iter() {
+            ar.arg(&object.path);
+        }
+
+        let command = format!("{:?}", ar);
+
+        let status = tokio::process::Command::from(ar).spawn()?.await?;
 
         if !status.success() {
             return Err(GenError::FailedToLink(command));

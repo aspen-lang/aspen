@@ -39,7 +39,7 @@ impl ObjectFile {
                 "generic",
                 "",
                 OptimizationLevel::Aggressive,
-                RelocMode::Default,
+                RelocMode::PIC,
                 CodeModel::Default,
             )
             .ok_or(GenError::NoTargetMachine(triple))?;
