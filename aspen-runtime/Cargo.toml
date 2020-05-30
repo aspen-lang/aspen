@@ -6,13 +6,7 @@ edition = "2018"
 
 [lib]
 name = "aspen_runtime"
-crate-type = ["staticlib"]
-
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
+crate-type = ["staticlib", "rlib"]
 
 [dependencies]
 lazy_static = "1.4.0"

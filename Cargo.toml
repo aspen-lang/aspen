@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "aspen-runtime",
+    "aspen",
+    "aspen-cli",
+]

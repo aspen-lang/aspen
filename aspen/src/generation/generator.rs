@@ -13,6 +13,7 @@ use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::fmt;
 use std::sync::Arc;
+use aspen_runtime;
 
 pub struct Generator<'ctx> {
     context: &'ctx Context,
@@ -712,78 +713,33 @@ impl<'ctx> fmt::Debug for EmittedModule<'ctx> {
     }
 }
 
-#[cfg(not(test))]
-mod runtime {
-    #[repr(C)]
-    pub struct Value {
-        _private: [u8; 0],
-    }
-
-    #[repr(C)]
-    pub struct PendingReply {
-        _private: [u8; 0],
-    }
-
-    #[repr(C)]
-    pub struct Slot {
-        _private: [u8; 0],
-    }
-
-    #[link(name = "aspen_runtime", kind = "static")]
-    extern "C" {
-        #[allow(improper_ctypes)]
-        pub fn new_int(value: i128) -> *mut Value;
-        pub fn new_float(value: f64) -> *mut Value;
-        pub fn new_string(value: *mut i8) -> *mut Value;
-        pub fn new_object(
-            size: usize,
-            recv: extern "C" fn(*mut u8, *const Value, *const Slot),
-        ) -> *mut Value;
-        pub fn new_nullary(value: *mut i8) -> *mut Value;
-
-        pub fn r#match(a: *const Value, b: *const Value) -> bool;
-
-        pub fn clone_reference(value: *mut Value);
-        pub fn drop_reference(value: *mut Value);
-
-        pub fn send_message(receiver: *mut Value, message: *const Value) -> *mut PendingReply;
-        pub fn poll_reply(pending_reply: *mut PendingReply) -> *mut Value;
-        pub fn answer(slot: *const Slot, value: *mut Value);
-
-        pub fn print(value: *const Value);
-    }
-}
-
 impl<'ctx> Generator<'ctx> {
-    #[cfg(test)]
-    pub fn map_runtime_in_jit(&self, _module: &Module<'ctx>, _engine: &ExecutionEngine<'ctx>) {}
-    #[cfg(not(test))]
     pub fn map_runtime_in_jit(&self, module: &Module<'ctx>, engine: &ExecutionEngine<'ctx>) {
-        engine.add_global_mapping(&self.new_int_fn(module), runtime::new_int as usize);
-        engine.add_global_mapping(&self.new_float_fn(module), runtime::new_float as usize);
-        engine.add_global_mapping(&self.new_string_fn(module), runtime::new_string as usize);
-        engine.add_global_mapping(&self.new_object_fn(module), runtime::new_object as usize);
-        engine.add_global_mapping(&self.new_nullary_fn(module), runtime::new_nullary as usize);
+        engine.add_global_mapping(&self.new_int_fn(module), aspen_runtime::new_int as usize);
+        engine.add_global_mapping(&self.new_float_fn(module), aspen_runtime::new_float as usize);
+        engine.add_global_mapping(&self.new_string_fn(module), aspen_runtime::new_string as usize);
+        engine.add_global_mapping(&self.new_object_fn(module), aspen_runtime::new_object as usize);
+        engine.add_global_mapping(&self.new_nullary_fn(module), aspen_runtime::new_nullary as usize);
 
-        engine.add_global_mapping(&self.match_fn(module), runtime::r#match as usize);
+        engine.add_global_mapping(&self.match_fn(module), aspen_runtime::r#match as usize);
 
         engine.add_global_mapping(
             &self.clone_reference_fn(module),
-            runtime::clone_reference as usize,
+            aspen_runtime::clone_reference as usize,
         );
         engine.add_global_mapping(
             &self.drop_reference_fn(module),
-            runtime::drop_reference as usize,
+            aspen_runtime::drop_reference as usize,
         );
 
         engine.add_global_mapping(
             &self.send_message_fn(module),
-            runtime::send_message as usize,
+            aspen_runtime::send_message as usize,
         );
-        engine.add_global_mapping(&self.poll_reply_fn(module), runtime::poll_reply as usize);
-        engine.add_global_mapping(&self.answer_fn(module), runtime::answer as usize);
+        engine.add_global_mapping(&self.poll_reply_fn(module), aspen_runtime::poll_reply as usize);
+        engine.add_global_mapping(&self.answer_fn(module), aspen_runtime::answer as usize);
 
-        engine.add_global_mapping(&self.print_fn(module), runtime::print as usize);
+        engine.add_global_mapping(&self.print_fn(module), aspen_runtime::print as usize);
     }
 
     fn new_int_fn(&self, module: &Module<'ctx>) -> FunctionValue<'ctx> {
