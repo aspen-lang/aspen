@@ -1,50 +1,39 @@
-use crate::{Reply, Slot, UserLandExposable, Value};
-use std::ffi::c_void;
-use std::sync::{Arc, Mutex};
+use crate::{ActorRef, ObjectRef};
+use core::fmt;
 
-pub type Recv = unsafe extern "C" fn(*mut c_void, *const Value, *const Slot<Reply>);
-
-#[derive(Debug)]
-pub struct Object {
-    state: Mutex<*mut c_void>,
-    recv: Recv,
+pub enum Object {
+    Int(i128),
+    Float(f64),
+    Atom(&'static str),
+    Actor(ActorRef),
 }
 
-unsafe impl Send for Object {}
-unsafe impl Sync for Object {}
-
 impl Object {
-    pub fn new(size: usize, recv: Recv) -> Object {
-        unsafe {
-            Object {
-                state: Mutex::new(libc::malloc(size)),
-                recv,
+    pub fn send(&self, message: ObjectRef) {
+        match self {
+            Object::Int(i) => {
+                println!("Handle builtin {} -> {}", message, i);
+            }
+            Object::Float(f) => {
+                println!("Handle builtin {} -> {}", message, f);
+            }
+            Object::Atom(a) => {
+                println!("Handle builtin {} -> {}", message, a);
+            }
+            Object::Actor(a) => {
+                a.dispatch(message);
             }
         }
     }
-
-    pub fn accept_message(&self, message: Arc<Value>, slot: &Slot<Reply>) -> bool {
-        match self.state.try_lock() {
-            Err(_) => false,
-            Ok(guard) => unsafe {
-                /*
-                if libc::rand() % 10 < 2 {
-                    eprintln!("Controlled panic in object!");
-
-                    return Reply::Panic;
-                }
-                */
-                (self.recv)(*guard, message.expose(), slot as *const _);
-                true
-            },
-        }
-    }
 }
 
-impl Drop for Object {
-    fn drop(&mut self) {
-        unsafe {
-            libc::free(*self.state.lock().unwrap());
+impl fmt::Display for Object {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Object::Int(v) => write!(f, "{}", v),
+            Object::Float(v) => write!(f, "{}", v),
+            Object::Atom(v) => write!(f, "{}", v),
+            Object::Actor(v) => write!(f, "{}", v),
         }
     }
 }

@@ -1,0 +1,12 @@
+language = "C"
+
+header = "// Aspen Runtime Library"
+
+[export.rename]
+Object = "object_t"
+ObjectRef = "object_ptr"
+Runtime = "rt_t"
+InitFn = "init_fn_t"
+RecvFn = "recv_fn_t"
+AtomicUsize = "void"
+i128 = "__int128"

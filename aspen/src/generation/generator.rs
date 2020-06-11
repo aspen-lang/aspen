@@ -2,6 +2,7 @@ use crate::generation::{GenError, GenResult};
 use crate::semantics::types::Type;
 use crate::semantics::{Host, Module as HostModule};
 use crate::syntax;
+use aspen_runtime;
 use futures::executor::block_on;
 use inkwell::builder::Builder;
 use inkwell::context::Context;
@@ -13,7 +14,6 @@ use inkwell::values::{BasicValueEnum, FunctionValue};
 use inkwell::{AddressSpace, IntPredicate};
 use std::fmt;
 use std::sync::Arc;
-use aspen_runtime;
 
 pub struct Generator<'ctx> {
     context: &'ctx Context,
@@ -716,10 +716,22 @@ impl<'ctx> fmt::Debug for EmittedModule<'ctx> {
 impl<'ctx> Generator<'ctx> {
     pub fn map_runtime_in_jit(&self, module: &Module<'ctx>, engine: &ExecutionEngine<'ctx>) {
         engine.add_global_mapping(&self.new_int_fn(module), aspen_runtime::new_int as usize);
-        engine.add_global_mapping(&self.new_float_fn(module), aspen_runtime::new_float as usize);
-        engine.add_global_mapping(&self.new_string_fn(module), aspen_runtime::new_string as usize);
-        engine.add_global_mapping(&self.new_object_fn(module), aspen_runtime::new_object as usize);
-        engine.add_global_mapping(&self.new_nullary_fn(module), aspen_runtime::new_nullary as usize);
+        engine.add_global_mapping(
+            &self.new_float_fn(module),
+            aspen_runtime::new_float as usize,
+        );
+        engine.add_global_mapping(
+            &self.new_string_fn(module),
+            aspen_runtime::new_string as usize,
+        );
+        engine.add_global_mapping(
+            &self.new_object_fn(module),
+            aspen_runtime::new_object as usize,
+        );
+        engine.add_global_mapping(
+            &self.new_nullary_fn(module),
+            aspen_runtime::new_nullary as usize,
+        );
 
         engine.add_global_mapping(&self.match_fn(module), aspen_runtime::r#match as usize);
 
@@ -736,7 +748,10 @@ impl<'ctx> Generator<'ctx> {
             &self.send_message_fn(module),
             aspen_runtime::send_message as usize,
         );
-        engine.add_global_mapping(&self.poll_reply_fn(module), aspen_runtime::poll_reply as usize);
+        engine.add_global_mapping(
+            &self.poll_reply_fn(module),
+            aspen_runtime::poll_reply as usize,
+        );
         engine.add_global_mapping(&self.answer_fn(module), aspen_runtime::answer as usize);
 
         engine.add_global_mapping(&self.print_fn(module), aspen_runtime::print as usize);

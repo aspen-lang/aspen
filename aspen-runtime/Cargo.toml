@@ -5,12 +5,13 @@ authors = ["Emil Broman <emil@emilbroman.me>"]
 edition = "2018"
 
 [lib]
-name = "aspen_runtime"
+name = "aspenrt"
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-lazy_static = "1.4.0"
-num_cpus = "1.13.0"
-libc = "0.2.70"
-crossbeam-queue = "0.2.1"
-atomic = "0.4.5"
+libc = "0.2"
+crossbeam-queue = { version = "0.2.2", features = ["alloc"], default-features = false }
+wee_alloc = "0.4.5"
+
+[build-dependencies]
+cbindgen = "0.14.2"

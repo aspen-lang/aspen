@@ -1,125 +1,132 @@
-#![feature(arbitrary_self_types)]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(not(test), feature(lang_items))]
+#![cfg_attr(not(test), feature(alloc_error_handler))]
+
+extern crate alloc;
 
 #[macro_use]
-extern crate lazy_static;
+mod print;
 
-mod job;
-mod object;
-mod pending_reply;
-mod reply;
-mod semaphore;
-mod user_land_exposable;
-mod value;
+#[cfg(not(test))]
+mod panic {
+    use core::alloc::Layout;
+    use core::panic::PanicInfo;
 
-use crate::object::*;
-use crate::pending_reply::*;
-use crate::reply::*;
-use crate::semaphore::*;
-use crate::user_land_exposable::*;
-use crate::value::*;
+    #[global_allocator]
+    pub static ALLOCATOR: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-#[no_mangle]
-pub extern "C" fn new_object(size: usize, recv: Recv) -> *const Value {
-    Value::new_object(size, recv).expose()
-}
-
-#[no_mangle]
-pub extern "C" fn new_int(value: i128) -> *const Value {
-    Value::new_int(value).expose()
-}
-
-#[no_mangle]
-pub extern "C" fn new_float(value: f64) -> *const Value {
-    Value::new_float(value).expose()
-}
-
-#[no_mangle]
-pub extern "C" fn r#match(a: &Value, b: &Value) -> bool {
-    a == b
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn new_string(value: *mut u8) -> *const Value {
-    let len = libc::strlen(value as *mut _);
-    let value = std::str::from_utf8(std::slice::from_raw_parts(value, len as usize)).unwrap();
-    Value::new_string(value.into()).expose()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn new_nullary(value: *mut u8) -> *const Value {
-    let len = libc::strlen(value as *mut _);
-    let value = std::str::from_utf8(std::slice::from_raw_parts(value, len as usize)).unwrap();
-    Value::new_nullary(value).expose()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn clone_reference(value: *const Value) {
-    if value == 0 as usize as *const _ {
-        return;
-    }
-    if value == 'P' as usize as *const _ {
-        return;
-    }
-
-    let a = value.enclose();
-    let b = a.clone();
-
-    a.expose();
-    b.expose();
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn drop_reference(value: *const Value) {
-    if value == 0 as usize as *const _ {
-        return;
-    }
-    if value == 'P' as usize as *const _ {
-        return;
-    }
-
-    value.enclose();
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn send_message(
-    receiver: *const Value,
-    message: *const Value,
-) -> *const PendingReply {
-    let receiver = receiver.enclose();
-    let message = message.enclose();
-
-    receiver.schedule_message(message).expose()
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn poll_reply(pending_reply: *const PendingReply) -> *const Value {
-    match (*pending_reply).poll() {
-        Reply::Pending => 0 as *const Value,
-        Reply::Answer(value) => {
-            pending_reply.enclose();
-            value.expose()
+    #[panic_handler]
+    pub fn panic(info: &PanicInfo) -> ! {
+        println!("{}", info);
+        unsafe {
+            libc::exit(1);
         }
-        Reply::Rejected => Value::new_nullary("didNotUnderstand!").expose(),
-        Reply::Panic => 'P' as usize as *const Value,
+    }
+
+    #[lang = "eh_personality"]
+    fn eh_personality() {}
+
+    #[alloc_error_handler]
+    fn oom(_: Layout) -> ! {
+        println!("Out of memory!");
+        unsafe {
+            libc::exit(1);
+        }
     }
 }
 
+mod object;
+use self::object::*;
+
+mod cpus;
+
+mod mutex;
+use self::mutex::*;
+
+mod semaphore;
+use self::semaphore::*;
+
+mod object_ref;
+use self::object_ref::*;
+
+mod runtime;
+use self::runtime::*;
+
+mod actor;
+use self::actor::*;
+
+use alloc::boxed::Box;
+
 #[no_mangle]
-pub extern "C" fn print(val: *const Value) {
-    if val == 0 as usize as *const _ {
-        println!("nil");
-        return;
+pub unsafe extern "C" fn AspenNewRuntime() -> *mut Runtime {
+    let mut rt = Runtime::new();
+    for _ in 1..cpus::count() {
+        rt.spawn_worker();
     }
-    if val == 'P' as usize as *const _ {
-        println!("panicked object");
-        return;
-    }
-    unsafe {
-        println!("{}", &*val);
-    }
+    Box::into_raw(rt)
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn answer(slot: &Slot<Reply>, value: *const Value) {
-    slot.fill(Reply::Answer(value.enclose()));
+pub unsafe extern "C" fn AspenStartRuntime(f: extern "C" fn(*const Runtime)) {
+    let mut rt = Runtime::new();
+    for _ in 1..cpus::count() {
+        rt.spawn_worker();
+    }
+    let rt = Box::into_raw(rt);
+    f(rt);
+    let mut rt = Box::from_raw(rt);
+    rt.work();
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn AspenDropRuntime(rt: *mut Runtime) {
+    Box::from_raw(rt);
+}
+
+#[no_mangle]
+pub extern "C" fn AspenNewActor(
+    rt: &Runtime,
+    state_size: usize,
+    init_fn: InitFn,
+    recv_fn: RecvFn,
+) -> ObjectRef {
+    rt.spawn(state_size, init_fn, recv_fn)
+}
+
+#[no_mangle]
+pub extern "C" fn AspenSend(receiver: &ObjectRef, message: ObjectRef) {
+    receiver.send(message);
+}
+
+#[no_mangle]
+pub extern "C" fn AspenNewInt(value: i128) -> ObjectRef {
+    ObjectRef::new(Object::Int(value))
+}
+
+#[no_mangle]
+pub extern "C" fn AspenNewFloat(value: f64) -> ObjectRef {
+    ObjectRef::new(Object::Float(value))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn AspenNewAtom(value: *mut libc::c_char) -> ObjectRef {
+    let len = libc::strlen(value) as usize;
+    ObjectRef::new(Object::Atom(core::str::from_utf8_unchecked(
+        core::slice::from_raw_parts(value as *mut _, len),
+    )))
+}
+
+#[no_mangle]
+pub extern "C" fn AspenDrop(object: ObjectRef) {
+    drop(object);
+}
+
+#[no_mangle]
+pub extern "C" fn AspenClone(object: &ObjectRef) -> ObjectRef {
+    object.clone()
+}
+
+#[no_mangle]
+pub extern "C" fn AspenPrint(object: &ObjectRef) {
+    println!("{}", object);
 }
