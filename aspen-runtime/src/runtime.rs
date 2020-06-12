@@ -1,7 +1,8 @@
 use crate::{Actor, ActorAddress, Guard, InitFn, Mutex, ObjectRef, RecvFn, Semaphore};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::ops::DerefMut;
+use core::ops::{Deref, DerefMut};
+use core::pin::Pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
@@ -9,7 +10,7 @@ use hashbrown::HashMap;
 type MessageQueue = SegQueue<(ActorAddress, ObjectRef)>;
 
 pub struct Runtime {
-    actors: Mutex<HashMap<ActorAddress, Mutex<Actor>>>,
+    actors: Mutex<HashMap<ActorAddress, Pin<Box<Mutex<Actor>>>>>,
     id_gen: AtomicUsize,
     queue: MessageQueue,
     semaphore: Semaphore,
@@ -62,7 +63,7 @@ impl Runtime {
         let mut map = self.actors.lock();
         let map = map.deref_mut();
         let actor_ref = actor.reference_to();
-        map.insert(address, Mutex::new(actor));
+        map.insert(address, Pin::new(Box::new(Mutex::new(actor))));
         actor_ref
     }
 
@@ -73,9 +74,9 @@ impl Runtime {
 
             let actors = self.actors.lock();
             if let Some(a) = actors.get(&address) {
-                let actor = a as *const Mutex<Actor>;
+                let actor = a.deref() as *const Mutex<Actor>;
                 drop(a);
-                match unsafe{ &*actor }.try_lock() {
+                match unsafe { &*actor }.try_lock() {
                     None => {
                         self.enqueue(address, message);
                     }
