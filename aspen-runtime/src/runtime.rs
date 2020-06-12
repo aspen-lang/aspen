@@ -1,15 +1,15 @@
 use crate::{Actor, ActorAddress, Guard, InitFn, Mutex, ObjectRef, RecvFn, Semaphore};
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::ops::DerefMut;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use crossbeam_queue::SegQueue;
+use hashbrown::HashMap;
 
 type MessageQueue = SegQueue<(ActorAddress, ObjectRef)>;
 
 pub struct Runtime {
-    actors: Mutex<BTreeMap<ActorAddress, Mutex<Actor>>>,
+    actors: Mutex<HashMap<ActorAddress, Mutex<Actor>>>,
     id_gen: AtomicUsize,
     queue: MessageQueue,
     semaphore: Semaphore,
@@ -30,7 +30,7 @@ impl Drop for Runtime {
 impl Runtime {
     pub fn new() -> Box<Runtime> {
         Box::new(Runtime {
-            actors: Mutex::new(BTreeMap::new()),
+            actors: Mutex::new(HashMap::new()),
             id_gen: AtomicUsize::new(0),
             queue: MessageQueue::new(),
             semaphore: Semaphore::new(),
@@ -73,7 +73,9 @@ impl Runtime {
 
             let actors = self.actors.lock();
             if let Some(a) = actors.get(&address) {
-                match a.try_lock() {
+                let actor = a as *const Mutex<Actor>;
+                drop(a);
+                match unsafe{ &*actor }.try_lock() {
                     None => {
                         self.enqueue(address, message);
                     }

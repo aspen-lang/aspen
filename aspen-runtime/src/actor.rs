@@ -1,7 +1,7 @@
 use crate::{Object, ObjectRef, Runtime};
 use core::fmt;
 
-#[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct ActorAddress(pub usize);
 
 pub struct ActorRef {
