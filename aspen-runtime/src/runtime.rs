@@ -1,13 +1,13 @@
-use crate::{Actor, ActorAddress, Guard, InitFn, Mutex, ObjectRef, RecvFn, Semaphore};
+use crate::{Actor, ActorAddress, Guard, InitFn, Mutex, Object, ObjectRef, RecvFn, Semaphore};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crossbeam_queue::SegQueue;
 use hashbrown::HashMap;
 
-type MessageQueue = SegQueue<(ActorAddress, ObjectRef)>;
+type MessageQueue = SegQueue<(ObjectRef, ActorAddress, ObjectRef, Option<ObjectRef>)>;
 
 pub struct Runtime {
     actors: Mutex<HashMap<ActorAddress, Pin<Box<Mutex<Actor>>>>>,
@@ -15,15 +15,28 @@ pub struct Runtime {
     queue: MessageQueue,
     semaphore: Semaphore,
     workers: Vec<Worker>,
+    noop_actor: ObjectRef,
+    is_dropping: AtomicBool,
 }
 
 impl Drop for Runtime {
     fn drop(&mut self) {
+        if self.is_dropping.swap(true, Ordering::SeqCst) {
+            panic!("Double dropping Runtime!");
+        }
         for _ in 0..self.workers.len() {
             self.semaphore.notify();
         }
+        let mut main_worker = None;
         for worker in self.workers.iter() {
-            worker.join();
+            if worker.is_main {
+                main_worker = Some(worker);
+            } else {
+                worker.join();
+            }
+        }
+        if let Some(main_worker) = main_worker {
+            main_worker.join();
         }
     }
 }
@@ -36,6 +49,8 @@ impl Runtime {
             queue: MessageQueue::new(),
             semaphore: Semaphore::new(),
             workers: Vec::new(),
+            noop_actor: ObjectRef::new(Object::Noop),
+            is_dropping: AtomicBool::new(false),
         })
     }
 
@@ -52,51 +67,76 @@ impl Runtime {
         ActorAddress(self.id_gen.fetch_add(1, Ordering::Relaxed))
     }
 
-    pub fn enqueue(&self, recipient: ActorAddress, message: ObjectRef) {
-        self.queue.push((recipient, message));
+    #[inline]
+    pub fn enqueue(
+        &self,
+        receiver_ref: ObjectRef,
+        recipient: ActorAddress,
+        message: ObjectRef,
+        reply_to: Option<ObjectRef>,
+    ) {
+        self.queue
+            .push((receiver_ref, recipient, message, reply_to));
         self.semaphore.notify();
     }
 
     pub fn spawn(&self, state_size: usize, init_fn: InitFn, recv_fn: RecvFn) -> ObjectRef {
         let address = self.new_address();
-        let actor = Actor::new(self, address, state_size, init_fn, recv_fn);
+        let (actor_ref, actor) = Actor::new(self, address, state_size, init_fn, recv_fn);
         let mut map = self.actors.lock();
         let map = map.deref_mut();
-        let actor_ref = actor.reference_to();
         map.insert(address, Pin::new(Box::new(Mutex::new(actor))));
         actor_ref
     }
 
-    pub fn next(&self) -> Option<(Guard<Actor>, ObjectRef)> {
+    pub fn next(&self) -> Option<(Guard<Actor>, ObjectRef, ObjectRef)> {
         loop {
+            if self.is_dropping.load(Ordering::Relaxed) {
+                return None;
+            }
             self.semaphore.wait();
-            let (address, message) = self.queue.pop().ok()?;
+            let (object_ref, address, message, reply_to) = self.queue.pop().ok()?;
 
-            let actors = self.actors.lock();
-            if let Some(a) = actors.get(&address) {
-                let actor = a.deref() as *const Mutex<Actor>;
-                drop(a);
-                match unsafe { &*actor }.try_lock() {
+            let actor = {
+                let actors = self.actors.lock();
+                match actors.get(&address) {
                     None => {
-                        self.enqueue(address, message);
+                        println!(
+                            "Undeliverable message {:?}! {:?} is no longer alive!",
+                            message, address
+                        );
+                        continue;
                     }
-                    Some(actor) => {
-                        return Some((actor, message));
-                    }
+                    Some(a) => a.deref() as *const Mutex<Actor>,
                 }
-            } else {
-                println!("Undeliverable message! {:?} is no longer alive!", address);
+            };
+            match unsafe { &*actor }.try_lock() {
+                None => {
+                    self.enqueue(object_ref, address, message, reply_to);
+                }
+                Some(actor) => {
+                    return Some((actor, message, reply_to.unwrap_or(self.noop_actor.clone())));
+                }
             }
         }
     }
 
     pub fn schedule_deletion(&self, address: ActorAddress) {
-        self.actors.lock().remove(&address);
+        if !self.is_dropping.load(Ordering::SeqCst) {
+            let mut actors = self.actors.lock();
+            actors.remove(&address);
+            if actors.len() == 0 {
+                unsafe {
+                    crate::AspenExit(self as *const _);
+                }
+            }
+        }
     }
 }
 
 struct Worker {
     thread: libc::pthread_t,
+    is_main: bool,
 }
 
 impl Worker {
@@ -105,23 +145,27 @@ impl Worker {
             let mut thread = core::mem::zeroed();
             extern "C" fn work(runtime: *mut libc::c_void) -> *mut libc::c_void {
                 let runtime = unsafe { &*(runtime as *mut Runtime) };
-                while let Some((mut receiver, message)) = runtime.next() {
-                    receiver.receive(message);
+                while let Some((mut receiver, message, reply_to)) = runtime.next() {
+                    receiver.receive(message, reply_to);
                 }
                 0 as *mut _
             }
             libc::pthread_create(&mut thread, 0 as *mut _, work, runtime as *mut _);
-            Worker { thread }
+            Worker {
+                thread,
+                is_main: false,
+            }
         }
     }
 
     pub fn work(runtime: &mut Runtime) {
         let worker = Worker {
             thread: unsafe { libc::pthread_self() },
+            is_main: true,
         };
         runtime.workers.push(worker);
-        while let Some((mut receiver, message)) = runtime.next() {
-            receiver.receive(message);
+        while let Some((mut receiver, message, reply_to)) = runtime.next() {
+            receiver.receive(message, reply_to);
         }
     }
 

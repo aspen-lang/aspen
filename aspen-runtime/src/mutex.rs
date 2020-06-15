@@ -1,4 +1,5 @@
 use core::cell::UnsafeCell;
+use core::fmt;
 use core::ops::{Deref, DerefMut};
 
 pub struct Mutex<T> {
@@ -28,6 +29,12 @@ impl<T> Mutex<T> {
                 _ => None,
             }
         }
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Mutex<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        unsafe { &*self.inner.get() }.fmt(f)
     }
 }
 

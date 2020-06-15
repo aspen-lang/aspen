@@ -1,4 +1,4 @@
-use crate::Object;
+use crate::{ActorAddress, Object, Runtime};
 use alloc::boxed::Box;
 use core::fmt;
 use core::ops::Deref;
@@ -19,6 +19,42 @@ impl ObjectRef {
             ref_count: Box::into_raw(ref_count),
         }
     }
+
+    pub fn tell(&self, message: ObjectRef) {
+        match self.deref() {
+            Object::Noop => {}
+            Object::Int(i) => {
+                println!("Handle builtin tell {} -> {}", message, i);
+            }
+            Object::Float(f) => {
+                println!("Handle builtin tell {} -> {}", message, f);
+            }
+            Object::Atom(a) => {
+                println!("Handle builtin tell {} -> {}", message, a);
+            }
+            Object::Actor(a) => {
+                unsafe { &*a.runtime }.enqueue(self.clone(), a.address, message, None);
+            }
+        }
+    }
+
+    pub fn ask(&self, message: ObjectRef, reply_to: ObjectRef) {
+        match self.deref() {
+            Object::Noop => {}
+            Object::Int(i) => {
+                println!("Handle builtin ask {} -> {}", message, i);
+            }
+            Object::Float(f) => {
+                println!("Handle builtin ask {} -> {}", message, f);
+            }
+            Object::Atom(a) => {
+                println!("Handle builtin ask {} -> {}", message, a);
+            }
+            Object::Actor(a) => {
+                unsafe { &*a.runtime }.enqueue(self.clone(), a.address, message, Some(reply_to));
+            }
+        }
+    }
 }
 
 impl Deref for ObjectRef {
@@ -31,7 +67,13 @@ impl Deref for ObjectRef {
 
 impl fmt::Display for ObjectRef {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.deref().fmt(f)
+        fmt::Display::fmt(self.deref(), f)
+    }
+}
+
+impl fmt::Debug for ObjectRef {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt::Debug::fmt(self.deref(), f)
     }
 }
 
@@ -64,5 +106,70 @@ impl Drop for ObjectRef {
                 Box::from_raw(self.ref_count);
             }
         }
+    }
+}
+
+impl ObjectRef {
+    pub fn into_weak(self) -> WeakObjectRef {
+        WeakObjectRef {
+            ptr: self.ptr,
+            ref_count: self.ref_count,
+        }
+    }
+}
+
+pub struct WeakObjectRef {
+    ptr: *mut Object,
+    ref_count: *mut AtomicUsize,
+}
+
+impl WeakObjectRef {
+    pub fn into_strong(&self) -> ObjectRef {
+        unsafe {
+            self.ref_count
+                .as_ref()
+                .unwrap()
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        ObjectRef {
+            ptr: self.ptr,
+            ref_count: self.ref_count,
+        }
+    }
+}
+
+#[derive(PartialEq)]
+pub struct ActorRef {
+    runtime: *const Runtime,
+    address: ActorAddress,
+}
+
+impl ActorRef {
+    #[inline]
+    pub fn new(runtime: *const Runtime, address: ActorAddress) -> ActorRef {
+        ActorRef { runtime, address }
+    }
+}
+
+impl Drop for ActorRef {
+    fn drop(&mut self) {
+        unsafe {
+            self.runtime
+                .as_ref()
+                .unwrap()
+                .schedule_deletion(self.address)
+        }
+    }
+}
+
+impl fmt::Debug for ActorRef {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "*actor{}", self.address)
+    }
+}
+
+impl fmt::Display for ActorRef {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "*actor{}", self.address)
     }
 }

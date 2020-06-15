@@ -74,13 +74,12 @@ pub unsafe extern "C" fn AspenStartRuntime(f: extern "C" fn(*const Runtime)) {
     }
     let rt = Box::into_raw(rt);
     f(rt);
-    let mut rt = Box::from_raw(rt);
-    rt.work();
+    (&mut *rt).work();
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn AspenDropRuntime(rt: *mut Runtime) {
-    Box::from_raw(rt);
+pub unsafe extern "C" fn AspenExit(rt: *const Runtime) {
+    Box::from_raw(rt as *mut Runtime);
 }
 
 #[no_mangle]
@@ -94,8 +93,20 @@ pub extern "C" fn AspenNewActor(
 }
 
 #[no_mangle]
-pub extern "C" fn AspenSend(receiver: &ObjectRef, message: ObjectRef) {
-    receiver.send(message);
+pub extern "C" fn AspenNewStatelessActor(rt: &Runtime, recv_fn: RecvFn) -> ObjectRef {
+    AspenNewActor(rt, 0, noop_init, recv_fn)
+}
+
+extern "C" fn noop_init(_rt: *const Runtime, _self: *const ObjectRef, _state: *mut libc::c_void) {}
+
+#[no_mangle]
+pub extern "C" fn AspenTell(receiver: &ObjectRef, message: ObjectRef) {
+    receiver.tell(message);
+}
+
+#[no_mangle]
+pub extern "C" fn AspenAsk(receiver: &ObjectRef, reply_to: ObjectRef, message: ObjectRef) {
+    receiver.ask(message, reply_to);
 }
 
 #[no_mangle]
@@ -129,4 +140,19 @@ pub extern "C" fn AspenClone(object: &ObjectRef) -> ObjectRef {
 #[no_mangle]
 pub extern "C" fn AspenPrint(object: &ObjectRef) {
     println!("{}", object);
+}
+
+#[no_mangle]
+pub extern "C" fn AspenEqInt(value: i128) -> *mut Matcher {
+    Box::into_raw(Box::new(Matcher::Equal(Object::Int(value))))
+}
+
+#[no_mangle]
+pub extern "C" fn AspenMatch(matcher: &Matcher, subject: &ObjectRef) -> bool {
+    subject.matches(matcher)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn AspenDropMatcher(matcher: *mut Matcher) {
+    Box::from_raw(matcher);
 }
