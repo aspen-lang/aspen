@@ -43,6 +43,9 @@ mod cpus;
 mod mutex;
 use self::mutex::*;
 
+mod worker;
+use self::worker::*;
+
 mod semaphore;
 use self::semaphore::*;
 
@@ -51,6 +54,12 @@ use self::object_ref::*;
 
 mod runtime;
 use self::runtime::*;
+
+mod scheduler;
+use self::scheduler::*;
+
+mod actor_address;
+use self::actor_address::*;
 
 mod actor;
 use self::actor::*;
@@ -74,7 +83,7 @@ pub unsafe extern "C" fn AspenStartRuntime(f: extern "C" fn(*const Runtime)) {
     }
     let rt = Box::into_raw(rt);
     f(rt);
-    (&mut *rt).work();
+    (&mut *rt).attach_current_thread_as_worker();
 }
 
 #[no_mangle]
@@ -99,7 +108,13 @@ pub extern "C" fn AspenNewStatelessActor(rt: &Runtime, recv_fn: RecvFn) -> Objec
     AspenNewActor(rt, 0, rt.noop_object.clone(), noop_init, recv_fn, noop_drop)
 }
 
-extern "C" fn noop_init(_rt: *const Runtime, _self: *const ObjectRef, _state: *mut libc::c_void, _msg: ObjectRef) {}
+extern "C" fn noop_init(
+    _rt: *const Runtime,
+    _self: *const ObjectRef,
+    _state: *mut libc::c_void,
+    _msg: ObjectRef,
+) {
+}
 extern "C" fn noop_drop(_rt: *const Runtime, _state: *mut libc::c_void) {}
 
 #[no_mangle]

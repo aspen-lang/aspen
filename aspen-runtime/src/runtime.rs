@@ -1,42 +1,19 @@
-use crate::{Actor, ActorAddress, Guard, InitFn, Mutex, Object, ObjectRef, RecvFn, DropFn, Semaphore};
+use crate::{Actor, ActorAddress, DropFn, InitFn, Object, ObjectRef, RecvFn, Scheduler, Worker};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::ops::{Deref, DerefMut};
-use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use crossbeam_queue::SegQueue;
-use hashbrown::HashMap;
-
-type MessageQueue = SegQueue<(ObjectRef, ActorAddress, ObjectRef, Option<ObjectRef>)>;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub struct Runtime {
-    actors: Mutex<HashMap<ActorAddress, Pin<Box<Mutex<Actor>>>>>,
-    id_gen: AtomicUsize,
-    queue: MessageQueue,
-    semaphore: Semaphore,
     workers: Vec<Worker>,
+    scheduler: Scheduler,
+    id_gen: AtomicUsize,
     pub noop_object: ObjectRef,
-    is_dropping: AtomicBool,
 }
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        if self.is_dropping.swap(true, Ordering::SeqCst) {
-            panic!("Double dropping Runtime!");
-        }
-        for _ in 0..self.workers.len() {
-            self.semaphore.notify();
-        }
-        let mut main_worker = None;
         for worker in self.workers.iter() {
-            if worker.is_main {
-                main_worker = Some(worker);
-            } else {
-                worker.join();
-            }
-        }
-        if let Some(main_worker) = main_worker {
-            main_worker.join();
+            worker.join();
         }
     }
 }
@@ -44,13 +21,10 @@ impl Drop for Runtime {
 impl Runtime {
     pub fn new() -> Box<Runtime> {
         Box::new(Runtime {
-            actors: Mutex::new(HashMap::new()),
-            id_gen: AtomicUsize::new(0),
-            queue: MessageQueue::new(),
-            semaphore: Semaphore::new(),
             workers: Vec::new(),
+            scheduler: Scheduler::new(),
+            id_gen: AtomicUsize::new(1),
             noop_object: ObjectRef::new(Object::Noop),
-            is_dropping: AtomicBool::new(false),
         })
     }
 
@@ -59,13 +33,47 @@ impl Runtime {
         self.workers.push(Worker::new(rt))
     }
 
-    pub fn work(&mut self) {
-        Worker::work(self);
+    pub fn attach_current_thread_as_worker(&mut self) {
+        let worker = Worker::from_current_thread();
+        self.workers.push(worker);
+        self.work();
+    }
+
+    pub fn work(&self) {
+        while self.scheduler.work() {}
+    }
+
+    #[inline]
+    pub fn notify(&self) {
+        self.scheduler.notify();
+    }
+
+    pub fn spawn(
+        &self,
+        state_size: usize,
+        init_msg: ObjectRef,
+        init_fn: InitFn,
+        recv_fn: RecvFn,
+        drop_fn: DropFn,
+    ) -> ObjectRef {
+        let address = self.new_address();
+        let (actor_ref, actor) = Actor::new(
+            self, address, state_size, init_msg, init_fn, recv_fn, drop_fn,
+        );
+        self.scheduler.add_actor(actor);
+        actor_ref
     }
 
     fn new_address(&self) -> ActorAddress {
         ActorAddress(self.id_gen.fetch_add(1, Ordering::Relaxed))
     }
+
+    pub fn schedule_deletion(&self, address: ActorAddress) {
+        self.scheduler.delete(address);
+        self.notify();
+    }
+
+    /*
 
     #[inline]
     pub fn enqueue(
@@ -80,14 +88,6 @@ impl Runtime {
         self.semaphore.notify();
     }
 
-    pub fn spawn(&self, state_size: usize, init_msg: ObjectRef, init_fn: InitFn, recv_fn: RecvFn, drop_fn: DropFn) -> ObjectRef {
-        let address = self.new_address();
-        let (actor_ref, actor) = Actor::new(self, address, state_size, init_msg, init_fn, recv_fn, drop_fn);
-        let mut map = self.actors.lock();
-        let map = map.deref_mut();
-        map.insert(address, Pin::new(Box::new(Mutex::new(actor))));
-        actor_ref
-    }
 
     pub fn next(&self) -> Option<(Guard<Actor>, ObjectRef, ObjectRef)> {
         loop {
@@ -120,58 +120,5 @@ impl Runtime {
             }
         }
     }
-
-    pub fn schedule_deletion(&self, address: ActorAddress) {
-        if !self.is_dropping.load(Ordering::SeqCst) {
-            let mut actors = self.actors.lock();
-            actors.remove(&address);
-            if actors.len() == 0 {
-                unsafe {
-                    crate::AspenExit(self as *const _);
-                }
-            }
-        }
-    }
-}
-
-struct Worker {
-    thread: libc::pthread_t,
-    is_main: bool,
-}
-
-impl Worker {
-    pub fn new(runtime: *mut Runtime) -> Worker {
-        unsafe {
-            let mut thread = core::mem::zeroed();
-            extern "C" fn work(runtime: *mut libc::c_void) -> *mut libc::c_void {
-                let runtime = unsafe { &*(runtime as *mut Runtime) };
-                while let Some((mut receiver, message, reply_to)) = runtime.next() {
-                    receiver.receive(message, reply_to);
-                }
-                0 as *mut _
-            }
-            libc::pthread_create(&mut thread, 0 as *mut _, work, runtime as *mut _);
-            Worker {
-                thread,
-                is_main: false,
-            }
-        }
-    }
-
-    pub fn work(runtime: &mut Runtime) {
-        let worker = Worker {
-            thread: unsafe { libc::pthread_self() },
-            is_main: true,
-        };
-        runtime.workers.push(worker);
-        while let Some((mut receiver, message, reply_to)) = runtime.next() {
-            receiver.receive(message, reply_to);
-        }
-    }
-
-    pub fn join(&self) {
-        unsafe {
-            libc::pthread_join(self.thread, 0 as *mut _);
-        }
-    }
+    */
 }

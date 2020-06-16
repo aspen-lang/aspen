@@ -1,36 +1,26 @@
-use crate::{ActorRef, Object, ObjectRef, Runtime, WeakObjectRef};
-use core::fmt;
+use crate::{ActorAddress, ActorRef, Object, ObjectRef, Runtime, WeakObjectRef};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-
-#[derive(Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
-pub struct ActorAddress(pub usize);
-
-impl fmt::Display for ActorAddress {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "<0.0.{:x}>", self.0)
-    }
-}
-
-impl fmt::Debug for ActorAddress {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "<0.0.{:x}>", self.0)
-    }
-}
+use core::fmt;
+use core::ops::Deref;
+use core::pin::Pin;
+use crossbeam_queue::SegQueue;
 
 pub type InitFn = extern "C" fn(*const Runtime, *const ObjectRef, *mut libc::c_void, ObjectRef);
 pub type RecvFn =
     extern "C" fn(*const Runtime, *const ObjectRef, *mut libc::c_void, ObjectRef, ObjectRef);
-pub type DropFn =
-    extern "C" fn(*const Runtime, *mut libc::c_void);
+pub type DropFn = extern "C" fn(*const Runtime, *mut libc::c_void);
+
+pub type Inbox = SegQueue<(ObjectRef, ObjectRef, ObjectRef)>;
 
 pub struct Actor {
     runtime: *const Runtime,
+    inbox: Pin<Box<Inbox>>,
     state_ptr: Vec<u8>,
     recv_fn: RecvFn,
     drop_fn: DropFn,
     self_: WeakObjectRef,
-    address: ActorAddress,
+    pub address: ActorAddress,
 }
 
 impl fmt::Debug for Actor {
@@ -49,9 +39,15 @@ impl Actor {
         recv_fn: RecvFn,
         drop_fn: DropFn,
     ) -> (ObjectRef, Actor) {
-        let self_ = ObjectRef::new(Object::Actor(ActorRef::new(runtime, address)));
+        let inbox = Box::pin(Inbox::new());
+        let self_ = ObjectRef::new(Object::Actor(ActorRef::new(
+            runtime,
+            address,
+            inbox.deref(),
+        )));
         let mut actor = Actor {
             runtime,
+            inbox,
             state_ptr: Vec::with_capacity(state_size),
             recv_fn,
             drop_fn,
@@ -67,14 +63,19 @@ impl Actor {
         self.state_ptr.as_mut_ptr() as *mut _
     }
 
-    pub fn receive(&mut self, message: ObjectRef, reply_to: ObjectRef) {
-        (self.recv_fn)(
-            self.runtime,
-            &self.reference_to(),
-            self.state(),
-            reply_to,
-            message,
-        );
+    pub fn receive(&mut self) -> bool {
+        if let Ok((_self_ref, message, reply_to)) = self.inbox.pop() {
+            (self.recv_fn)(
+                self.runtime,
+                &self.reference_to(),
+                self.state(),
+                reply_to,
+                message,
+            );
+            true
+        } else {
+            false
+        }
     }
 
     pub fn reference_to(&self) -> ObjectRef {

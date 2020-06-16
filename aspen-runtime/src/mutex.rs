@@ -22,6 +22,7 @@ impl<T> Mutex<T> {
         Guard { mutex: self }
     }
 
+    /*
     pub fn try_lock(&self) -> Option<Guard<T>> {
         unsafe {
             match libc::pthread_mutex_trylock(&mut *self.lock.get()) {
@@ -30,6 +31,7 @@ impl<T> Mutex<T> {
             }
         }
     }
+    */
 }
 
 impl<T: fmt::Debug> fmt::Debug for Mutex<T> {

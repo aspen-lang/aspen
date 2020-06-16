@@ -1,4 +1,4 @@
-use crate::{ActorAddress, Object, Runtime};
+use crate::{ActorAddress, Inbox, Object, Runtime};
 use alloc::boxed::Box;
 use core::fmt;
 use core::ops::Deref;
@@ -9,6 +9,9 @@ pub struct ObjectRef {
     ptr: *mut Object,
     ref_count: *mut AtomicUsize,
 }
+
+unsafe impl Sync for ObjectRef {}
+unsafe impl Send for ObjectRef {}
 
 impl ObjectRef {
     pub fn new(object: Object) -> ObjectRef {
@@ -33,7 +36,7 @@ impl ObjectRef {
                 println!("Handle builtin tell {} -> {}", message, a);
             }
             Object::Actor(a) => {
-                unsafe { &*a.runtime }.enqueue(self.clone(), a.address, message, None);
+                a.enqueue(self.clone(), a.address, message, None);
             }
         }
     }
@@ -51,7 +54,7 @@ impl ObjectRef {
                 println!("Handle builtin ask {} -> {}", message, a);
             }
             Object::Actor(a) => {
-                unsafe { &*a.runtime }.enqueue(self.clone(), a.address, message, Some(reply_to));
+                a.enqueue(self.clone(), a.address, message, Some(reply_to));
             }
         }
     }
@@ -142,23 +145,38 @@ impl WeakObjectRef {
 pub struct ActorRef {
     runtime: *const Runtime,
     address: ActorAddress,
+    inbox: *const Inbox,
 }
 
 impl ActorRef {
     #[inline]
-    pub fn new(runtime: *const Runtime, address: ActorAddress) -> ActorRef {
-        ActorRef { runtime, address }
+    pub fn new(runtime: *const Runtime, address: ActorAddress, inbox: *const Inbox) -> ActorRef {
+        ActorRef {
+            runtime,
+            address,
+            inbox,
+        }
+    }
+
+    fn enqueue(
+        &self,
+        self_ref: ObjectRef,
+        _address: ActorAddress,
+        message: ObjectRef,
+        reply_to: Option<ObjectRef>,
+    ) {
+        unsafe { &*self.inbox }.push((
+            self_ref,
+            message,
+            reply_to.unwrap_or_else(|| unsafe { &*self.runtime }.noop_object.clone()),
+        ));
+        unsafe { &*self.runtime }.notify();
     }
 }
 
 impl Drop for ActorRef {
     fn drop(&mut self) {
-        unsafe {
-            self.runtime
-                .as_ref()
-                .unwrap()
-                .schedule_deletion(self.address)
-        }
+        unsafe { &*self.runtime }.schedule_deletion(self.address);
     }
 }
 
