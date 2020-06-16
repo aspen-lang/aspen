@@ -1,4 +1,4 @@
-use crate::{Actor, ActorAddress, Guard, InitFn, Mutex, Object, ObjectRef, RecvFn, Semaphore};
+use crate::{Actor, ActorAddress, Guard, InitFn, Mutex, Object, ObjectRef, RecvFn, DropFn, Semaphore};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
@@ -15,7 +15,7 @@ pub struct Runtime {
     queue: MessageQueue,
     semaphore: Semaphore,
     workers: Vec<Worker>,
-    noop_actor: ObjectRef,
+    pub noop_object: ObjectRef,
     is_dropping: AtomicBool,
 }
 
@@ -49,7 +49,7 @@ impl Runtime {
             queue: MessageQueue::new(),
             semaphore: Semaphore::new(),
             workers: Vec::new(),
-            noop_actor: ObjectRef::new(Object::Noop),
+            noop_object: ObjectRef::new(Object::Noop),
             is_dropping: AtomicBool::new(false),
         })
     }
@@ -80,9 +80,9 @@ impl Runtime {
         self.semaphore.notify();
     }
 
-    pub fn spawn(&self, state_size: usize, init_fn: InitFn, recv_fn: RecvFn) -> ObjectRef {
+    pub fn spawn(&self, state_size: usize, init_msg: ObjectRef, init_fn: InitFn, recv_fn: RecvFn, drop_fn: DropFn) -> ObjectRef {
         let address = self.new_address();
-        let (actor_ref, actor) = Actor::new(self, address, state_size, init_fn, recv_fn);
+        let (actor_ref, actor) = Actor::new(self, address, state_size, init_msg, init_fn, recv_fn, drop_fn);
         let mut map = self.actors.lock();
         let map = map.deref_mut();
         map.insert(address, Pin::new(Box::new(Mutex::new(actor))));
@@ -115,7 +115,7 @@ impl Runtime {
                     self.enqueue(object_ref, address, message, reply_to);
                 }
                 Some(actor) => {
-                    return Some((actor, message, reply_to.unwrap_or(self.noop_actor.clone())));
+                    return Some((actor, message, reply_to.unwrap_or(self.noop_object.clone())));
                 }
             }
         }

@@ -86,18 +86,21 @@ pub unsafe extern "C" fn AspenExit(rt: *const Runtime) {
 pub extern "C" fn AspenNewActor(
     rt: &Runtime,
     state_size: usize,
+    init_msg: ObjectRef,
     init_fn: InitFn,
     recv_fn: RecvFn,
+    drop_fn: DropFn,
 ) -> ObjectRef {
-    rt.spawn(state_size, init_fn, recv_fn)
+    rt.spawn(state_size, init_msg, init_fn, recv_fn, drop_fn)
 }
 
 #[no_mangle]
 pub extern "C" fn AspenNewStatelessActor(rt: &Runtime, recv_fn: RecvFn) -> ObjectRef {
-    AspenNewActor(rt, 0, noop_init, recv_fn)
+    AspenNewActor(rt, 0, rt.noop_object.clone(), noop_init, recv_fn, noop_drop)
 }
 
-extern "C" fn noop_init(_rt: *const Runtime, _self: *const ObjectRef, _state: *mut libc::c_void) {}
+extern "C" fn noop_init(_rt: *const Runtime, _self: *const ObjectRef, _state: *mut libc::c_void, _msg: ObjectRef) {}
+extern "C" fn noop_drop(_rt: *const Runtime, _state: *mut libc::c_void) {}
 
 #[no_mangle]
 pub extern "C" fn AspenTell(receiver: &ObjectRef, message: ObjectRef) {
