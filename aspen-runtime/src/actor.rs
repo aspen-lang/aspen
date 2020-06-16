@@ -59,6 +59,11 @@ impl Actor {
     }
 
     #[inline]
+    pub fn inbox_is_empty(&self) -> bool {
+        self.inbox.is_empty()
+    }
+
+    #[inline]
     fn state(&mut self) -> *mut libc::c_void {
         self.state_ptr.as_mut_ptr() as *mut _
     }
