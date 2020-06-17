@@ -64,8 +64,13 @@ use self::actor_address::*;
 mod actor;
 use self::actor::*;
 
+mod continuation;
+use self::continuation::*;
+
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::ops::Deref;
+use core::pin::Pin;
 
 #[no_mangle]
 pub unsafe extern "C" fn AspenNewRuntime() -> *mut Runtime {
@@ -115,7 +120,28 @@ extern "C" fn noop_init(
     _msg: ObjectRef,
 ) {
 }
+
 extern "C" fn noop_drop(_rt: *const Runtime, _state: *mut libc::c_void) {}
+
+#[no_mangle]
+pub extern "C" fn AspenContinue(
+    rt: &Runtime,
+    self_: &ObjectRef,
+    continuation_frame_size: usize,
+    continuation_frame_ptr: &mut *mut libc::c_void,
+    continuation_fn: ContFn,
+    drop_fn: DropFn,
+) -> ObjectRef {
+    let mut frame = Pin::new(Vec::with_capacity(continuation_frame_size));
+    *continuation_frame_ptr = frame.as_mut_ptr() as *mut _;
+    ObjectRef::new(Object::Continuation(Continuation::new(
+        rt,
+        self_.clone(),
+        continuation_fn,
+        frame,
+        drop_fn,
+    )))
+}
 
 #[no_mangle]
 pub extern "C" fn AspenTell(receiver: &ObjectRef, message: ObjectRef) {

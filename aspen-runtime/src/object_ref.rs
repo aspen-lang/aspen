@@ -5,6 +5,7 @@ use core::ops::Deref;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
+#[derive(PartialEq)]
 pub struct ObjectRef {
     ptr: *mut Object,
     ref_count: *mut AtomicUsize,
@@ -36,7 +37,18 @@ impl ObjectRef {
                 println!("Handle builtin tell {} -> {}", message, a);
             }
             Object::Actor(a) => {
-                a.enqueue(self.clone(), a.address, message, None);
+                a.enqueue(self.clone(), a.address, message, None, None);
+            }
+            Object::Continuation(continuation) => {
+                if let Object::Actor(a) = continuation.actor.deref() {
+                    a.enqueue(
+                        continuation.actor.clone(),
+                        a.address,
+                        message,
+                        None,
+                        Some(self.clone()),
+                    );
+                }
             }
         }
     }
@@ -54,7 +66,18 @@ impl ObjectRef {
                 println!("Handle builtin ask {} -> {}", message, a);
             }
             Object::Actor(a) => {
-                a.enqueue(self.clone(), a.address, message, Some(reply_to));
+                a.enqueue(self.clone(), a.address, message, Some(reply_to), None);
+            }
+            Object::Continuation(continuation) => {
+                if let Object::Actor(a) = continuation.actor.deref() {
+                    a.enqueue(
+                        continuation.actor.clone(),
+                        a.address,
+                        message,
+                        Some(reply_to),
+                        Some(self.clone()),
+                    );
+                }
             }
         }
     }
@@ -113,7 +136,7 @@ impl Drop for ObjectRef {
 }
 
 impl ObjectRef {
-    pub fn into_weak(self) -> WeakObjectRef {
+    pub fn weak(&self) -> WeakObjectRef {
         WeakObjectRef {
             ptr: self.ptr,
             ref_count: self.ref_count,
@@ -164,11 +187,13 @@ impl ActorRef {
         _address: ActorAddress,
         message: ObjectRef,
         reply_to: Option<ObjectRef>,
+        continuation_ref: Option<ObjectRef>,
     ) {
         unsafe { &*self.inbox }.push((
             self_ref,
             message,
             reply_to.unwrap_or_else(|| unsafe { &*self.runtime }.noop_object.clone()),
+            continuation_ref,
         ));
         unsafe { &*self.runtime }.notify();
     }

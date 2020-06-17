@@ -1,8 +1,8 @@
 use crate::{Actor, ActorAddress, Mutex, Semaphore};
 // use alloc::collections::BTreeSet as Set;
-use hashbrown::HashSet as Set;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crossbeam_queue::SegQueue;
-use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+use hashbrown::HashSet as Set;
 
 pub struct Scheduler {
     semaphore: Semaphore,

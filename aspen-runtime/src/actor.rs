@@ -10,13 +10,21 @@ pub type InitFn = extern "C" fn(*const Runtime, *const ObjectRef, *mut libc::c_v
 pub type RecvFn =
     extern "C" fn(*const Runtime, *const ObjectRef, *mut libc::c_void, ObjectRef, ObjectRef);
 pub type DropFn = extern "C" fn(*const Runtime, *mut libc::c_void);
+pub type ContFn = extern "C" fn(
+    *const Runtime,
+    *const ObjectRef,
+    *mut libc::c_void,
+    *mut libc::c_void,
+    ObjectRef,
+    ObjectRef,
+);
 
-pub type Inbox = SegQueue<(ObjectRef, ObjectRef, ObjectRef)>;
+pub type Inbox = SegQueue<(ObjectRef, ObjectRef, ObjectRef, Option<ObjectRef>)>;
 
 pub struct Actor {
     runtime: *const Runtime,
     inbox: Pin<Box<Inbox>>,
-    state_ptr: Vec<u8>,
+    state_ptr: Pin<Vec<u8>>,
     recv_fn: RecvFn,
     drop_fn: DropFn,
     self_: WeakObjectRef,
@@ -48,10 +56,10 @@ impl Actor {
         let mut actor = Actor {
             runtime,
             inbox,
-            state_ptr: Vec::with_capacity(state_size),
+            state_ptr: Pin::new(Vec::with_capacity(state_size)),
             recv_fn,
             drop_fn,
-            self_: self_.clone().into_weak(),
+            self_: self_.weak(),
             address,
         };
         init_fn(runtime, &actor.reference_to(), actor.state(), init_msg);
@@ -69,14 +77,21 @@ impl Actor {
     }
 
     pub fn receive(&mut self) -> bool {
-        if let Ok((_self_ref, message, reply_to)) = self.inbox.pop() {
-            (self.recv_fn)(
-                self.runtime,
-                &self.reference_to(),
-                self.state(),
-                reply_to,
-                message,
-            );
+        if let Ok((self_ref, message, reply_to, continuation_ref)) = self.inbox.pop() {
+            match continuation_ref.as_ref().map(|c| c.deref()) {
+                Some(Object::Continuation(cont)) => (cont.cont_fn)(
+                    self.runtime,
+                    &self_ref,
+                    self.state(),
+                    cont.frame_ptr(),
+                    reply_to,
+                    message,
+                ),
+
+                None | Some(_) => {
+                    (self.recv_fn)(self.runtime, &self_ref, self.state(), reply_to, message)
+                }
+            }
             true
         } else {
             false

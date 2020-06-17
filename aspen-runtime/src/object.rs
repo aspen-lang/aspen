@@ -1,4 +1,4 @@
-use crate::ActorRef;
+use crate::{ActorRef, Continuation};
 use core::fmt;
 
 #[derive(Debug, PartialEq)]
@@ -8,6 +8,7 @@ pub enum Object {
     Float(f64),
     Atom(&'static str),
     Actor(ActorRef),
+    Continuation(Continuation),
 }
 
 impl Object {
@@ -24,6 +25,7 @@ impl fmt::Display for Object {
             Object::Float(v) => write!(f, "{}", v),
             Object::Atom(v) => write!(f, "{}", v),
             Object::Actor(v) => write!(f, "{}", v),
+            Object::Continuation(v) => write!(f, "{}", v),
         }
     }
 }
