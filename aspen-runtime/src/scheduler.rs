@@ -2,13 +2,14 @@ use crate::{Actor, ActorAddress, Mutex, Semaphore};
 // use alloc::collections::BTreeSet as Set;
 use hashbrown::HashSet as Set;
 use crossbeam_queue::SegQueue;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 
 pub struct Scheduler {
     semaphore: Semaphore,
     idle_actors: SegQueue<Actor>,
     deleted_actors: Mutex<Set<ActorAddress>>,
     actors_count: AtomicUsize,
+    is_done: AtomicBool,
 }
 
 impl Scheduler {
@@ -18,6 +19,7 @@ impl Scheduler {
             idle_actors: SegQueue::new(),
             deleted_actors: Mutex::new(Set::new()),
             actors_count: AtomicUsize::new(0),
+            is_done: AtomicBool::new(false),
         }
     }
 
@@ -34,13 +36,19 @@ impl Scheduler {
     pub fn work(&self) -> bool {
         self.semaphore.wait();
         loop {
+            if self.is_done.load(Ordering::Relaxed) {
+                self.notify();
+                return false;
+            }
             if let Ok(mut actor) = self.idle_actors.pop() {
                 {
                     let mut deleted = self.deleted_actors.lock();
                     if deleted.remove(&actor.address) {
                         if actor.inbox_is_empty() {
                             if self.actors_count.fetch_sub(1, Ordering::Relaxed) == 1 {
-                                println!("Just deleted the last actor");
+                                self.is_done.store(true, Ordering::Relaxed);
+                                self.notify();
+                                return false;
                             }
                             break;
                         }

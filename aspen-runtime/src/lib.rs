@@ -65,6 +65,7 @@ mod actor;
 use self::actor::*;
 
 use alloc::boxed::Box;
+use core::ops::Deref;
 
 #[no_mangle]
 pub unsafe extern "C" fn AspenNewRuntime() -> *mut Runtime {
@@ -81,9 +82,8 @@ pub unsafe extern "C" fn AspenStartRuntime(f: extern "C" fn(*const Runtime)) {
     for _ in 1..cpus::count() {
         rt.spawn_worker();
     }
-    let rt = Box::into_raw(rt);
-    f(rt);
-    (&mut *rt).attach_current_thread_as_worker();
+    f(rt.deref());
+    rt.attach_current_thread_as_worker();
 }
 
 #[no_mangle]
