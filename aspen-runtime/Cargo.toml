@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Emil Broman <emil@emilbroman.me>"]
 edition = "2018"
 
+[features]
+default = []
+std = []
+
 [lib]
 name = "aspenrt"
 crate-type = ["staticlib", "rlib"]

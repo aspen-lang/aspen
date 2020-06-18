@@ -13,6 +13,7 @@ pub async fn main(_matches: &ArgMatches<'_>) -> clap::Result<()> {
     let context = aspen::Context::infer().await?;
     let host = context.host();
     let jit = JIT::new(context);
+    jit.init_live_env(host.clone()).unwrap();
 
     let mut rl = Editor::<()>::new();
     let mut line_number: usize = 0;

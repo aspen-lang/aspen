@@ -19,7 +19,15 @@ pub type ContFn = extern "C" fn(
     ObjectRef,
 );
 
-pub type Inbox = SegQueue<(ObjectRef, ObjectRef, ObjectRef, Option<ObjectRef>)>;
+#[derive(Debug)]
+pub struct Envelope {
+    pub self_ref: ObjectRef,
+    pub message: ObjectRef,
+    pub reply_to: ObjectRef,
+    pub continuation_ref: Option<ObjectRef>,
+}
+
+pub type Inbox = SegQueue<Envelope>;
 
 pub struct Actor {
     runtime: *const Runtime,
@@ -77,19 +85,22 @@ impl Actor {
     }
 
     pub fn receive(&mut self) -> bool {
-        if let Ok((self_ref, message, reply_to, continuation_ref)) = self.inbox.pop() {
+        if let Ok(envelope) = self.inbox.pop() {
+            let Envelope {
+                self_ref,
+                message,
+                reply_to,
+                continuation_ref,
+            } = envelope;
+            let state = self.state();
             match continuation_ref.as_ref().map(|c| c.deref()) {
-                Some(Object::Continuation(cont)) => (cont.cont_fn)(
-                    self.runtime,
-                    &self_ref,
-                    self.state(),
-                    cont.frame_ptr(),
-                    reply_to,
-                    message,
-                ),
+                Some(Object::Continuation(cont)) => {
+                    let frame = cont.frame_ptr();
+                    (cont.cont_fn)(self.runtime, &self_ref, state, frame, reply_to, message)
+                }
 
                 None | Some(_) => {
-                    (self.recv_fn)(self.runtime, &self_ref, self.state(), reply_to, message)
+                    (self.recv_fn)(self.runtime, &self_ref, state, reply_to, message);
                 }
             }
             true
@@ -105,6 +116,7 @@ impl Actor {
 
 impl Drop for Actor {
     fn drop(&mut self) {
-        (self.drop_fn)(self.runtime, self.state());
+        let state = self.state();
+        (self.drop_fn)(self.runtime, state);
     }
 }

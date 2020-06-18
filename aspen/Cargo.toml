@@ -15,4 +15,4 @@ glob = "0.3.0"
 mktemp = "0.4.0"
 dirs = "2.0.2"
 lazy_static = "1.4.0"
-aspen-runtime = { path = "../aspen-runtime" }
+aspen-runtime = { path = "../aspen-runtime", features = ["std"] }

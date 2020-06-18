@@ -40,10 +40,11 @@ impl JIT {
             let module = generator.generate_module(&module)?;
 
             if cfg!(debug_assertions) {
+                module.verify()?;
                 eprintln!("------------------\n{:?}------------------", module);
             }
 
-            module.evaluate(&generator, self.engine.clone());
+            module.evaluate(self.engine.clone());
         }
         Ok(())
     }
@@ -54,10 +55,26 @@ impl JIT {
             let module = generator.generate_main(main.as_ref())?;
 
             if cfg!(debug_assertions) {
+                module.verify()?;
                 eprintln!("------------------\n{:?}------------------", module);
             }
 
-            module.evaluate(&generator, self.engine.clone());
+            module.evaluate(self.engine.clone());
+        }
+        Ok(())
+    }
+
+    pub fn init_live_env(&self, host: Host) -> GenResult<()> {
+        unsafe {
+            let generator = Generator::new(host.clone(), CONTEXT.as_ref().unwrap());
+            let module = generator.generate_live_init()?;
+
+            if cfg!(debug_assertions) {
+                module.verify()?;
+                eprintln!("------------------\n{:?}------------------", module);
+            }
+
+            module.evaluate(self.engine.clone());
         }
         Ok(())
     }

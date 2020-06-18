@@ -114,7 +114,7 @@ impl Executable {
         }
 
         cc.arg(format!("-L{}", runtime_path.display()))
-            .arg("-laspen_runtime");
+            .arg("-laspenrt");
 
         if cfg!(target_os = "linux") {
             cc.arg("-lpthread");
@@ -157,7 +157,7 @@ impl Executable {
         }
 
         cc.arg(format!("-L{}", runtime_path.display()))
-            .arg("-laspen_runtime");
+            .arg("-laspenrt");
 
         if cfg!(target_os = "linux") {
             cc.arg("-lpthread");

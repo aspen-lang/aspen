@@ -30,6 +30,7 @@ impl fmt::Display for Object {
     }
 }
 
+#[derive(Debug)]
 pub enum Matcher {
     Equal(Object),
 }

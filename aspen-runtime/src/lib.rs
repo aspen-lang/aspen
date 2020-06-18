@@ -1,13 +1,13 @@
-#![cfg_attr(not(test), no_std)]
-#![cfg_attr(not(test), feature(lang_items))]
-#![cfg_attr(not(test), feature(alloc_error_handler))]
+#![cfg_attr(all(not(test), not(feature = "std")), no_std)]
+#![cfg_attr(all(not(test), not(feature = "std")), feature(lang_items))]
+#![cfg_attr(all(not(test), not(feature = "std")), feature(alloc_error_handler))]
 
 extern crate alloc;
 
 #[macro_use]
 mod print;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "std")))]
 mod panic {
     use core::alloc::Layout;
     use core::panic::PanicInfo;
@@ -150,7 +150,7 @@ pub extern "C" fn AspenTell(receiver: &ObjectRef, message: ObjectRef) {
 
 #[no_mangle]
 pub extern "C" fn AspenAsk(receiver: &ObjectRef, reply_to: ObjectRef, message: ObjectRef) {
-    receiver.ask(message, reply_to);
+    receiver.ask(reply_to, message);
 }
 
 #[no_mangle]

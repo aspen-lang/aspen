@@ -1,4 +1,5 @@
 use crate::semantics::Module;
+use crate::syntax;
 use crate::{Context, Diagnostics, Range, Source, URI};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -75,5 +76,16 @@ impl Host {
 
             self.set(new).await;
         }
+    }
+
+    pub async fn find_declaration(&self, name: &str) -> Option<Arc<syntax::Declaration>> {
+        for m in self.modules().await {
+            for (n, d) in m.exported_declarations().await {
+                if n == name {
+                    return Some(d);
+                }
+            }
+        }
+        None
     }
 }

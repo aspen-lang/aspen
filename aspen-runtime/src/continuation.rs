@@ -1,4 +1,4 @@
-use crate::{ContFn, Object, ObjectRef, DropFn, Runtime};
+use crate::{ContFn, DropFn, Object, ObjectRef, Runtime};
 use alloc::vec::Vec;
 use core::fmt;
 use core::ops::Deref;
@@ -13,7 +13,13 @@ pub struct Continuation {
 }
 
 impl Continuation {
-    pub fn new(runtime: &Runtime, actor: ObjectRef, cont_fn: ContFn, frame: Pin<Vec<u8>>, drop_fn: DropFn) -> Continuation {
+    pub fn new(
+        runtime: &Runtime,
+        actor: ObjectRef,
+        cont_fn: ContFn,
+        frame: Pin<Vec<u8>>,
+        drop_fn: DropFn,
+    ) -> Continuation {
         if let Object::Actor(_) = actor.deref() {
         } else {
             panic!("Can only create a continuation from an actor reference");

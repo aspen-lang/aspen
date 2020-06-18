@@ -1,4 +1,4 @@
-use crate::{ActorAddress, Inbox, Object, Runtime};
+use crate::{ActorAddress, Envelope, Inbox, Object, Runtime};
 use alloc::boxed::Box;
 use core::fmt;
 use core::ops::Deref;
@@ -26,7 +26,10 @@ impl ObjectRef {
 
     pub fn tell(&self, message: ObjectRef) {
         match self.deref() {
-            Object::Noop => {}
+            Object::Noop => {
+                #[cfg(debug_assertions)]
+                println!("NOOP {}.", message);
+            }
             Object::Int(i) => {
                 println!("Handle builtin tell {} -> {}", message, i);
             }
@@ -37,15 +40,15 @@ impl ObjectRef {
                 println!("Handle builtin tell {} -> {}", message, a);
             }
             Object::Actor(a) => {
-                a.enqueue(self.clone(), a.address, message, None, None);
+                a.enqueue(self.clone(), a.address, None, message, None);
             }
             Object::Continuation(continuation) => {
                 if let Object::Actor(a) = continuation.actor.deref() {
                     a.enqueue(
                         continuation.actor.clone(),
                         a.address,
-                        message,
                         None,
+                        message,
                         Some(self.clone()),
                     );
                 }
@@ -53,12 +56,20 @@ impl ObjectRef {
         }
     }
 
-    pub fn ask(&self, message: ObjectRef, reply_to: ObjectRef) {
+    pub fn ask(&self, reply_to: ObjectRef, message: ObjectRef) {
         match self.deref() {
-            Object::Noop => {}
-            Object::Int(i) => {
-                println!("Handle builtin ask {} -> {}", message, i);
+            Object::Noop => {
+                #[cfg(debug_assertions)]
+                println!("NOOP {}?", message);
             }
+            Object::Int(i) => match message.deref() {
+                Object::Int(j) => {
+                    reply_to.tell(ObjectRef::new(Object::Int(i * j)));
+                }
+                _ => {
+                    println!("Handle builtin ask {} -> {}", message, i);
+                }
+            },
             Object::Float(f) => {
                 println!("Handle builtin ask {} -> {}", message, f);
             }
@@ -66,17 +77,19 @@ impl ObjectRef {
                 println!("Handle builtin ask {} -> {}", message, a);
             }
             Object::Actor(a) => {
-                a.enqueue(self.clone(), a.address, message, Some(reply_to), None);
+                a.enqueue(self.clone(), a.address, Some(reply_to), message, None);
             }
             Object::Continuation(continuation) => {
                 if let Object::Actor(a) = continuation.actor.deref() {
                     a.enqueue(
                         continuation.actor.clone(),
                         a.address,
-                        message,
                         Some(reply_to),
+                        message,
                         Some(self.clone()),
                     );
+                } else {
+                    panic!("Expected an actor, got {}", continuation.actor);
                 }
             }
         }
@@ -185,16 +198,16 @@ impl ActorRef {
         &self,
         self_ref: ObjectRef,
         _address: ActorAddress,
-        message: ObjectRef,
         reply_to: Option<ObjectRef>,
+        message: ObjectRef,
         continuation_ref: Option<ObjectRef>,
     ) {
-        unsafe { &*self.inbox }.push((
+        unsafe { &*self.inbox }.push(Envelope {
             self_ref,
+            reply_to: reply_to.unwrap_or_else(|| unsafe { &*self.runtime }.noop_object.clone()),
             message,
-            reply_to.unwrap_or_else(|| unsafe { &*self.runtime }.noop_object.clone()),
             continuation_ref,
-        ));
+        });
         unsafe { &*self.runtime }.notify();
     }
 }
