@@ -1,0 +1,14 @@
+[package]
+name = "aspenc"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "aspenc"
+path = "src/main.rs"
+
+[dependencies]
+peg = "0.8"
