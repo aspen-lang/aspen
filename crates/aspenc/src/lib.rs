@@ -49,6 +49,8 @@ pub enum Token<'a> {
     OpenCurly,
     CloseCurly,
     Let,
+    Def,
+    FatArrow,
     Identifier(&'a str),
     Underscore,
     Equals,
@@ -145,9 +147,14 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 match &source[..source.len() - self.remaining.len()] {
                     "let" => Token::Let,
+                    "def" => Token::Def,
                     "_" => Token::Underscore,
                     name => Token::Identifier(name),
                 }
+            } else if self.remaining.starts_with("=>") {
+                self.advance('=');
+                self.advance('>');
+                Token::FatArrow
             } else {
                 self.advance(ch);
                 match ch {
@@ -180,7 +187,15 @@ impl<'a> Iterator for Lexer<'a> {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Actor {}
+pub struct Actor {
+    pub methods: Vec<Loc<Method>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Method {
+    pub pattern: Loc<Pattern>,
+    pub body: Box<Loc<Expr>>,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Pattern {
@@ -255,6 +270,39 @@ mod parser {
                     None
                   }
 
+            rule close_actor() -> Option<Span>
+                = whitespace() close:$([Loc { value: Token::CloseCurly, .. }]) { Some(close[0].span) }
+                / whitespace() span:here() {
+                    diagnostics.push(Diagnostic { span, message: "expected '}'".into() }); None
+                  }
+
+            rule method_pattern() -> Option<Loc<Pattern>>
+                = p:pattern() { Some(p) }
+                / whitespace() span:here() {
+                    diagnostics.push(Diagnostic { span, message: "expected pattern".into() }); None
+                  }
+
+            rule method_body() -> Option<Loc<Expr>>
+                = whitespace() [Loc { value: Token::FatArrow, .. }] body:expr() { body }
+                / whitespace() span:here() {
+                    diagnostics.push(Diagnostic { span, message: "expected '=>'".into() }); None
+                  }
+
+            rule method() -> Option<Loc<Method>>
+                = whitespace() keyword:$([Loc { value: Token::Def, .. }])
+                  pattern:method_pattern() body:method_body() {
+                    pattern.zip(body).map(|(pattern, body)| Loc {
+                        span: Span { start: keyword[0].span.start, end: body.span.end },
+                        value: Method { pattern, body: Box::new(body) },
+                    })
+                  }
+
+            rule methods() -> Option<Vec<Loc<Method>>>
+                = first:method() rest:(whitespace() [Loc { value: Token::Dot, .. }] m:method() { m })* {
+                    std::iter::once(first).chain(rest).collect()
+                  }
+                / { Some(Vec::new()) }
+
             #[no_eof]
             pub rule expr() -> Option<Loc<Expr>>
                 = whitespace() keyword:$([Loc { value: Token::Let, .. }]) binding:let_tail() {
@@ -267,16 +315,15 @@ mod parser {
                     let Token::Identifier(name) = token[0].value else { unreachable!() };
                     Some(Loc { value: Expr::Variable(name.into()), span: token[0].span })
                   }
-                / whitespace() open:$([Loc { value: Token::OpenCurly, .. }]) whitespace()
-                  close:$([Loc { value: Token::CloseCurly, .. }]) {
-                    Some(Loc {
-                        value: Expr::Actor(Actor {}),
-                        span: Span { start: open[0].span.start, end: close[0].span.end },
-                    })
-                  }
-                / whitespace() [Loc { value: Token::OpenCurly, .. }] whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected '}'".into() });
-                    None
+                / whitespace() open:$([Loc { value: Token::OpenCurly, .. }]) methods:methods()
+                  close:close_actor() {
+                    match (methods, close) {
+                        (Some(methods), Some(close)) => Some(Loc {
+                            value: Expr::Actor(Actor { methods }),
+                            span: Span { start: open[0].span.start, end: close.end },
+                        }),
+                        _ => None,
+                    }
                   }
                 / whitespace() span:here() {
                     diagnostics.push(Diagnostic { span, message: "expected expression".into() });
@@ -362,7 +409,9 @@ mod tests {
         assert_eq!(
             program.expressions,
             vec![Loc {
-                value: Expr::Actor(Actor {}),
+                value: Expr::Actor(Actor {
+                    methods: Vec::new()
+                }),
                 span: Span {
                     start: Pos { line: 2, col: 1 },
                     end: Pos { line: 3, col: 3 }
@@ -463,12 +512,65 @@ mod tests {
         assert_eq!(binding.pattern.value, Pattern::Discard);
         assert_eq!(binding.pattern.span.start.col, 6);
         assert_eq!(binding.pattern.span.end.col, 7);
-        assert_eq!(binding.value.value, Expr::Actor(Actor {}));
+        assert_eq!(
+            binding.value.value,
+            Expr::Actor(Actor {
+                methods: Vec::new()
+            })
+        );
         assert_eq!(binding.value.span.start.col, 10);
         assert_eq!(binding.value.span.end.col, 12);
-        assert_eq!(binding.body.value, Expr::Actor(Actor {}));
+        assert_eq!(
+            binding.body.value,
+            Expr::Actor(Actor {
+                methods: Vec::new()
+            })
+        );
         assert_eq!(binding.body.span.start.col, 15);
         assert_eq!(binding.body.span.end.col, 17);
+    }
+
+    #[test]
+    fn actor_methods_parse_with_nested_lets_and_locations() {
+        let (program, diagnostics) = parsed("{ def x => let y = x. y. def _ => {} }");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let Expr::Actor(actor) = &program.expressions[0].value else {
+            panic!()
+        };
+        assert_eq!(actor.methods.len(), 2);
+        assert_eq!(actor.methods[0].span.start.col, 3);
+        assert_eq!(actor.methods[0].span.end.col, 24);
+        assert_eq!(actor.methods[0].pattern.span.start.col, 7);
+        assert!(matches!(actor.methods[0].body.value, Expr::Let(_)));
+        assert_eq!(actor.methods[1].pattern.value, Pattern::Discard);
+        let (program, diagnostics) = parsed("{def _=>{def x=>x}}");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.expressions.len(), 1);
+    }
+
+    #[test]
+    fn malformed_methods_are_rejected() {
+        for source in [
+            "{ def }",
+            "{ def x {} }",
+            "{ def _ => }",
+            "{ def x => x def y => y }",
+            "{ def x => x. }",
+            "def x => x",
+            "{ x => x }",
+            "{ def def => {} }",
+            "{ def _ => {}",
+        ] {
+            let (_, diagnostics) = parsed(source);
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+        let tokens: Vec<_> = Lexer::new("def defx => = >")
+            .map(|token| token.value)
+            .collect();
+        assert_eq!(tokens[0], Token::Def);
+        assert_eq!(tokens[2], Token::Identifier("defx"));
+        assert_eq!(tokens[4], Token::FatArrow);
+        assert_eq!(tokens[6], Token::Equals);
     }
 
     #[test]
@@ -535,11 +637,11 @@ mod tests {
 
     #[test]
     fn grammar_recovers_for_all_short_token_sequences() {
-        for mut n in 0..8usize.pow(5) {
+        for mut n in 0..10usize.pow(5) {
             let mut source = String::new();
             for _ in 0..5 {
-                source.push_str(["{", "}", " ", "x", "let ", "_", "=", "."][n % 8]);
-                n /= 8;
+                source.push_str(["{", "}", " ", "x", "let ", "_", "=", ".", "def ", "=>"][n % 10]);
+                n /= 10;
             }
             parsed(&source);
         }

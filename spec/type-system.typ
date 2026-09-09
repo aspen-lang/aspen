@@ -13,32 +13,32 @@
 
 This specification describes the semantic types, bidirectional typing rules,
 and diagnostic provenance of Aspen's current expression fragment. Syntax for
-nonempty actors and recursive patterns is not
+recursive patterns is not
 part of this fragment.
 
 ```text
-expression ::= "{}" | identifier
+expression ::= actor | identifier
              | "let" pattern "=" expression "." expression
 pattern    ::= "_" | identifier
 ```
 
 The first expression of a let is its initializer; the expression following the
 dot is its body. Identifiers start with a Unicode alphabetic character or underscore and
-continue with Unicode alphanumeric characters or underscores. The exact word
-`let` is reserved; the exact word `_` is the discard pattern. An identifier is
+continue with Unicode alphanumeric characters or underscores. The exact words
+`let` and `def` are reserved; the exact word `_` is the discard pattern. An identifier is
 permitted both as a variable-binding pattern and as a reference expression.
 The notation in the
 rules below describes compiler operations, not additional source syntax.
 
 = Semantic Types and Subtyping
 
-There are exactly three semantic types in this fragment:
+The initial three semantic types are:
 
 - `never`: the bottom type, representing absence of a normally produced value.
 - `{}`: the structural unit actor type, produced by the empty actor expression.
 - `any`: the top type, accepting every type in the fragment.
 
-The subtype relation is the reflexive and transitive closure of:
+On these three types, the subtype relation is the reflexive and transitive closure of:
 
 ```text
 never <: {} <: any
@@ -48,9 +48,8 @@ Thus every type is a subtype of itself, `never` is a subtype of every type, and
 every type is a subtype of `any`. In particular, `any` is not a subtype of `{}`,
 and `{}` is not a subtype of `never`.
 
-The description of `{}` as structural does not introduce any rules for fields,
-messages, members, or nonempty actors. None of those structures has typing
-semantics here. The three types are semantic values: source locations do not
+Nonempty actor structures and their subtyping rules are specified in the
+Actor Receivers section. Types are semantic values: source locations do not
 affect type equality or subtyping.
 
 = Locations and Evidence
@@ -129,9 +128,12 @@ initializer from typing or from the strictness rule for let.
 
 == Variable Pattern
 
-A variable pattern also requires `Expected(any, pattern-origin)`. After
-checking the initializer, it binds its name to the returned actual type and
-provenance. For example, `let x = {} . {}` records `x` with type `{}`, not
+A variable pattern mints a fresh parameter `A <: any`, records its pattern
+origin separately, and supplies accepted-type template `A` with binding template
+`x : A`. The bound is an upper bound: admissible arguments are subtypes of `any`.
+Preparation alone does not universally quantify the parameter. In a let,
+checking and matching the initializer instantiates `A` with its precise actual
+type and retains its evidence. For example, `let x = {} . {}` records `x` with type `{}`, not
 `any`, and with evidence from the initializer's empty actor.
 
 The binding is visible only while typing the body. It is not visible in its
@@ -169,9 +171,10 @@ Checking a reference uses the usual subtype test and preserves all this evidence
 For `let pattern = initializer . body`, use the following sequence:
 
 ```text
-expected = Expected(any, pattern-origin)
-initial = check(Gamma, initializer, expected)
-bindings = bind(pattern, initial)
+plan = prepare(pattern)
+initial = synth(Gamma, initializer)
+instance = instantiate(plan, initial) // checks parameter bounds
+bindings = instance.bindings
 result = synth(Gamma extended with bindings, body)
 if initial.type == never:
     return Actual(never, initial.evidence)
@@ -208,16 +211,16 @@ A failed subtype check retains all of:
 - The actual semantic type and its evidence.
 - The structural path at which the types disagree.
 
-The current types have no recursively checked components, so every mismatch
-path is the root. Keeping a path explicitly does not imply that component
-paths or recursive actor types are already supported.
+Actor comparisons may descend through method inputs and outputs. A mismatch
+should retain the structural comparison path as well as available component
+origins; root mismatches remain possible when a required method is absent.
 
 For example, checking `{}` against `Expected(never, origin)` fails at the
 root, reporting expected `never`, the supplied origin, actual `{}`, and the
 empty actor's evidence. Checking a nested let against that same expectation
 reports the nested result expression's evidence, not merely the outer let's
 span. Pattern-driven initializer checks cannot themselves reject a
-successfully synthesized type in this fragment, since both patterns expect
+successfully synthesized type in this fragment, since discard accepts `any` and variable parameters have upper bound
 `any`; the general checking interface can still express narrower expectations.
 
 = Worked Examples
@@ -268,6 +271,174 @@ bindings to the enclosing expected type or give every component the same
 coarse enclosing-expression provenance.
 
 This is an extension constraint, not a definition of recursive pattern
-syntax, actor members, component subtyping, or implemented recursive evidence
-structures. The current specification requires only whole-value bindings,
-the three semantic types, and root mismatch paths.
+syntax. Patterns currently bind only whole values; structural actor method
+types are described next.
+
+= Actor Receivers and Structural Actor Types
+
+Actor expressions now contain zero or more period-separated methods:
+
+```text
+actor  ::= "{" (method ("." method)*)? "}"
+method ::= "def" pattern "=>" expression
+```
+
+There is no trailing separator. The `def` keyword occurs only in expressions,
+not in type notation. A let inside a method body consumes its own separating
+period before parsing continues with the actor's method separator. For example:
+
+```text
+{ def x => let y = x. y. def _ => {} }
+```
+
+Receiver patterns supply accepted input types in the same way as let patterns.
+Unlike a let initializer, there is no particular incoming value to narrow:
+a variable receiver is bound to a fresh rigid parameter `A <: any`. All
+parameters collected by the receiver plan are universally quantified at the
+method level. Discard retains input type `any` without a parameter. Each method
+body is typed in the enclosing lexical environment extended only with that
+method's bindings. Sibling methods do not share receiver bindings.
+
+```text
+{ def x => x. def _ => {} }
+```
+
+Synthesizes the structural type:
+
+```text
+{ <A <: any> A -> A. any -> {} }
+```
+
+For each method, retain its source span, pattern expectation, bindings, and typed
+body. Semantic method signatures contain parameter declarations, input and output types; source
+locations remain separate. Preserve methods in source order without rejecting
+or merging overlapping signatures.
+
+== Structural Subtyping
+
+The type universe now includes arbitrary finite actor structures whose method
+inputs and outputs are themselves types, in addition to `never` and `any`.
+The original three-type chain remains a sublattice, not the entire universe.
+For monomorphic actor signatures the relation is:
+
+```text
+T1 <: T2 iff
+  for every (I2 -> O2) in T2,
+  there exists (I1 -> O1) in T1 such that
+    I2 <: I1 and O1 <: O2
+```
+
+Inputs are contravariant and outputs covariant. Extra methods are permitted;
+every actor type is a subtype of the empty actor type `{}`. An empty actor does
+not satisfy a nonempty actor requirement. Bottom and top retain their universal
+rules. Signature comparisons recurse through actor input and output types.
+
+== Overlap Boundary
+
+Overlapping and shadowing receivers are accepted. This subtype rule describes
+structural capabilities, not an ordered runtime dispatch algorithm. No send or
+dispatch operation exists yet. Before adding one, dispatch and any progressive
+input narrowing must ensure that a shadowed signature cannot promise a result
+inconsistent with the receiver actually invoked.
+
+== Current Diagnostic Representation
+
+Receiver input evidence is explicitly marked as a receiver-pattern origin,
+not an expression origin. A method body referencing its receiver retains both
+the reference expression and that input origin. Actor evidence stores each
+method's accepted-input expectation and output evidence; aliases link back to
+this structure rather than discarding its components.
+
+On a failed actor comparison, the diagnostic records the first unsatisfied
+expected method. If actual methods exist, it additionally records a
+representative candidate and the failing input or output path, recursively.
+For quantified signatures, the current path stops at the signature comparison;
+the complete parameter and method evidence remains available rather than
+reporting a misleading uninstantiated component comparison.
+The candidate is not a dispatch choice, nor does its failure alone prove the
+actor mismatch: subtyping first checks that no actual method satisfies the
+requirement. The complete actual evidence and enclosing expected origin remain
+available. Recursive expected-pattern component origins are still deferred
+until recursive patterns exist.
+
+
+= Implicit Bounded Method Polymorphism
+
+Pattern preparation returns a parameter collection, an accepted-type template,
+a binding template, and source provenance. Parameter identities are fresh even
+when source names or spans coincide. Display names such as `A` and `B` are not
+semantic identities. Semantic types contain no locations.
+
+```text
+prepare(_) = ([], any, discard)
+prepare(x) = ([A <: any], A, bind x : A)  // A fresh
+```
+
+== Let Instantiation
+
+A let has an actual value. Instantiation checks that value's type against the
+parameter's upper bound, then substitutes the actual type for the parameter.
+
+```text
+let x = {}. x
+A <: any; actual = {}; check {} <: any; substitute A := {}; bind x : {}
+```
+
+The inequality `{} <: A <: any` alone would also allow `A = any`. The binding
+operation deliberately selects the precise checked actual type instead. A let
+records each parameter declaration together with the actual type evidence that
+instantiated it; bindings and these instantiation records share that evidence.
+A let inside a generic receiver can instantiate its parameter with an enclosing
+rigid parameter. It neither widens that parameter to its bound nor quantifies it
+again.
+
+== Receiver Quantification
+
+A receiver has no particular initializer. Its parameters remain rigid while its
+body is checked. All parameters introduced by that receiver pattern are bound
+by a universal quantifier over the entire signature, including nested outputs.
+
+```text
+{ def x => x } : { <A <: any> A -> A }
+{ def x => let y = x. y } : { <A <: any> A -> A }
+{ def x => { def y => x } } : { <A <: any> A -> { <B <: any> B -> A } }
+```
+
+An upper bound justifies `A <: any`, not `A <: {}`. Body checking cannot solve
+rigid `A` to a convenient concrete type. Inner methods quantify only their own
+pattern parameters; captured outer parameters remain free relative to the inner
+signature and bound by the enclosing signature.
+
+== Quantified Signature Comparison
+
+Actor comparison still requires every expected method to have a compatible
+provided method. Expected parameters are freshened to rigid variables before
+comparison. A provided generic method may instantiate its parameters, subject
+to their bounds, to satisfy that expected signature. Input contravariance and
+output covariance then apply to the instantiated signature. Bound parameters
+are renamed without capturing enclosing variables; spelling is irrelevant.
+
+```text
+{ <A <: any> A -> A } <: { {} -> {} }
+{ any -> any } is not a subtype of { <A <: any> A -> A }
+```
+
+The implemented instantiation rule targets the currently generated receiver
+form: a single parameter occupying the whole input. That parameter is
+instantiated with the expected input, checked against its upper bound, and
+substituted throughout the output, including nested actor structures. General
+constraint solving for future recursive-pattern inputs is not implemented.
+Alpha-renamed compatible signatures and monomorphic comparisons remain
+supported. Overlap/dispatch restrictions described earlier still apply.
+
+== Recursive Pattern Extension Contract
+
+Future recursive patterns prepare child plans independently and concatenate
+their parameter collections into one enclosing plan. For a hypothetical pair
+pattern `(x, y)`, this gives parameters `A <: any, B <: any`, accepted template
+`Pair<A, B>`, and component binding templates `x : A, y : B`. A receiver collects
+both parameters into its method quantifier, never separate component quantifiers.
+A let instead matches actual components and records their respective type
+evidence and pattern origins. No pair syntax or recursive pattern matching is
+implemented yet. Each new pattern must define its matching/instantiation rule;
+arbitrary subtype constraints need not have a unique most precise solution.
