@@ -2,6 +2,8 @@
 
 use std::ops::{Deref, DerefMut};
 
+pub mod types;
+
 /// One-based line and Unicode scalar column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Pos {
@@ -46,6 +48,11 @@ pub enum Token<'a> {
     Whitespace(&'a str),
     OpenCurly,
     CloseCurly,
+    Let,
+    Identifier(&'a str),
+    Underscore,
+    Equals,
+    Dot,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -126,11 +133,29 @@ impl<'a> Iterator for Lexer<'a> {
                     self.advance(ch);
                 }
                 Token::Whitespace(&source[..source.len() - self.remaining.len()])
+            } else if ch.is_alphabetic() || ch == '_' {
+                let source = self.remaining;
+                while let Some(ch) = self
+                    .remaining
+                    .chars()
+                    .next()
+                    .filter(|ch| ch.is_alphanumeric() || *ch == '_')
+                {
+                    self.advance(ch);
+                }
+                match &source[..source.len() - self.remaining.len()] {
+                    "let" => Token::Let,
+                    "_" => Token::Underscore,
+                    name => Token::Identifier(name),
+                }
             } else {
                 self.advance(ch);
                 match ch {
                     '{' => Token::OpenCurly,
                     '}' => Token::CloseCurly,
+                    '_' => Token::Underscore,
+                    '=' => Token::Equals,
+                    '.' => Token::Dot,
                     _ => {
                         self.diagnostics.push(Diagnostic {
                             span: Span {
@@ -158,8 +183,23 @@ impl<'a> Iterator for Lexer<'a> {
 pub struct Actor {}
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum Pattern {
+    Discard,
+    Variable(String),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Let {
+    pub pattern: Loc<Pattern>,
+    pub value: Box<Loc<Expr>>,
+    pub body: Box<Loc<Expr>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Expr {
     Actor(Actor),
+    Variable(String),
+    Let(Let),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -179,9 +219,55 @@ mod parser {
                 = t:$([_]) { t[0].span }
                 / ![_] { Span { start: eof, end: eof } }
 
+            rule pattern() -> Loc<Pattern>
+                = whitespace() token:$([Loc { value: Token::Underscore, .. }]) {
+                    Loc { value: Pattern::Discard, span: token[0].span }
+                  }
+                / whitespace() token:$([Loc { value: Token::Identifier(_), .. }]) {
+                    let Token::Identifier(name) = token[0].value else { unreachable!() };
+                    Loc { value: Pattern::Variable(name.into()), span: token[0].span }
+                  }
+
+            rule let_body() -> Option<Loc<Expr>>
+                = whitespace() [Loc { value: Token::Dot, .. }] body:expr() { body }
+                / whitespace() span:here() {
+                    diagnostics.push(Diagnostic { span, message: "expected '.'".into() });
+                    None
+                  }
+
+            rule let_value() -> Option<(Loc<Expr>, Loc<Expr>)>
+                = whitespace() [Loc { value: Token::Equals, .. }] value:expr() body:let_body() {
+                    value.zip(body)
+                  }
+                / whitespace() span:here() {
+                    diagnostics.push(Diagnostic { span, message: "expected '='".into() });
+                    None
+                  }
+
+            rule let_tail() -> Option<Let>
+                = pattern:pattern() parts:let_value() {
+                    parts.map(|(value, body)| Let {
+                        pattern, value: Box::new(value), body: Box::new(body),
+                    })
+                  }
+                / whitespace() span:here() {
+                    diagnostics.push(Diagnostic { span, message: "expected pattern".into() });
+                    None
+                  }
+
             #[no_eof]
             pub rule expr() -> Option<Loc<Expr>>
-                = whitespace() open:$([Loc { value: Token::OpenCurly, .. }]) whitespace()
+                = whitespace() keyword:$([Loc { value: Token::Let, .. }]) binding:let_tail() {
+                    binding.map(|binding| Loc {
+                        span: Span { start: keyword[0].span.start, end: binding.body.span.end },
+                        value: Expr::Let(binding),
+                    })
+                  }
+                / whitespace() token:$([Loc { value: Token::Identifier(_), .. }]) {
+                    let Token::Identifier(name) = token[0].value else { unreachable!() };
+                    Some(Loc { value: Expr::Variable(name.into()), span: token[0].span })
+                  }
+                / whitespace() open:$([Loc { value: Token::OpenCurly, .. }]) whitespace()
                   close:$([Loc { value: Token::CloseCurly, .. }]) {
                     Some(Loc {
                         value: Expr::Actor(Actor {}),
@@ -220,7 +306,7 @@ pub fn parse(lexer: Lexer<'_>, diagnostics: &mut Vec<Diagnostic>) -> Program {
     // Every grammar branch recovers, and program consumes all remaining tokens.
     let mut program = parser::grammar::program(&tokens, eof, diagnostics)
         .expect("program grammar must be infallible");
-    // Skipping invalid characters must not turn malformed source into a valid actor.
+    // Skipping invalid characters must not turn malformed source into a valid expression.
     if invalid_source {
         program.expressions.clear();
     }
@@ -327,10 +413,109 @@ mod tests {
 
     #[test]
     fn invalid_characters_never_create_valid_actors() {
-        for source in ["{x}", "x{}", "{}x", "é", "}", "{{}"] {
+        for source in ["{x}", "@{}", "{}@", "@", "}", "{{}"] {
             let (program, diagnostics) = parsed(source);
             assert!(program.expressions.is_empty(), "{source}");
             assert!(!diagnostics.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn let_tokens_and_keyword_boundaries() {
+        let mut lexer = Lexer::new("let_={}.{}");
+        // An identifier-like continuation must not be split into the keyword.
+        assert!(!lexer.by_ref().any(|token| token.value == Token::Let));
+        assert!(lexer.diagnostics.is_empty());
+        for source in ["letter", "let1", "leté"] {
+            assert!(!Lexer::new(source).any(|token| token.value == Token::Let));
+        }
+        let mut lexer = Lexer::new("let _={}.{}");
+        let tokens: Vec<_> = lexer.by_ref().collect();
+        assert!(lexer.diagnostics.is_empty());
+        assert_eq!(
+            tokens.iter().map(|t| t.value).collect::<Vec<_>>(),
+            vec![
+                Token::Let,
+                Token::Whitespace(" "),
+                Token::Underscore,
+                Token::Equals,
+                Token::OpenCurly,
+                Token::CloseCurly,
+                Token::Dot,
+                Token::OpenCurly,
+                Token::CloseCurly,
+            ]
+        );
+        assert_eq!(tokens[0].span.start.col, 1);
+        assert_eq!(tokens[0].span.end.col, 4);
+    }
+
+    #[test]
+    fn let_expression_has_located_pattern_value_and_body() {
+        let (program, diagnostics) = parsed(" let _ = {} . {} ");
+        assert!(diagnostics.is_empty());
+        let expression = &program.expressions[0];
+        assert_eq!(expression.span.start.col, 2);
+        assert_eq!(expression.span.end.col, 17);
+        let Expr::Let(binding) = &expression.value else {
+            panic!("expected let")
+        };
+        assert_eq!(binding.pattern.value, Pattern::Discard);
+        assert_eq!(binding.pattern.span.start.col, 6);
+        assert_eq!(binding.pattern.span.end.col, 7);
+        assert_eq!(binding.value.value, Expr::Actor(Actor {}));
+        assert_eq!(binding.value.span.start.col, 10);
+        assert_eq!(binding.value.span.end.col, 12);
+        assert_eq!(binding.body.value, Expr::Actor(Actor {}));
+        assert_eq!(binding.body.span.start.col, 15);
+        assert_eq!(binding.body.span.end.col, 17);
+    }
+
+    #[test]
+    fn variable_patterns_and_reserved_words() {
+        for name in ["x", "value1", "_value", "let_value", "letter", "é"] {
+            let source = format!("let {name} = {{}}. {{}}");
+            let (program, diagnostics) = parsed(&source);
+            assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
+            let Expr::Let(binding) = &program.expressions[0].value else {
+                panic!()
+            };
+            assert_eq!(binding.pattern.value, Pattern::Variable(name.into()));
+        }
+        for source in ["let let = {}. {}", "let 1x = {}. {}", "let x = {}. _"] {
+            let (program, diagnostics) = parsed(source);
+            assert!(program.expressions.is_empty(), "{source}");
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+        let (_, diagnostics) = parsed("{}x");
+        assert_eq!(diagnostics[0].message, "expected end of input");
+    }
+
+    #[test]
+    fn lets_nest_in_value_and_body() {
+        let (program, diagnostics) = parsed("let _ = let _ = {} . {} . let _ = {} . {}");
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let Expr::Let(binding) = &program.expressions[0].value else {
+            panic!("expected let")
+        };
+        assert!(matches!(binding.value.value, Expr::Let(_)));
+        assert!(matches!(binding.body.value, Expr::Let(_)));
+    }
+
+    #[test]
+    fn malformed_lets_report_missing_parts() {
+        for (source, message, col) in [
+            ("let", "expected pattern", 4),
+            ("let {}", "expected pattern", 5),
+            ("let _", "expected '='", 6),
+            ("let _ = . {}", "expected expression", 9),
+            ("let _ = {}", "expected '.'", 11),
+            ("let _ = {} .", "expected expression", 13),
+        ] {
+            let (program, diagnostics) = parsed(source);
+            assert!(program.expressions.is_empty(), "{source}");
+            assert_eq!(diagnostics[0].message, message, "{source}");
+            assert_eq!(diagnostics[0].span.start.col, col, "{source}");
         }
     }
 
@@ -350,11 +535,11 @@ mod tests {
 
     #[test]
     fn grammar_recovers_for_all_short_token_sequences() {
-        for mut n in 0..1024 {
+        for mut n in 0..8usize.pow(5) {
             let mut source = String::new();
             for _ in 0..5 {
-                source.push(['{', '}', ' ', 'x'][n % 4]);
-                n /= 4;
+                source.push_str(["{", "}", " ", "x", "let ", "_", "=", "."][n % 8]);
+                n /= 8;
             }
             parsed(&source);
         }
