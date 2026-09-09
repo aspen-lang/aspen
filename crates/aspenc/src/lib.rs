@@ -51,6 +51,15 @@ pub enum Token<'a> {
     Let,
     Def,
     FatArrow,
+    Arrow,
+    Hash,
+    Colon,
+    OpenParen,
+    CloseParen,
+    Plus,
+    Minus,
+    Star,
+    Slash,
     Identifier(&'a str),
     Underscore,
     Equals,
@@ -151,6 +160,10 @@ impl<'a> Iterator for Lexer<'a> {
                     "_" => Token::Underscore,
                     name => Token::Identifier(name),
                 }
+            } else if self.remaining.starts_with("->") {
+                self.advance('-');
+                self.advance('>');
+                Token::Arrow
             } else if self.remaining.starts_with("=>") {
                 self.advance('=');
                 self.advance('>');
@@ -158,6 +171,14 @@ impl<'a> Iterator for Lexer<'a> {
             } else {
                 self.advance(ch);
                 match ch {
+                    '#' => Token::Hash,
+                    ':' => Token::Colon,
+                    '(' => Token::OpenParen,
+                    ')' => Token::CloseParen,
+                    '+' => Token::Plus,
+                    '-' => Token::Minus,
+                    '*' => Token::Star,
+                    '/' => Token::Slash,
                     '{' => Token::OpenCurly,
                     '}' => Token::CloseCurly,
                     '_' => Token::Underscore,
@@ -186,6 +207,51 @@ impl<'a> Iterator for Lexer<'a> {
     }
 }
 
+/// The same ordered selector shape is shared by expressions, patterns, and types.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Selector<T> {
+    Atomic(String),
+    Operator { operator: String, value: Box<T> },
+    Keyword(Vec<(String, T)>),
+}
+
+impl<T> Selector<T> {
+    pub fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> Selector<U> {
+        match self {
+            Self::Atomic(name) => Selector::Atomic(name.clone()),
+            Self::Operator { operator, value } => Selector::Operator {
+                operator: operator.clone(),
+                value: Box::new(f(value)),
+            },
+            Self::Keyword(parts) => Selector::Keyword(
+                parts
+                    .iter()
+                    .map(|(name, value)| (name.clone(), f(value)))
+                    .collect(),
+            ),
+        }
+    }
+
+    pub fn values(&self) -> Vec<&T> {
+        match self {
+            Self::Atomic(_) => Vec::new(),
+            Self::Operator { value, .. } => vec![value],
+            Self::Keyword(parts) => parts.iter().map(|(_, value)| value).collect(),
+        }
+    }
+
+    pub fn same_shape<U>(&self, other: &Selector<U>) -> bool {
+        match (self, other) {
+            (Self::Atomic(a), Selector::Atomic(b)) => a == b,
+            (Self::Operator { operator: a, .. }, Selector::Operator { operator: b, .. }) => a == b,
+            (Self::Keyword(a), Selector::Keyword(b)) => {
+                a.len() == b.len() && a.iter().zip(b).all(|((a, _), (b, _))| a == b)
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Actor {
     pub methods: Vec<Loc<Method>>,
@@ -199,6 +265,7 @@ pub struct Method {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Pattern {
+    Selector(Selector<Loc<Pattern>>),
     Discard,
     Variable(String),
 }
@@ -212,6 +279,11 @@ pub struct Let {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Expr {
+    Selector(Selector<Loc<Expr>>),
+    Send {
+        callee: Box<Loc<Expr>>,
+        message: Box<Loc<Expr>>,
+    },
     Actor(Actor),
     Variable(String),
     Let(Let),
@@ -222,143 +294,8 @@ pub struct Program {
     pub expressions: Vec<Loc<Expr>>,
 }
 
-// Generated helper rules share the growable diagnostic sink.
-#[allow(clippy::ptr_arg)]
-mod parser {
-    use super::*;
-    peg::parser! {
-        pub grammar grammar<'a>(eof: Pos, diagnostics: &mut Vec<Diagnostic>) for [Loc<Token<'a>>] {
-            rule whitespace() = [Loc { value: Token::Whitespace(_), .. }]*
-
-            rule here() -> Span
-                = t:$([_]) { t[0].span }
-                / ![_] { Span { start: eof, end: eof } }
-
-            rule pattern() -> Loc<Pattern>
-                = whitespace() token:$([Loc { value: Token::Underscore, .. }]) {
-                    Loc { value: Pattern::Discard, span: token[0].span }
-                  }
-                / whitespace() token:$([Loc { value: Token::Identifier(_), .. }]) {
-                    let Token::Identifier(name) = token[0].value else { unreachable!() };
-                    Loc { value: Pattern::Variable(name.into()), span: token[0].span }
-                  }
-
-            rule let_body() -> Option<Loc<Expr>>
-                = whitespace() [Loc { value: Token::Dot, .. }] body:expr() { body }
-                / whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected '.'".into() });
-                    None
-                  }
-
-            rule let_value() -> Option<(Loc<Expr>, Loc<Expr>)>
-                = whitespace() [Loc { value: Token::Equals, .. }] value:expr() body:let_body() {
-                    value.zip(body)
-                  }
-                / whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected '='".into() });
-                    None
-                  }
-
-            rule let_tail() -> Option<Let>
-                = pattern:pattern() parts:let_value() {
-                    parts.map(|(value, body)| Let {
-                        pattern, value: Box::new(value), body: Box::new(body),
-                    })
-                  }
-                / whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected pattern".into() });
-                    None
-                  }
-
-            rule close_actor() -> Option<Span>
-                = whitespace() close:$([Loc { value: Token::CloseCurly, .. }]) { Some(close[0].span) }
-                / whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected '}'".into() }); None
-                  }
-
-            rule method_pattern() -> Option<Loc<Pattern>>
-                = p:pattern() { Some(p) }
-                / whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected pattern".into() }); None
-                  }
-
-            rule method_body() -> Option<Loc<Expr>>
-                = whitespace() [Loc { value: Token::FatArrow, .. }] body:expr() { body }
-                / whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected '=>'".into() }); None
-                  }
-
-            rule method() -> Option<Loc<Method>>
-                = whitespace() keyword:$([Loc { value: Token::Def, .. }])
-                  pattern:method_pattern() body:method_body() {
-                    pattern.zip(body).map(|(pattern, body)| Loc {
-                        span: Span { start: keyword[0].span.start, end: body.span.end },
-                        value: Method { pattern, body: Box::new(body) },
-                    })
-                  }
-
-            rule methods() -> Option<Vec<Loc<Method>>>
-                = first:method() rest:(whitespace() [Loc { value: Token::Dot, .. }] m:method() { m })* {
-                    std::iter::once(first).chain(rest).collect()
-                  }
-                / { Some(Vec::new()) }
-
-            #[no_eof]
-            pub rule expr() -> Option<Loc<Expr>>
-                = whitespace() keyword:$([Loc { value: Token::Let, .. }]) binding:let_tail() {
-                    binding.map(|binding| Loc {
-                        span: Span { start: keyword[0].span.start, end: binding.body.span.end },
-                        value: Expr::Let(binding),
-                    })
-                  }
-                / whitespace() token:$([Loc { value: Token::Identifier(_), .. }]) {
-                    let Token::Identifier(name) = token[0].value else { unreachable!() };
-                    Some(Loc { value: Expr::Variable(name.into()), span: token[0].span })
-                  }
-                / whitespace() open:$([Loc { value: Token::OpenCurly, .. }]) methods:methods()
-                  close:close_actor() {
-                    match (methods, close) {
-                        (Some(methods), Some(close)) => Some(Loc {
-                            value: Expr::Actor(Actor { methods }),
-                            span: Span { start: open[0].span.start, end: close.end },
-                        }),
-                        _ => None,
-                    }
-                  }
-                / whitespace() span:here() {
-                    diagnostics.push(Diagnostic { span, message: "expected expression".into() });
-                    None
-                  }
-
-            pub rule program() -> Program
-                = expression:expr() whitespace() trailing:$([_]*) ![_] {
-                    if expression.is_some() && !trailing.is_empty() {
-                        diagnostics.push(Diagnostic {
-                            span: trailing[0].span,
-                            message: "expected end of input".into(),
-                        });
-                    }
-                    Program { expressions: expression.into_iter().collect() }
-                  }
-        }
-    }
-}
-/// Parse one expression and require end of input, reporting errors separately.
-pub fn parse(lexer: Lexer<'_>, diagnostics: &mut Vec<Diagnostic>) -> Program {
-    let mut lexer = lexer;
-    let tokens: Vec<_> = lexer.by_ref().collect();
-    let invalid_source = !lexer.diagnostics.is_empty();
-    let eof = lexer.position();
-    diagnostics.append(&mut lexer.diagnostics);
-    // Every grammar branch recovers, and program consumes all remaining tokens.
-    let mut program = parser::grammar::program(&tokens, eof, diagnostics)
-        .expect("program grammar must be infallible");
-    // Skipping invalid characters must not turn malformed source into a valid expression.
-    if invalid_source {
-        program.expressions.clear();
-    }
-    program
-}
+mod parser;
+pub use parser::{parse, parse_type};
 
 #[cfg(test)]
 mod tests {
@@ -444,15 +381,6 @@ mod tests {
 
     #[test]
     fn expr_does_not_require_eof_but_program_does() {
-        let mut lexer = Lexer::new("{} {}");
-        let tokens: Vec<_> = lexer.by_ref().collect();
-        let mut diagnostics = Vec::new();
-        assert!(
-            parser::grammar::expr(&tokens, lexer.position(), &mut diagnostics)
-                .unwrap()
-                .is_some()
-        );
-        assert!(diagnostics.is_empty());
         let (program, diagnostics) = parsed("{} {}");
         assert_eq!(program.expressions.len(), 1);
         assert_eq!(diagnostics.len(), 1);
@@ -532,18 +460,18 @@ mod tests {
 
     #[test]
     fn actor_methods_parse_with_nested_lets_and_locations() {
-        let (program, diagnostics) = parsed("{ def x => let y = x. y. def _ => {} }");
+        let (program, diagnostics) = parsed("{ def (x) => let y = x. y. def _ => {} }");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let Expr::Actor(actor) = &program.expressions[0].value else {
             panic!()
         };
         assert_eq!(actor.methods.len(), 2);
         assert_eq!(actor.methods[0].span.start.col, 3);
-        assert_eq!(actor.methods[0].span.end.col, 24);
+        assert_eq!(actor.methods[0].span.end.col, 26);
         assert_eq!(actor.methods[0].pattern.span.start.col, 7);
         assert!(matches!(actor.methods[0].body.value, Expr::Let(_)));
         assert_eq!(actor.methods[1].pattern.value, Pattern::Discard);
-        let (program, diagnostics) = parsed("{def _=>{def x=>x}}");
+        let (program, diagnostics) = parsed("{def _=>{def (x)=>x}}");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         assert_eq!(program.expressions.len(), 1);
     }
@@ -589,8 +517,9 @@ mod tests {
             assert!(program.expressions.is_empty(), "{source}");
             assert!(!diagnostics.is_empty(), "{source}");
         }
-        let (_, diagnostics) = parsed("{}x");
-        assert_eq!(diagnostics[0].message, "expected end of input");
+        let (program, diagnostics) = parsed("{}x");
+        assert!(diagnostics.is_empty());
+        assert!(matches!(program.expressions[0].value, Expr::Send { .. }));
     }
 
     #[test]

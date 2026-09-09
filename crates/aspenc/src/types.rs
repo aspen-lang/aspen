@@ -2,7 +2,7 @@
 
 use std::{fmt, rc::Rc};
 
-use crate::{Expr, Loc, Pattern, Program, Span};
+use crate::{Expr, Loc, Pattern, Program, Selector, Span};
 
 mod semantic;
 pub use semantic::*;
@@ -30,6 +30,7 @@ pub struct TypeEvidence {
     pub result_from: Option<Rc<TypeEvidence>>,
     /// Actor components live at the producer, including through lexical aliases.
     pub methods: Vec<MethodEvidence>,
+    pub selector: Option<Selector<Rc<TypeEvidence>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,6 +65,12 @@ pub struct TypedExpression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypedExprKind {
+    Selector(Selector<TypedExpression>),
+    Send {
+        callee: Box<TypedExpression>,
+        message: Box<TypedExpression>,
+        method: Option<usize>,
+    },
     Actor {
         methods: Vec<TypedMethod>,
     },
@@ -109,13 +116,44 @@ impl std::error::Error for TypeMismatch {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeError {
     Mismatch(TypeMismatch),
-    UnboundVariable { name: String, span: Span },
+    UnboundVariable {
+        name: String,
+        span: Span,
+    },
+    OverlappingReceivers {
+        first: Span,
+        second: Span,
+    },
+    DuplicateBinding {
+        name: String,
+        first: Span,
+        second: Span,
+    },
+    NotActor {
+        callee: Rc<TypeEvidence>,
+    },
+    NoReceiver {
+        callee: Rc<TypeEvidence>,
+        message: Rc<TypeEvidence>,
+    },
+    InvalidActorType {
+        span: Span,
+    },
 }
 
 impl fmt::Display for TypeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Mismatch(mismatch) => mismatch.fmt(f),
+            Self::OverlappingReceivers { .. } => {
+                f.write_str("receiver input types are not disjoint")
+            }
+            Self::DuplicateBinding { name, .. } => write!(f, "duplicate pattern binding {name:?}"),
+            Self::NotActor { .. } => f.write_str("message receiver is not an actor"),
+            Self::NoReceiver { .. } => f.write_str("no receiver accepts this message type"),
+            Self::InvalidActorType { .. } => {
+                f.write_str("actor type has overlapping receiver inputs")
+            }
             Self::UnboundVariable { name, .. } => write!(f, "unbound variable {name:?}"),
         }
     }
@@ -155,6 +193,7 @@ pub struct LocatedParameter {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BindingTemplate {
+    Selector(Selector<PatternPlan>),
     Discard,
     Variable {
         name: String,
@@ -174,6 +213,22 @@ pub struct PatternPlan {
 
 pub fn prepare_pattern(pattern: &Loc<Pattern>) -> PatternPlan {
     match &pattern.value {
+        Pattern::Selector(selector) => {
+            let children = selector.map(prepare_pattern);
+            let parameters = children
+                .values()
+                .into_iter()
+                .flat_map(|p| p.parameters.clone())
+                .collect();
+            PatternPlan {
+                parameters,
+                expectation: Expectation {
+                    ty: Type::Selector(children.map(|p| p.expectation.ty.clone())),
+                    origin: pattern.span,
+                },
+                template: BindingTemplate::Selector(children),
+            }
+        }
         Pattern::Discard => PatternPlan {
             parameters: Vec::new(),
             expectation: Expectation {
@@ -221,9 +276,78 @@ impl PatternPlan {
     /// Let matching checks a bound, then chooses the actual type, not any
     /// arbitrary solution of `actual <: parameter <: bound`.
     pub fn instantiate(&self, value: &TypedExpression) -> TypeResult<PatternInstantiation> {
+        self.instantiate_evidence(&value.evidence)
+    }
+
+    fn instantiate_evidence(&self, value: &Rc<TypeEvidence>) -> TypeResult<PatternInstantiation> {
         match &self.template {
+            BindingTemplate::Selector(children) => {
+                let upper = self
+                    .parameters
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.parameter.variable.clone(),
+                            (*p.parameter.variable.upper_bound).clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let expected = self.expectation.ty.substitute(&upper);
+                let mut actual_type = &value.ty;
+                while let Type::Variable(variable) = actual_type {
+                    actual_type = &variable.upper_bound;
+                }
+                let actual = match actual_type {
+                    Type::Selector(actual) if children.same_shape(actual) => Some(actual),
+                    Type::Never => None,
+                    _ => {
+                        assert_evidence(
+                            value,
+                            &Expectation {
+                                ty: expected,
+                                origin: self.expectation.origin,
+                            },
+                        )?;
+                        None
+                    }
+                };
+                let producer = value.producer();
+                let evidence = producer
+                    .selector
+                    .as_ref()
+                    .map(|s| s.values())
+                    .unwrap_or_default();
+                let types = actual.map(|s| s.values()).unwrap_or_default();
+                let mut result = PatternInstantiation {
+                    arguments: Vec::new(),
+                    bindings: Vec::new(),
+                };
+                for (index, child) in children.values().iter().enumerate() {
+                    let component =
+                        evidence
+                            .get(index)
+                            .map(|v| Rc::clone(v))
+                            .unwrap_or_else(|| {
+                                Rc::new(TypeEvidence {
+                                    ty: types
+                                        .get(index)
+                                        .map(|t| (*t).clone())
+                                        .unwrap_or(Type::Never),
+                                    expression: value.expression,
+                                    origin: value.origin,
+                                    result_from: None,
+                                    methods: Vec::new(),
+                                    selector: None,
+                                })
+                            });
+                    let instance = child.instantiate_evidence(&component)?;
+                    result.arguments.extend(instance.arguments);
+                    result.bindings.extend(instance.bindings);
+                }
+                Ok(result)
+            }
             BindingTemplate::Discard => {
-                assert_type(value, &self.expectation)?;
+                assert_evidence(value, &self.expectation)?;
                 Ok(PatternInstantiation {
                     arguments: Vec::new(),
                     bindings: Vec::new(),
@@ -243,16 +367,16 @@ impl PatternPlan {
                     ty: (*parameter.upper_bound).clone(),
                     origin: *origin,
                 };
-                assert_type(value, &expected)?;
+                assert_evidence(value, &expected)?;
                 Ok(PatternInstantiation {
                     arguments: vec![ParameterInstantiation {
                         parameter: declaration.clone(),
-                        actual: Rc::clone(&value.evidence),
+                        actual: Rc::clone(value),
                     }],
                     bindings: vec![Binding {
                         name: name.clone(),
                         pattern: *origin,
-                        value: Rc::clone(&value.evidence),
+                        value: Rc::clone(value),
                     }],
                 })
             }
@@ -267,6 +391,11 @@ impl PatternPlan {
     /// quantifies the collected parameters over the entire method signature.
     pub fn receiver_bindings(&self) -> Vec<Binding> {
         match &self.template {
+            BindingTemplate::Selector(children) => children
+                .values()
+                .into_iter()
+                .flat_map(|p| p.receiver_bindings())
+                .collect(),
             BindingTemplate::Discard => Vec::new(),
             BindingTemplate::Variable {
                 name,
@@ -281,6 +410,7 @@ impl PatternPlan {
                     origin: EvidenceOrigin::ReceiverPattern,
                     result_from: None,
                     methods: Vec::new(),
+                    selector: None,
                 }),
             }],
         }
@@ -300,6 +430,7 @@ pub fn check_binding(
     expression: &Loc<Expr>,
 ) -> TypeResult<CheckedBinding> {
     let plan = prepare_pattern(pattern);
+    validate_bindings(&plan)?;
     let value = synthesize_in(environment, expression)?;
     let instance = plan.instantiate(&value)?;
     Ok(CheckedBinding {
@@ -330,6 +461,11 @@ pub fn check_in(
     expression: &Loc<Expr>,
     expected: &Expectation,
 ) -> TypeResult<TypedExpression> {
+    if !expected.ty.is_well_formed() {
+        return Err(TypeError::InvalidActorType {
+            span: expected.origin,
+        });
+    }
     type_expression(environment, expression, Some(expected))
 }
 
@@ -366,15 +502,98 @@ fn mismatch_path(actual: &Type, expected: &Type) -> Vec<String> {
 }
 
 fn assert_type(value: &TypedExpression, expected: &Expectation) -> TypeResult<()> {
-    if value.evidence.ty.is_subtype_of(&expected.ty) {
+    assert_evidence(&value.evidence, expected)
+}
+
+fn assert_evidence(value: &Rc<TypeEvidence>, expected: &Expectation) -> TypeResult<()> {
+    if value.ty.is_subtype_of(&expected.ty) {
         Ok(())
     } else {
         Err(TypeError::Mismatch(TypeMismatch {
             expected: expected.clone(),
-            actual: Rc::clone(&value.evidence),
-            comparison_path: mismatch_path(&value.evidence.ty, &expected.ty),
+            actual: Rc::clone(value),
+            comparison_path: mismatch_path(&value.ty, &expected.ty),
         }))
     }
+}
+
+fn collect_argument_evidence(
+    template: &Type,
+    actual: &Rc<TypeEvidence>,
+    arguments: &mut Vec<(TypeVariable, Rc<TypeEvidence>)>,
+) {
+    match template {
+        Type::Variable(variable) => arguments.push((variable.clone(), Rc::clone(actual))),
+        Type::Selector(selector) => {
+            if let Some(components) = &actual.producer().selector
+                && selector.same_shape(components)
+            {
+                for (template, value) in selector.values().into_iter().zip(components.values()) {
+                    collect_argument_evidence(template, value, arguments);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn substitute_evidence(
+    evidence: &TypeEvidence,
+    instances: &[(TypeVariable, Type)],
+    arguments: &[(TypeVariable, Rc<TypeEvidence>)],
+) -> Rc<TypeEvidence> {
+    if let Type::Variable(variable) = &evidence.ty
+        && let Some((_, actual)) = arguments.iter().find(|(key, _)| key == variable)
+    {
+        return Rc::new(TypeEvidence {
+            ty: actual.ty.clone(),
+            expression: evidence.expression,
+            origin: evidence.origin,
+            result_from: Some(Rc::clone(actual)),
+            methods: Vec::new(),
+            selector: None,
+        });
+    }
+    Rc::new(TypeEvidence {
+        ty: evidence.ty.substitute(instances),
+        expression: evidence.expression,
+        origin: evidence.origin,
+        result_from: evidence
+            .result_from
+            .as_ref()
+            .map(|source| substitute_evidence(source, instances, arguments)),
+        selector: evidence
+            .selector
+            .as_ref()
+            .map(|s| s.map(|v| substitute_evidence(v, instances, arguments))),
+        methods: evidence
+            .methods
+            .iter()
+            .map(|method| MethodEvidence {
+                parameters: method.parameters.clone(),
+                span: method.span,
+                input: Expectation {
+                    ty: method.input.ty.substitute(instances),
+                    origin: method.input.origin,
+                },
+                output: substitute_evidence(&method.output, instances, arguments),
+            })
+            .collect(),
+    })
+}
+
+fn validate_bindings(plan: &PatternPlan) -> TypeResult<()> {
+    let bindings = plan.receiver_bindings();
+    for (i, binding) in bindings.iter().enumerate() {
+        if let Some(previous) = bindings[..i].iter().find(|p| p.name == binding.name) {
+            return Err(TypeError::DuplicateBinding {
+                name: binding.name.clone(),
+                first: previous.pattern,
+                second: binding.pattern,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn type_expression(
@@ -383,11 +602,94 @@ fn type_expression(
     expected: Option<&Expectation>,
 ) -> TypeResult<TypedExpression> {
     let (ty, result_from, kind) = match &expression.value {
+        Expr::Selector(selector) => {
+            let mut error = None;
+            let typed = selector.map(|value| match synthesize_in(environment, value) {
+                Ok(value) => Some(value),
+                Err(e) => {
+                    error = Some(e);
+                    None
+                }
+            });
+            if let Some(error) = error {
+                return Err(error);
+            }
+            let typed = typed.map(|v| v.clone().unwrap());
+            let ty = if typed.values().iter().any(|v| v.evidence.ty == Type::Never) {
+                Type::Never
+            } else {
+                Type::Selector(typed.map(|v| v.evidence.ty.clone()))
+            };
+            (ty, None, TypedExprKind::Selector(typed))
+        }
+        Expr::Send { callee, message } => {
+            let callee = synthesize_in(environment, callee)?;
+            let message = synthesize_in(environment, message)?;
+            let mut ty = &callee.evidence.ty;
+            while let Type::Variable(variable) = ty {
+                ty = &variable.upper_bound;
+            }
+            let (output, method) = if *ty == Type::Never || message.evidence.ty == Type::Never {
+                (Type::Never, None)
+            } else {
+                let Type::Actor(actor) = ty else {
+                    return Err(TypeError::NotActor {
+                        callee: Rc::clone(&callee.evidence),
+                    });
+                };
+                if !actor.has_disjoint_inputs() {
+                    return Err(TypeError::InvalidActorType {
+                        span: callee.evidence.expression,
+                    });
+                }
+                let Some((index, reply)) =
+                    actor.methods.iter().enumerate().find_map(|(i, method)| {
+                        method
+                            .instantiate(&message.evidence.ty)
+                            .map(|reply| (i, reply))
+                    })
+                else {
+                    return Err(TypeError::NoReceiver {
+                        callee: Rc::clone(&callee.evidence),
+                        message: Rc::clone(&message.evidence),
+                    });
+                };
+                (reply, Some(index))
+            };
+            let result_from = method.and_then(|index| {
+                let Type::Actor(actor) = ty else {
+                    return None;
+                };
+                let instances = actor.methods[index].infer_instances(&message.evidence.ty)?;
+                let mut arguments = Vec::new();
+                collect_argument_evidence(
+                    &actor.methods[index].input,
+                    &message.evidence,
+                    &mut arguments,
+                );
+                callee
+                    .evidence
+                    .producer()
+                    .methods
+                    .get(index)
+                    .map(|method| substitute_evidence(&method.output, &instances, &arguments))
+            });
+            (
+                output,
+                result_from,
+                TypedExprKind::Send {
+                    callee: Box::new(callee),
+                    message: Box::new(message),
+                    method,
+                },
+            )
+        }
         Expr::Actor(actor) => {
             let mut methods = Vec::with_capacity(actor.methods.len());
             let mut method_types = Vec::with_capacity(actor.methods.len());
             for method in &actor.methods {
                 let plan = prepare_pattern(&method.pattern);
+                validate_bindings(&plan)?;
                 let bindings = plan.receiver_bindings();
                 let scope = environment.extended(bindings.iter().cloned());
                 let body = synthesize_in(&scope, &method.body)?;
@@ -409,6 +711,19 @@ fn type_expression(
                     body: Box::new(body),
                 });
             }
+            for i in 0..method_types.len() {
+                for j in 0..i {
+                    if !method_types[i]
+                        .accepted_input()
+                        .is_disjoint_from(&method_types[j].accepted_input())
+                    {
+                        return Err(TypeError::OverlappingReceivers {
+                            first: methods[j].pattern,
+                            second: methods[i].pattern,
+                        });
+                    }
+                }
+            }
             (
                 Type::Actor(ActorType {
                     methods: method_types,
@@ -424,6 +739,11 @@ fn type_expression(
                     name: name.clone(),
                     span: expression.span,
                 })?;
+            if !binding.value.ty.is_well_formed() {
+                return Err(TypeError::InvalidActorType {
+                    span: binding.pattern,
+                });
+            }
             (
                 binding.value.ty.clone(),
                 Some(Rc::clone(&binding.value)),
@@ -476,6 +796,10 @@ fn type_expression(
             .collect(),
         _ => Vec::new(),
     };
+    let selector = match &kind {
+        TypedExprKind::Selector(s) => Some(s.map(|v| Rc::clone(&v.evidence))),
+        _ => None,
+    };
     let typed = TypedExpression {
         evidence: Rc::new(TypeEvidence {
             ty,
@@ -483,6 +807,7 @@ fn type_expression(
             origin: EvidenceOrigin::Expression,
             result_from,
             methods,
+            selector,
         }),
         kind,
     };
@@ -564,14 +889,93 @@ mod tests {
     }
 
     #[test]
+    fn selectors_bind_payloads_and_send_instantiates_replies() {
+        for (source, expected) in [
+            ("let #x = #x. #done", "#done"),
+            ("let #x: y = #x: {}. y", "{}"),
+            ("{ def value: x => x } value: {}", "{}"),
+            (
+                "{ def pair: x with: y => y } pair: #left with: #right",
+                "#right",
+            ),
+            ("{ def + x => x } + #hello", "#hello"),
+            ("{ def foo => {}. def bar => #reply } bar", "#reply"),
+            ("{ def (x) => x } (#hello)", "#hello"),
+            ("let #outer: (#inner: x) = #outer: (#inner: {}). x", "{}"),
+            (
+                "let a = { def value: x => #result: x }. let #result: y = a value: {}. y",
+                "{}",
+            ),
+        ] {
+            let typed = synthesize(&expression(source)).unwrap_or_else(|e| panic!("{source}: {e}"));
+            assert_eq!(typed.evidence.ty.to_string(), expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn send_results_retain_message_component_provenance() {
+        let source = "let a = { def value: x => #result: x }. let #result: y = a value: {}. y";
+        let typed = synthesize(&expression(source)).unwrap();
+        assert_eq!(typed.evidence.ty, Type::UNIT);
+        assert_eq!(
+            typed.evidence.producer().expression.start.col as usize,
+            source.rfind("{}").unwrap() + 1
+        );
+        let nested = synthesize(&expression(
+            "({ def value: x => { def get => x } } value: #hello) get",
+        ))
+        .unwrap();
+        assert_eq!(nested.evidence.ty.to_string(), "#hello");
+    }
+
+    #[test]
+    fn selectors_and_sends_reject_invalid_programs() {
+        for source in [
+            "{ def x => {}. def x => {} }",
+            "{ def (x) => x. def foo => {} }",
+            "{ def value: x => x. def value: _ => {} }",
+        ] {
+            assert!(
+                matches!(
+                    synthesize(&expression(source)),
+                    Err(TypeError::OverlappingReceivers { .. })
+                ),
+                "{source}"
+            );
+        }
+        assert!(matches!(
+            synthesize(&expression("{ def pair: x with: x => x }")),
+            Err(TypeError::DuplicateBinding { .. })
+        ));
+        assert!(matches!(
+            synthesize(&expression("{} foo")),
+            Err(TypeError::NoReceiver { .. })
+        ));
+        assert!(matches!(
+            synthesize(&expression("(#foo) foo")),
+            Err(TypeError::NotActor { .. })
+        ));
+        assert!(matches!(
+            synthesize(&expression("{ def x => x }")),
+            Err(TypeError::UnboundVariable { .. })
+        ));
+        let source = "let #outer: (#inner: _) = #outer: #wrong. {}";
+        let TypeError::Mismatch(error) = synthesize(&expression(source)).unwrap_err() else {
+            panic!()
+        };
+        assert_eq!(error.expected.origin.start.col, 13);
+        assert_eq!(error.actual.expression.start.col, 35);
+    }
+
+    #[test]
     fn generic_receivers_preserve_dependency_and_scope() {
         for (source, expected) in [
-            ("{ def x => x }", "{ <A <: any> A -> A }"),
-            ("{ def _ => {} }", "{ any -> {} }"),
-            ("{ def x => let y = x. y }", "{ <A <: any> A -> A }"),
+            ("{ def (x) => x }", "{ <A <: any> (A) -> A }"),
+            ("{ def (_) => {} }", "{ (any) -> {} }"),
+            ("{ def (x) => let y = x. y }", "{ <A <: any> (A) -> A }"),
             (
-                "{ def x => { def y => x } }",
-                "{ <A <: any> A -> { <B <: any> B -> A } }",
+                "{ def (x) => { def (y) => x } }",
+                "{ <A <: any> (A) -> { <B <: any> (B) -> A } }",
             ),
         ] {
             assert_eq!(
@@ -583,7 +987,7 @@ mod tests {
                 expected
             );
         }
-        let identity = synthesize(&expression("{ def x => x }")).unwrap();
+        let identity = synthesize(&expression("{ def (x) => x }")).unwrap();
         assert!(
             identity
                 .evidence
@@ -632,9 +1036,9 @@ mod tests {
         assert!(!Type::Any.is_subtype_of(&Type::UNIT));
         assert!(Type::Never.is_subtype_of(&broad));
         let overlaps = actor(vec![(Type::Any, Type::Any), (Type::Any, Type::UNIT)]);
-        assert_eq!(overlaps.to_string(), "{ any -> any. any -> {} }");
-        assert!(overlaps.is_subtype_of(&broad));
-        assert!(broad.is_subtype_of(&overlaps));
+        assert!(!overlaps.is_well_formed());
+        assert!(!overlaps.is_subtype_of(&broad));
+        assert!(!broad.is_subtype_of(&overlaps));
         let nested_actual = actor(vec![(narrow.clone(), broad.clone())]);
         let nested_expected = actor(vec![(broad, narrow)]);
         assert!(nested_actual.is_subtype_of(&nested_expected));
@@ -643,7 +1047,10 @@ mod tests {
 
     #[test]
     fn receivers_capture_and_shadow_without_leaking() {
-        let typed = synthesize(&expression("let x = {}. { def x => x. def _ => x }")).unwrap();
+        let typed = synthesize(&expression(
+            "let x = {}. { def value: x => x. def other => x }",
+        ))
+        .unwrap();
         let TypedExprKind::Let { body, bindings, .. } = &typed.kind else {
             panic!()
         };
@@ -651,25 +1058,18 @@ mod tests {
             panic!()
         };
         assert_eq!(methods.len(), 2);
-        assert!(matches!(methods[0].expectation.ty, Type::Variable(_)));
-        assert_eq!(methods[0].bindings[0].value.ty, methods[0].expectation.ty);
-        assert_eq!(methods[0].body.evidence.ty, methods[0].expectation.ty);
+        assert!(matches!(methods[0].bindings[0].value.ty, Type::Variable(_)));
+        assert_eq!(methods[0].body.evidence.ty, methods[0].bindings[0].value.ty);
         assert!(methods[1].bindings.is_empty());
         assert_eq!(methods[1].body.evidence.ty, Type::UNIT);
         let TypedExprKind::Variable { binding } = &methods[1].body.kind else {
             panic!()
         };
         assert_eq!(binding.pattern, bindings[0].pattern);
-        assert_eq!(body.evidence.methods[0].input.origin, methods[0].pattern);
-        assert!(Rc::ptr_eq(
-            &body.evidence.methods[0].output,
-            &methods[0].body.evidence
-        ));
-        assert!(methods[0].span.start.col < methods[1].span.start.col);
         for source in [
-            "{ def x => x. def _ => x }",
-            "let _ = { def x => x }. x",
-            "{ def _ => x }",
+            "{ def (x) => x. def (_) => x }",
+            "let _ = { def (x) => x }. x",
+            "{ def (_) => x }",
         ] {
             assert!(
                 matches!(
@@ -679,10 +1079,10 @@ mod tests {
                 "{source}"
             );
         }
-        let typed = synthesize(&expression("{ def x => { def _ => x } }")).unwrap();
+        let typed = synthesize(&expression("{ def (x) => { def (_) => x } }")).unwrap();
         assert_eq!(
             typed.evidence.ty.to_string(),
-            "{ <A <: any> A -> { any -> A } }"
+            "{ <A <: any> (A) -> { (any) -> A } }"
         );
     }
 
@@ -693,7 +1093,7 @@ mod tests {
             origin: site(),
         };
         let TypeError::Mismatch(error) =
-            check(&expression("let a = { def x => x }. a"), &expected).unwrap_err()
+            check(&expression("let a = { def (x) => x }. a"), &expected).unwrap_err()
         else {
             panic!()
         };
@@ -816,6 +1216,7 @@ mod tests {
                 origin: EvidenceOrigin::Expression,
                 result_from: None,
                 methods: Vec::new(),
+                selector: None,
             }),
         }]);
         let typed = check_in(

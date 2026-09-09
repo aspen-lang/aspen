@@ -9,6 +9,3 @@ path = "src/lib.rs"
 [[bin]]
 name = "aspenc"
 path = "src/main.rs"
-
-[dependencies]
-peg = "0.8"
