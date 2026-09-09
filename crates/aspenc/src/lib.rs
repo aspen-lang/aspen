@@ -263,8 +263,28 @@ pub struct Method {
     pub body: Box<Loc<Expr>>,
 }
 
+/// A source-level type, before names are resolved in a type environment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TypeExpr {
+    Any,
+    Never,
+    Variable(String),
+    Actor(Vec<Loc<TypeMethod>>),
+    Selector(Selector<Loc<TypeExpr>>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeMethod {
+    pub input: Loc<TypeExpr>,
+    pub output: Loc<TypeExpr>,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Pattern {
+    Annotated {
+        ty: Loc<TypeExpr>,
+        pattern: Box<Loc<Pattern>>,
+    },
     Selector(Selector<Loc<Pattern>>),
     Discard,
     Variable(String),
@@ -295,7 +315,7 @@ pub struct Program {
 }
 
 mod parser;
-pub use parser::{parse, parse_type};
+pub use parser::{parse, parse_type, parse_type_expression};
 
 #[cfg(test)]
 mod tests {

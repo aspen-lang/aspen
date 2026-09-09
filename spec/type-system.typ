@@ -47,14 +47,14 @@ keyword  ::= (label ":" payload)+
 An atomic selector has a name and no payload. An operator selector has one of
 the four operator tags and exactly one payload. A keyword selector has one or
 more ordered label/payload pairs. Both the number and order of labels matter.
-Payloads use the corresponding expression, pattern, or type syntax in selector
-mode; parentheses allow an ordinary value, binding, or type as a payload.
+Payloads use the corresponding expression, pattern, or type syntax in ordinary
+mode. Nested selectors use `#`; parentheses group payload syntax.
 
 ```text
 #ready                   // atomic selector expression
 #+ ({})                  // operator selector with an actor payload
 #put: ({}) at: (#home)    // keyword selector with two payloads
-#outer: inner: (x)       // nested selector pattern, binding x
+#outer: (#inner: x)      // nested selector pattern, binding x
 ```
 
 A `def` receiver pattern starts in selector mode. A let pattern starts in
@@ -444,3 +444,83 @@ no-receiver errors are distinct from an ordinary expected/actual mismatch.
 Caller-supplied environments may supply `never`, `any`, or bounded variables.
 The bottom rules do not claim a closed expression can construct a bottom value,
 and checking against `any` does not make the expression synthesize `any`.
+
+= Type Expressions and Annotation Patterns
+
+Source type syntax is now a separately located syntax tree, not a semantic type
+with source names prematurely resolved:
+
+```text
+type ::= "any" | "never" | type-name
+       | "(" type ")"
+       | "#" selector-of-types
+       | "{" (type-input "->" type ("." type-input "->" type)*)? "}"
+```
+
+Actor type inputs retain selector mode; ordinary types use `#` for selectors.
+Every method signature and selector payload retains its own span. Resolving
+this syntax uses a separate type-name environment and produces semantic types.
+An unknown name is an error at that name, never an implicit declaration. Named
+types may refer to existing rigid type variables. No source-level declaration
+syntax for named type variables or explicit quantifiers is introduced here;
+compiler clients can supply a type environment. Type syntax parsing itself does
+not depend on that environment. Actor disjointness is checked during resolution.
+
+== Annotation Parsing
+
+An annotation pattern has syntax `type pattern`. Annotation binds more tightly
+than selector construction. A type prefix is a name, actor type, or parenthesized
+type; a selector type used as a prefix must be parenthesized. The following
+pattern is a single variable, discard, or parenthesized pattern. Consequently,
+annotating a whole selector pattern also requires grouping that pattern.
+
+```text
+#x: y z: any abc       // z payload: variable abc constrained by any
+(#x: any z: any) abc   // whole variable abc constrained by selector type
+any (#x: y z: abc)     // whole selector pattern constrained by any
+{} x                  // variable x constrained to actor values
+```
+
+A lone identifier remains a variable pattern in ordinary mode. `T x` is an
+annotation regardless of whether `T` resolves. Unparenthesized `A B x` chains
+are rejected. Explicit nesting `A (B x)` is allowed when the inner constraint
+refines the outer constraint; incompatible or widening nested annotations are
+rejected rather than silently intersected.
+
+Receiver selector mode is unchanged:
+
+```text
+{ def x => {} }            // atomic selector x, no binding
+{ def ({} x) => x }        // constrained whole-message binding
+{ def z: any abc => abc }  // constrained keyword payload binding
+```
+
+== Annotation Typing
+
+Preparing `T x` resolves `T` and creates a fresh parameter `A <: T`, with binding
+template `x : A`. Let matching checks the actual value against `T` and
+instantiates `A` with that precise actual type. Receiver checking instead keeps
+`A` rigid and quantifies it over the method signature.
+
+```text
+let any x = {}. x           // result {}
+{ def ({} x) => x }         // type { <A <: {}> (A) -> A }
+```
+
+A constrained discard `T _` accepts `T` and introduces no parameter or binding.
+For a selector pattern annotated with `any`, recursively prepare its children
+normally. A matching structural selector annotation distributes each payload
+constraint to the corresponding child, retaining written component origins.
+An annotation with a different selector shape or a non-selector constraint on
+a selector pattern is rejected at preparation time. In particular, a rigid
+named variable is not replaced by its upper bound to permit destructuring:
+that would incorrectly accept values not known to belong to the variable.
+Such destructuring requires future constraint machinery. Root-variable
+annotations may use those rigid named variables directly.
+
+The annotation's type span is the expected origin for a mismatch, while the
+variable declaration keeps its own pattern span. Component constraints retain
+the component type span, and actual evidence retains the corresponding value
+component. Explicit inner annotations take precedence for diagnostic locality.
+No annotation changes semantic type equality or erases the actual type returned
+by successful checking.

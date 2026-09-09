@@ -2,7 +2,7 @@
 
 use std::{fmt, rc::Rc};
 
-use crate::{Expr, Loc, Pattern, Program, Selector, Span};
+use crate::{Expr, Loc, Pattern, Program, Selector, Span, TypeExpr};
 
 mod semantic;
 pub use semantic::*;
@@ -136,6 +136,14 @@ pub enum TypeError {
         callee: Rc<TypeEvidence>,
         message: Rc<TypeEvidence>,
     },
+    UnknownType {
+        name: String,
+        span: Span,
+    },
+    InvalidAnnotation {
+        span: Span,
+        message: String,
+    },
     InvalidActorType {
         span: Span,
     },
@@ -145,6 +153,8 @@ impl fmt::Display for TypeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Mismatch(mismatch) => mismatch.fmt(f),
+            Self::UnknownType { name, .. } => write!(f, "unknown type {name:?}"),
+            Self::InvalidAnnotation { message, .. } => f.write_str(message),
             Self::OverlappingReceivers { .. } => {
                 f.write_str("receiver input types are not disjoint")
             }
@@ -167,6 +177,7 @@ pub type TypeResult<T> = Result<T, TypeError>;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Environment {
     bindings: Vec<Binding>,
+    pub types: TypeEnvironment,
 }
 
 impl Environment {
@@ -182,6 +193,82 @@ impl Environment {
         scope.bindings.extend(bindings);
         scope
     }
+}
+
+/// Named types have a separate namespace; resolving a name never creates a parameter.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TypeEnvironment {
+    bindings: Vec<(String, Type)>,
+}
+
+impl TypeEnvironment {
+    pub fn extended(&self, name: impl Into<String>, ty: Type) -> Self {
+        let mut scope = self.clone();
+        scope.bindings.push((name.into(), ty));
+        scope
+    }
+
+    pub fn lookup(&self, name: &str) -> Option<&Type> {
+        self.bindings
+            .iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, ty)| ty)
+    }
+}
+
+pub fn resolve_type(environment: &TypeEnvironment, syntax: &Loc<TypeExpr>) -> TypeResult<Type> {
+    let ty = match &syntax.value {
+        TypeExpr::Any => Type::Any,
+        TypeExpr::Never => Type::Never,
+        TypeExpr::Variable(name) => {
+            environment
+                .lookup(name)
+                .cloned()
+                .ok_or_else(|| TypeError::UnknownType {
+                    name: name.clone(),
+                    span: syntax.span,
+                })?
+        }
+        TypeExpr::Selector(selector) => Type::Selector(try_selector_map(selector, |child| {
+            resolve_type(environment, child)
+        })?),
+        TypeExpr::Actor(methods) => Type::Actor(ActorType {
+            methods: methods
+                .iter()
+                .map(|method| {
+                    Ok(MethodType {
+                        parameters: Vec::new(),
+                        input: resolve_type(environment, &method.input)?,
+                        output: resolve_type(environment, &method.output)?,
+                    })
+                })
+                .collect::<TypeResult<_>>()?,
+        }),
+    };
+    if !ty.is_well_formed() {
+        return Err(TypeError::InvalidActorType { span: syntax.span });
+    }
+    Ok(ty)
+}
+
+fn try_selector_map<T, U>(
+    selector: &Selector<T>,
+    mut f: impl FnMut(&T) -> TypeResult<U>,
+) -> TypeResult<Selector<U>> {
+    Ok(match selector {
+        Selector::Atomic(name) => Selector::Atomic(name.clone()),
+        Selector::Operator { operator, value } => Selector::Operator {
+            operator: operator.clone(),
+            value: Box::new(f(value)?),
+        },
+        Selector::Keyword(parts) => Selector::Keyword(
+            parts
+                .iter()
+                .map(|(name, value)| Ok((name.clone(), f(value)?)))
+                .collect::<TypeResult<_>>()?,
+        ),
+    })
 }
 
 /// Parameter declarations keep their source origins outside semantic types.
@@ -211,10 +298,82 @@ pub struct PatternPlan {
     pub template: BindingTemplate,
 }
 
-pub fn prepare_pattern(pattern: &Loc<Pattern>) -> PatternPlan {
-    match &pattern.value {
+pub fn prepare_pattern(pattern: &Loc<Pattern>) -> TypeResult<PatternPlan> {
+    prepare_pattern_in(&TypeEnvironment::default(), pattern)
+}
+
+pub fn prepare_pattern_in(
+    environment: &TypeEnvironment,
+    pattern: &Loc<Pattern>,
+) -> TypeResult<PatternPlan> {
+    prepare_with_bound(
+        environment,
+        pattern,
+        &Expectation {
+            ty: Type::Any,
+            origin: pattern.span,
+        },
+    )
+}
+
+fn prepare_with_bound(
+    environment: &TypeEnvironment,
+    pattern: &Loc<Pattern>,
+    bound: &Expectation,
+) -> TypeResult<PatternPlan> {
+    Ok(match &pattern.value {
+        Pattern::Annotated { ty, pattern: inner } => {
+            let resolved = resolve_type(environment, ty)?;
+            // A nested explicit annotation is allowed only when it strengthens
+            // the enclosing requirement; no implicit intersection types exist.
+            if !resolved.is_subtype_of(&bound.ty) {
+                return Err(TypeError::InvalidAnnotation {
+                    span: ty.span,
+                    message: "annotation does not refine the enclosing type constraint".into(),
+                });
+            }
+            let mut plan = prepare_with_bound(
+                environment,
+                inner,
+                &Expectation {
+                    ty: resolved,
+                    origin: ty.span,
+                },
+            )?;
+            locate_annotation_components(&mut plan, ty, ty.span);
+            plan
+        }
         Pattern::Selector(selector) => {
-            let children = selector.map(prepare_pattern);
+            let upper = &bound.ty;
+            let children = if *upper == Type::Any {
+                try_selector_map(selector, |child| prepare_pattern_in(environment, child))?
+            } else if let Type::Selector(expected) = upper {
+                if !selector.same_shape(expected) {
+                    return Err(TypeError::InvalidAnnotation {
+                        span: bound.origin,
+                        message: "annotation and selector pattern have different shapes".into(),
+                    });
+                }
+                let types = expected.values();
+                let mut index = 0;
+                try_selector_map(selector, |child| {
+                    let result = prepare_with_bound(
+                        environment,
+                        child,
+                        &Expectation {
+                            ty: types[index].clone(),
+                            origin: bound.origin,
+                        },
+                    );
+                    index += 1;
+                    result
+                })?
+            } else {
+                return Err(TypeError::InvalidAnnotation {
+                    span: bound.origin,
+                    message: "annotation does not accept this selector pattern".into(),
+                });
+            };
             let parameters = children
                 .values()
                 .into_iter()
@@ -231,24 +390,21 @@ pub fn prepare_pattern(pattern: &Loc<Pattern>) -> PatternPlan {
         }
         Pattern::Discard => PatternPlan {
             parameters: Vec::new(),
-            expectation: Expectation {
-                ty: Type::Any,
-                origin: pattern.span,
-            },
+            expectation: bound.clone(),
             template: BindingTemplate::Discard,
         },
         Pattern::Variable(name) => {
-            let variable = TypeVariable::fresh(Type::Any);
+            let variable = TypeVariable::fresh(bound.ty.clone());
             PatternPlan {
                 parameters: vec![LocatedParameter {
                     parameter: TypeParameter {
                         variable: variable.clone(),
                     },
-                    origin: pattern.span,
+                    origin: bound.origin,
                 }],
                 expectation: Expectation {
                     ty: Type::Variable(variable.clone()),
-                    origin: pattern.span,
+                    origin: bound.origin,
                 },
                 template: BindingTemplate::Variable {
                     name: name.clone(),
@@ -256,6 +412,41 @@ pub fn prepare_pattern(pattern: &Loc<Pattern>) -> PatternPlan {
                     origin: pattern.span,
                 },
             }
+        }
+    })
+}
+
+// Distribute written component origins along with their constraints. Explicit
+// annotations inside the pattern retain their own, more local origins.
+fn locate_annotation_components(plan: &mut PatternPlan, syntax: &Loc<TypeExpr>, inherited: Span) {
+    if plan.expectation.origin == inherited {
+        plan.expectation.origin = syntax.span;
+    }
+    for parameter in &mut plan.parameters {
+        if parameter.origin == inherited {
+            parameter.origin = syntax.span;
+        }
+    }
+    if let (BindingTemplate::Selector(children), TypeExpr::Selector(types)) =
+        (&mut plan.template, &syntax.value)
+    {
+        match (children, types) {
+            (Selector::Operator { value: child, .. }, Selector::Operator { value: ty, .. }) => {
+                locate_annotation_components(child, ty, inherited)
+            }
+            (Selector::Keyword(children), Selector::Keyword(types)) => {
+                for ((_, child), (_, ty)) in children.iter_mut().zip(types) {
+                    locate_annotation_components(child, ty, inherited);
+                }
+            }
+            _ => {}
+        }
+        if let BindingTemplate::Selector(children) = &plan.template {
+            plan.parameters = children
+                .values()
+                .into_iter()
+                .flat_map(|child| child.parameters.clone())
+                .collect();
         }
     }
 }
@@ -365,7 +556,7 @@ impl PatternPlan {
                     .expect("binding template parameter must be declared in its plan");
                 let expected = Expectation {
                     ty: (*parameter.upper_bound).clone(),
-                    origin: *origin,
+                    origin: self.expectation.origin,
                 };
                 assert_evidence(value, &expected)?;
                 Ok(PatternInstantiation {
@@ -429,7 +620,7 @@ pub fn check_binding(
     pattern: &Loc<Pattern>,
     expression: &Loc<Expr>,
 ) -> TypeResult<CheckedBinding> {
-    let plan = prepare_pattern(pattern);
+    let plan = prepare_pattern_in(&environment.types, pattern)?;
     validate_bindings(&plan)?;
     let value = synthesize_in(environment, expression)?;
     let instance = plan.instantiate(&value)?;
@@ -688,7 +879,7 @@ fn type_expression(
             let mut methods = Vec::with_capacity(actor.methods.len());
             let mut method_types = Vec::with_capacity(actor.methods.len());
             for method in &actor.methods {
-                let plan = prepare_pattern(&method.pattern);
+                let plan = prepare_pattern_in(&environment.types, &method.pattern)?;
                 validate_bindings(&plan)?;
                 let bindings = plan.receiver_bindings();
                 let scope = environment.extended(bindings.iter().cloned());
@@ -855,6 +1046,120 @@ mod tests {
     }
 
     #[test]
+    fn annotated_bindings_preserve_precision_and_bound_receivers() {
+        let typed = synthesize(&expression("let any x = {}. x")).unwrap();
+        assert_eq!(typed.evidence.ty, Type::UNIT);
+        let typed = synthesize(&expression("{ def ({} x) => x }")).unwrap();
+        let Type::Actor(actor) = &typed.evidence.ty else {
+            panic!()
+        };
+        let parameter = &actor.methods[0].parameters[0].variable;
+        assert_eq!(*parameter.upper_bound, Type::UNIT);
+        assert_eq!(actor.methods[0].output, Type::Variable(parameter.clone()));
+        assert_eq!(
+            synthesize(&expression("{ def ({} x) => x } ({})"))
+                .unwrap()
+                .evidence
+                .ty,
+            Type::UNIT
+        );
+        assert!(matches!(
+            synthesize(&expression("{ def ({} x) => x } bad")),
+            Err(TypeError::NoReceiver { .. })
+        ));
+    }
+
+    #[test]
+    fn annotation_errors_locate_written_type_and_actual_component() {
+        let source = "let #x: y z: {} abc = #x: {} z: #bad. abc";
+        let TypeError::Mismatch(error) = synthesize(&expression(source)).unwrap_err() else {
+            panic!()
+        };
+        assert_eq!(error.expected.ty, Type::UNIT);
+        assert_eq!(
+            error.expected.origin.start.col as usize,
+            source.find("{} abc").unwrap() + 1
+        );
+        assert_eq!(
+            error.actual.expression.start.col as usize,
+            source.find("#bad").unwrap() + 1
+        );
+        let source = "let (#x: {} z: any) (#x: a z: b) = #x: #bad z: {}. b";
+        let TypeError::Mismatch(error) = synthesize(&expression(source)).unwrap_err() else {
+            panic!()
+        };
+        assert_eq!(
+            error.expected.origin.start.col as usize,
+            source.find("{}").unwrap() + 1
+        );
+        assert_eq!(
+            error.actual.expression.start.col as usize,
+            source.find("#bad").unwrap() + 1
+        );
+        assert!(matches!(
+            synthesize(&expression("let never _ = {}. {}")),
+            Err(TypeError::Mismatch(_))
+        ));
+    }
+
+    #[test]
+    fn named_types_resolve_without_implicit_declarations() {
+        assert!(
+            matches!(synthesize(&expression("let Missing x = {}. x")), Err(TypeError::UnknownType { name, .. }) if name == "Missing")
+        );
+        let parameter = TypeVariable::fresh(Type::UNIT);
+        let mut environment = Environment::default();
+        environment.types = environment
+            .types
+            .extended("T", Type::Variable(parameter.clone()));
+        environment = environment.extended([Binding {
+            name: "input".into(),
+            pattern: site(),
+            value: Rc::new(TypeEvidence {
+                ty: Type::Variable(parameter.clone()),
+                expression: site(),
+                origin: EvidenceOrigin::ReceiverPattern,
+                result_from: None,
+                methods: Vec::new(),
+                selector: None,
+            }),
+        }]);
+        let typed = synthesize_in(&environment, &expression("let T x = input. x")).unwrap();
+        assert_eq!(typed.evidence.ty, Type::Variable(parameter));
+        assert!(matches!(
+            synthesize_in(&environment, &expression("let T x = {}. x")),
+            Err(TypeError::Mismatch(_))
+        ));
+        let typed = synthesize_in(&environment, &expression("{ def (T x) => x }")).unwrap();
+        let Type::Actor(actor) = typed.evidence.ty.clone() else {
+            panic!()
+        };
+        assert_eq!(
+            *actor.methods[0].parameters[0].variable.upper_bound,
+            environment.types.lookup("T").unwrap().clone()
+        );
+    }
+
+    #[test]
+    fn grouped_selector_annotations_and_nested_constraints() {
+        let typed = synthesize(&expression("let (#tag: {}) x = #tag: {}. x")).unwrap();
+        assert!(matches!(typed.evidence.ty, Type::Selector(_)));
+        assert_eq!(
+            synthesize(&expression("let any ({} x) = {}. x"))
+                .unwrap()
+                .evidence
+                .ty,
+            Type::UNIT
+        );
+        assert!(matches!(
+            synthesize(&expression("let {} (any x) = {}. x")),
+            Err(TypeError::InvalidAnnotation { .. })
+        ));
+        let typed = synthesize(&expression("let any (#x: a z: b) = #x: {} z: {}. b")).unwrap();
+        assert_eq!(typed.evidence.ty, Type::UNIT);
+    }
+
+    #[test]
     fn pattern_parameters_instantiate_precisely_in_lets() {
         let ast = expression("let x = {}. x");
         let typed = synthesize(&ast).unwrap();
@@ -878,8 +1183,8 @@ mod tests {
         let Expr::Let(binding) = &ast.value else {
             panic!()
         };
-        let first = prepare_pattern(&binding.pattern);
-        let second = prepare_pattern(&binding.pattern);
+        let first = prepare_pattern(&binding.pattern).unwrap();
+        let second = prepare_pattern(&binding.pattern).unwrap();
         assert_ne!(
             first.parameters[0].parameter.variable,
             second.parameters[0].parameter.variable
@@ -1316,7 +1621,7 @@ mod tests {
             value: Pattern::Discard,
             span: site(),
         };
-        let mut plan = prepare_pattern(&pattern);
+        let mut plan = prepare_pattern(&pattern).unwrap();
         assert_eq!(plan.expectation.ty, Type::Any);
         plan.expectation.ty = Type::Never;
         let typed = synthesize(&expression("let _ = {}. {} ")).unwrap();

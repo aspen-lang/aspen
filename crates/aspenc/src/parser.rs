@@ -123,6 +123,34 @@ impl<'a, 'd> Parser<'a, 'd> {
     }
 
     fn pattern(&mut self, selector_mode: bool) -> Option<Loc<Pattern>> {
+        // Parenthesized prefixes are ambiguous until a following pattern is seen.
+        // Speculate only over type-prefix forms, never over bare selectors.
+        if !selector_mode
+            && matches!(
+                self.peek(),
+                Some(Token::Identifier(_) | Token::OpenParen | Token::OpenCurly)
+            )
+        {
+            let index = self.index;
+            let diagnostics = self.diagnostics.len();
+            if let Some(ty) = self.ty(false)
+                && !self.keyword()
+                && matches!(
+                    self.peek(),
+                    Some(Token::Identifier(_) | Token::Underscore | Token::OpenParen)
+                )
+            {
+                let start = ty.span.start;
+                let pattern = Box::new(self.pattern_atom(false)?);
+                return Some(self.located(start, Pattern::Annotated { ty, pattern }));
+            }
+            self.index = index;
+            self.diagnostics.truncate(diagnostics);
+        }
+        self.pattern_atom(selector_mode)
+    }
+
+    fn pattern_atom(&mut self, selector_mode: bool) -> Option<Loc<Pattern>> {
         let start = self.span().start;
         let value = if self.eat(Token::OpenParen) {
             let pattern = self.pattern(false)?;
@@ -236,50 +264,41 @@ impl<'a, 'd> Parser<'a, 'd> {
         Some(callee)
     }
 
-    fn ty(&mut self, selector_mode: bool) -> Option<Loc<types::Type>> {
-        use types::{ActorType, MethodType, Type};
+    fn ty(&mut self, selector_mode: bool) -> Option<Loc<TypeExpr>> {
         let start = self.span().start;
         let value = if self.eat(Token::OpenParen) {
             let ty = self.ty(false)?;
             self.expect(Token::CloseParen, "expected ')'")?;
             ty.value
         } else if self.eat(Token::Hash) {
-            Type::Selector(self.selector(|p| p.ty(false).map(|t| t.value))?)
+            TypeExpr::Selector(self.selector(|p| p.ty(false))?)
         } else if self.eat(Token::OpenCurly) {
             let mut methods = Vec::new();
             if self.peek() != Some(Token::CloseCurly) {
                 loop {
-                    let input = self.ty(true)?.value;
+                    let method_start = self.span().start;
+                    let input = self.ty(true)?;
                     self.expect(Token::Arrow, "expected '->'")?;
-                    let output = self.ty(false)?.value;
-                    methods.push(MethodType {
-                        parameters: Vec::new(),
-                        input,
-                        output,
-                    });
+                    let output = self.ty(false)?;
+                    methods.push(self.located(method_start, TypeMethod { input, output }));
                     if !self.eat(Token::Dot) {
                         break;
                     }
                 }
             }
             self.expect(Token::CloseCurly, "expected '}'")?;
-            let actor = ActorType { methods };
-            if !actor.has_disjoint_inputs() {
-                self.diagnostics.push(Diagnostic {
-                    span: self.located(start, ()).span,
-                    message: "actor type method inputs must be disjoint".into(),
-                });
-                return None;
-            }
-            Type::Actor(actor)
+            TypeExpr::Actor(methods)
         } else if selector_mode {
-            Type::Selector(self.selector(|p| p.ty(false).map(|t| t.value))?)
+            TypeExpr::Selector(self.selector(|p| p.ty(false))?)
         } else if self.peek() == Some(Token::Identifier("any")) {
             self.bump();
-            Type::Any
+            TypeExpr::Any
         } else if self.peek() == Some(Token::Identifier("never")) {
             self.bump();
-            Type::Never
+            TypeExpr::Never
+        } else if let Some(Token::Identifier(name)) = self.peek() {
+            self.bump();
+            TypeExpr::Variable(name.into())
         } else {
             return self.error("expected type");
         };
@@ -304,13 +323,39 @@ pub fn parse(lexer: Lexer<'_>, diagnostics: &mut Vec<Diagnostic>) -> Program {
 }
 
 /// Parse a type in ordinary mode; actor method inputs enter selector mode.
-pub fn parse_type(source: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<Loc<types::Type>> {
+pub fn parse_type_expression(
+    source: &str,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Loc<TypeExpr>> {
     let (mut parser, invalid) = Parser::new(Lexer::new(source), diagnostics);
     let ty = parser.ty(false)?;
     if parser.peek().is_some() {
         return parser.error("expected end of input");
     }
     if invalid { None } else { Some(ty) }
+}
+
+/// Parse and resolve a concrete type in an empty type environment.
+pub fn parse_type(source: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<Loc<types::Type>> {
+    let syntax = parse_type_expression(source, diagnostics)?;
+    match types::resolve_type(&types::TypeEnvironment::default(), &syntax) {
+        Ok(value) => Some(Loc {
+            value,
+            span: syntax.span,
+        }),
+        Err(error) => {
+            let span = match &error {
+                types::TypeError::UnknownType { span, .. }
+                | types::TypeError::InvalidActorType { span } => *span,
+                _ => syntax.span,
+            };
+            diagnostics.push(Diagnostic {
+                span,
+                message: error.to_string(),
+            });
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -343,6 +388,100 @@ mod tests {
                     .join(" ")
             ),
         }
+    }
+
+    fn binding_pattern(source: &str) -> Loc<Pattern> {
+        let Expr::Let(binding) = expression(source).value else {
+            panic!()
+        };
+        binding.pattern
+    }
+
+    #[test]
+    fn annotations_preserve_type_and_pattern_locations() {
+        let pattern = binding_pattern("let any abc = {}. abc");
+        assert_eq!(pattern.span.start.col, 5);
+        assert_eq!(pattern.span.end.col, 12);
+        let Pattern::Annotated { ty, pattern } = pattern.value else {
+            panic!()
+        };
+        assert_eq!(ty.value, TypeExpr::Any);
+        assert_eq!(ty.span.start.col, 5);
+        assert_eq!(ty.span.end.col, 8);
+        assert_eq!(pattern.value, Pattern::Variable("abc".into()));
+        assert_eq!(pattern.span.start.col, 9);
+        assert_eq!(pattern.span.end.col, 12);
+    }
+
+    #[test]
+    fn annotations_bind_more_tightly_than_selectors() {
+        let pattern = binding_pattern("let #x: y z: any abc = {}. abc");
+        let Pattern::Selector(Selector::Keyword(parts)) = pattern.value else {
+            panic!()
+        };
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].1.value, Pattern::Variable("y".into()));
+        assert!(matches!(parts[1].1.value, Pattern::Annotated { .. }));
+        for source in [
+            "let any (#x: y) = {}. y",
+            "let (#x: T) y = {}. y",
+            "let {} x = {}. x",
+            "let (any) _ = {}. {}",
+            "let T x = {}. x",
+            "let any (T x) = {}. x",
+        ] {
+            assert!(
+                matches!(binding_pattern(source).value, Pattern::Annotated { .. }),
+                "{source}"
+            );
+        }
+        for source in ["let A B x = {}. x", "let any #x: y = {}. y"] {
+            let mut diagnostics = Vec::new();
+            parse(Lexer::new(source), &mut diagnostics);
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn annotations_do_not_change_receiver_selector_mode() {
+        let Expr::Actor(actor) =
+            expression("{def x => {}. def (any x) => x. def put: T x => x}").value
+        else {
+            panic!()
+        };
+        assert_eq!(
+            actor.methods[0].pattern.value,
+            Pattern::Selector(Selector::Atomic("x".into()))
+        );
+        assert!(matches!(
+            actor.methods[1].pattern.value,
+            Pattern::Annotated { .. }
+        ));
+        let Pattern::Selector(Selector::Keyword(parts)) = &actor.methods[2].pattern.value else {
+            panic!()
+        };
+        assert!(matches!(parts[0].1.value, Pattern::Annotated { .. }));
+    }
+
+    #[test]
+    fn type_syntax_preserves_unknown_names_and_method_locations() {
+        let mut diagnostics = Vec::new();
+        let syntax = parse_type_expression("{put: T -> U}", &mut diagnostics).unwrap();
+        assert!(diagnostics.is_empty());
+        let TypeExpr::Actor(methods) = syntax.value else {
+            panic!()
+        };
+        assert_eq!(methods[0].span.start.col, 2);
+        assert_eq!(methods[0].span.end.col, 13);
+        assert_eq!(methods[0].output.value, TypeExpr::Variable("U".into()));
+        let TypeExpr::Selector(Selector::Keyword(parts)) = &methods[0].input.value else {
+            panic!()
+        };
+        assert_eq!(parts[0].1.value, TypeExpr::Variable("T".into()));
+        assert_eq!(parts[0].1.span.start.col, 7);
+        assert_eq!(parts[0].1.span.end.col, 8);
+        assert!(parse_type_expression("{foo -> any. foo -> any}", &mut diagnostics).is_some());
+        assert!(diagnostics.is_empty());
     }
 
     #[test]
