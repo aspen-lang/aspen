@@ -12,18 +12,24 @@
 = Scope and Syntax
 
 This specification describes selectors, recursive patterns, structural actors,
-message sends, implicit bounded method polymorphism, bidirectional typing, and
+message sends, statement sequences, explicit no-reply signatures, implicit
+bounded method polymorphism, bidirectional typing, and
 diagnostic provenance. It specifies parsing and static typing, not a runtime
 implementation or an evaluation protocol.
 
 ```text
-actor  ::= "{" (method ("." method)*)? "}"
-method ::= "def" receiver-pattern "=>" expression
-let    ::= "let" pattern "=" expression "." expression
+program   ::= statement*
+actor     ::= "{" method* "}"
+method    ::= "def" receiver-pattern "=>" statement*
+statement ::= "let" pattern "=" expression "."
+            | expression "."
 ```
 
-There is no trailing method separator. A let consumes its own separating period
-before parsing resumes at the enclosing actor's method separator. Identifiers
+Every statement ends with a period, including the last statement of a program
+or method. Method bodies end at the next `def` or closing brace; there is no
+separate method separator. Programs and method bodies may be empty. Let is a
+statement, not an expression, and cannot appear in an initializer or payload.
+Identifiers
 start with a Unicode alphabetic character or underscore and continue with
 Unicode alphanumeric characters or underscores. The exact words `let` and `def`
 are reserved; the exact word `_` is the discard pattern.
@@ -59,7 +65,7 @@ mode. Nested selectors use `#`; parentheses group payload syntax.
 
 A `def` receiver pattern starts in selector mode. A let pattern starts in
 ordinary mode. Thus `def x => ...` matches the atomic selector named `x` and
-introduces no variable; `def (x) => x` binds a whole incoming value. Likewise,
+introduces no variable; `def (x) => x.` binds a whole incoming value. Likewise,
 `let x = ...` binds a variable, while `let #x = ...` requires an atomic selector.
 Use `def (_) => ...` for an ordinary discard receiver.
 
@@ -68,10 +74,18 @@ outside actor inputs start in ordinary mode. The `def` keyword is not part of
 type notation:
 
 ```text
+{ ready. put: ({}) }
 { ready -> {}. put: ({}) -> #done }
 { <A <: any> (A) -> A }
 { <A <: any, B <: any> put: (A) at: (B) -> A }
 ```
+
+Omitting `-> type` denotes no reply, distinct from replying with any value,
+including the empty actor value (whose type is the current unit type `{}`).
+No reply is a signature property, not a value type: it is neither
+`never` nor `{}`. Explicit output signatures remain valid type syntax, but actor
+expressions currently only implement no-reply methods; there is no reply
+statement yet.
 
 The parameter notation describes semantic signatures. Receiver variables
 introduce those parameters implicitly; source patterns need no annotations.
@@ -143,12 +157,19 @@ For monomorphic signatures:
 
 ```text
 T1 <: T2 iff
-  for every (I2 -> O2) in T2,
-  there exists (I1 -> O1) in T1 such that
-    I2 <: I1 and O1 <: O2
+  for every signature (I2, R2) in T2,
+  there exists signature (I1, R1) in T1 such that
+    I2 <: I1 and reply-compatible(R1, R2)
+
+reply-compatible(no reply, no reply) = true
+reply-compatible(reply O1, reply O2) = O1 <: O2
+reply-compatible(no reply, reply O) = false
+reply-compatible(reply O, no reply) = false
 ```
 
-Inputs are contravariant and outputs covariant. Extra methods are permitted;
+Inputs are contravariant and value outputs covariant. No-reply outputs match
+only no-reply outputs; neither reply mode substitutes for the other. Extra
+methods are permitted;
 an empty actor does not satisfy a nonempty actor requirement. Comparisons
 recurse through selector payloads and actor signatures. Quantified signature
 comparison is specified later. Actor types must satisfy the disjoint-input
@@ -173,12 +194,13 @@ pattern and its recursive components. Actual evidence explains where a result
 type arose, which need not be the whole expression's span. A binding keeps the
 checked actual type and evidence separately from its declaration origin.
 
-An actor's evidence stores method input expectations and body output evidence.
+An actor's evidence stores method input expectations and explicit reply mode.
+No-reply methods have no output value evidence.
 Receiver input evidence is a pattern origin, not a fictitious expression.
 Selector evidence stores corresponding payload evidence recursively. References
 retain their use site and link to binding evidence; aliases must not discard
-that component structure. A normally returning let's result evidence is its
-body's result evidence, recursively through nested lets. An empty actor's
+that component structure. A let statement preserves its initializer evidence in
+its exported bindings, but has no result value. An empty actor's
 evidence identifies that actor expression.
 
 = Typing Interface
@@ -195,11 +217,11 @@ the actual type `T`, not the expected type `U`. The fallback rule synthesizes,
 then checks subtyping, with no conversion or implicit widening. For example,
 checking `{}` against `any` still returns `{}` and its evidence.
 
-Checking a normally returning let forwards the expectation and its origin into
-the body. When the initializer has type `never`, synthesize the body without
-that enclosing expectation and check the final `never` result instead. Public
-convenience operations start with an empty environment; environment-aware
-operations can accept caller-supplied bindings.
+Statement checking produces a typed statement and exports any new bindings to
+subsequent statements in the same sequence. A sequence has no result type and
+does not implicitly reply with its final expression's value. Public convenience
+operations start with an empty environment; environment-aware operations can
+accept caller-supplied bindings.
 
 = Recursive Patterns and Binding Plans
 
@@ -236,15 +258,16 @@ with that precise actual type. Record the parameter declaration and the evidence
 that instantiated it; the binding shares this evidence.
 
 ```text
-let #put: (x) at: (y) = #put: ({}) at: (#home). x
+let #put: (x) at: (y) = #put: ({}) at: (#home). x.
 ```
 
 This binds `x : {}` and `y : #home`, with their respective payload evidence, and
-returns `{}`. A mismatched label or nested selector shape is a pattern mismatch,
+discards the value of `x` in the following expression statement. A mismatched
+label or nested selector shape is a pattern mismatch,
 not a successful binding. A whole-value variable remains precise too:
 
 ```text
-let x = {}. x
+let x = {}. x.
 A <: any; actual = {}; check {} <: any; substitute A := {}
 ```
 
@@ -261,14 +284,14 @@ are universally quantified together over the method input and output, including
 nested outputs. There are no separate payload-level quantifiers.
 
 ```text
-{ def (x) => x }
-  : { <A <: any> (A) -> A }
-{ def put: (x) at: (y) => x }
-  : { <A <: any, B <: any> put: (A) at: (B) -> A }
-{ def outer: inner: (x) => x }
-  : { <A <: any> outer: inner: (A) -> A }
-{ def (x) => { def (y) => x } }
-  : { <A <: any> (A) -> { <B <: any> (B) -> A } }
+{ def (x) => x. }
+  : { <A <: any> (A) }
+{ def put: (x) at: (y) => x. }
+  : { <A <: any, B <: any> put: (A) at: (B) }
+{ def outer: inner: (x) => x. }
+  : { <A <: any> outer: inner: (A) }
+{ def (x) => { def (y) => x. }. }
+  : { <A <: any> (A) }
 ```
 
 Body checking cannot solve a rigid parameter to a convenient concrete type.
@@ -284,7 +307,8 @@ signature.
 The expression `{}` synthesizes the empty structural actor type with evidence
 at those braces. Braces produce an actor, not a type annotation or a declaration
 block. For a nonempty actor, prepare each receiver, type its body under its rigid
-bindings, collect the quantified signature and method evidence, and validate
+bindings, infer no reply regardless of its final statement, collect the
+quantified signature and method evidence, and validate
 pairwise input disjointness before accepting the actor. Preserve source order
 for evidence and representation, not to give earlier methods priority.
 
@@ -302,27 +326,29 @@ does not look up a receiver or widen payloads to expected types. All payloads
 are statically typed. If a payload has type `never`, the entire selector
 expression has type `never` rather than promising a normally produced selector.
 
-== Let
+== Statements
 
-For `let pattern = initializer . body`:
+For `let pattern = initializer.`:
 
 ```text
 plan = prepare(pattern)
 initial = synth(Gamma, initializer)
 instance = instantiate(plan, initial)
-result = synth(Gamma extended with instance.bindings, body)
-if initial.type == never:
-    return Actual(never, initial.evidence)
-else:
-    return result
+Gamma = Gamma extended with instance.bindings
 ```
 
-The new bindings are visible only in the body, not in their own initializer,
-and do not leak out of the let. Let is strict in its initializer. Bottom can
-match a recursive plan without a normally produced selector; binding leaves
-receive bottom information for the unreachable body. The body is still typed:
-strictness does not license skipping static checks. Otherwise the let returns
-exactly its body's actual type and evidence.
+The new bindings are visible in subsequent statements, not in their own
+initializer. A later let may shadow an earlier binding. Method-local bindings
+do not escape into sibling methods or the enclosing sequence. Let is strict
+in its initializer. Bottom can match a recursive plan without a normally
+produced selector; binding leaves receive bottom information for subsequent
+unreachable statements. Those statements are still statically checked.
+
+An expression statement checks its expression and discards any value. A send
+to a no-reply method is permitted as an expression statement, but cannot be
+used where a value is required: in an initializer, selector payload, or as
+another send's callee or message. No-reply sends are not assigned `never` or a
+unit type. No statement currently sends a reply.
 
 == Sends
 
@@ -336,7 +362,8 @@ each signature, infer parameter instances recursively from the message type
 and the input template, check upper bounds, and test that the message is a
 subtype of the instantiated input. A signature passing these tests is applicable.
 Disjoint receiver domains ensure at most one applicable receiver for an inhabited
-message. The send returns that receiver's instantiated output type and retains
+message. A value-producing send returns that receiver's instantiated output type; a
+no-reply send produces no value and is valid only as a statement. Both retain
 the callee, message, and selected method in its typed representation.
 
 A non-actor callee is a not-an-actor error. An actor with no applicable signature
@@ -345,10 +372,10 @@ type supplied externally is invalid, not an instruction to pick the first
 receiver. No runtime delivery or execution is implemented by these typing rules.
 
 ```text
-{ def ready => {} } ready                 // {}
-{ def (x) => x } (#home)                  // #home
-{ def put: (x) at: (y) => x } put: ({}) at: (#home)
-                                          // {}
+{ def ready => {}. } ready.              // no reply
+{ def (x) => x. } (#home).                // no reply
+{ def put: (x) at: (y) => x. } put: ({}) at: (#home).
+                                         // no reply
 ```
 
 = Disjoint Receiver Inputs
@@ -375,10 +402,10 @@ This is stricter than merely rejecting identical signatures: neither ordering,
 shadowing, nor result-type differences resolve overlapping domains.
 
 ```text
-{ def ready => {}. def stop => {} }            // accepted
-{ def put: left => {}. def put: right => {} }  // accepted
-{ def (x) => x. def ready => {} }              // rejected
-{ def put: (x) => x. def put: (y) => {} }      // rejected
+{ def ready => {}. def stop => {}. }          // accepted
+{ def put: #left => {}. def put: #right => {}. } // accepted
+{ def (x) => x. def ready => {}. }            // rejected
+{ def put: (x) => x. def put: (y) => {}. }    // rejected
 ```
 
 The first two actors separate messages by atomic tags, including nested tags.
@@ -400,8 +427,9 @@ including selector payloads and nested actor signatures.
 For actor subtyping, every expected signature must have a compatible provided
 signature. Freshen expected parameters to rigid variables. Instantiate only the
 provided method's parameters, input-directed by that freshened expected input,
-and check bounds. Input contravariance and output covariance then apply to the
-instantiated signature. Compatible alpha-renamed signatures are supported.
+and check bounds. Input contravariance and reply compatibility then apply to
+the instantiated signature. Value replies remain covariant; no reply matches
+only no reply. Compatible alpha-renamed signatures are supported.
 
 ```text
 { <A <: any> (A) -> A } <: { ({}) -> {} }
@@ -435,8 +463,8 @@ complete parameter and method evidence, rather than reporting a misleading
 uninstantiated component comparison.
 
 Checking `{}` against `Expected(never, origin)` reports a root mismatch with that
-origin and the empty actor's evidence. Checking a nested normally returning let
-against the same expectation reports its producing body's evidence. Recursive
+origin and the empty actor's evidence. Checking a let initializer against an
+annotation reports its producing expression's evidence. Recursive
 selector patterns can themselves reject initializers, unlike unconstrained
 variable and discard patterns. Overlapping-receiver, not-an-actor, and
 no-receiver errors are distinct from an ordinary expected/actual mismatch.
@@ -454,7 +482,8 @@ with source names prematurely resolved:
 type ::= "any" | "never" | type-name
        | "(" type ")"
        | "#" selector-of-types
-       | "{" (type-input "->" type ("." type-input "->" type)*)? "}"
+       | "{" (signature ("." signature)*)? "}"
+signature ::= type-input ("->" type)?
 ```
 
 Actor type inputs retain selector mode; ordinary types use `#` for selectors.
@@ -490,9 +519,9 @@ rejected rather than silently intersected.
 Receiver selector mode is unchanged:
 
 ```text
-{ def x => {} }            // atomic selector x, no binding
-{ def ({} x) => x }        // constrained whole-message binding
-{ def z: any abc => abc }  // constrained keyword payload binding
+{ def x => {}. }            // atomic selector x, no binding
+{ def ({} x) => x. }        // constrained whole-message binding
+{ def z: any abc => abc. }  // constrained keyword payload binding
 ```
 
 == Annotation Typing
@@ -503,8 +532,8 @@ instantiates `A` with that precise actual type. Receiver checking instead keeps
 `A` rigid and quantifies it over the method signature.
 
 ```text
-let any x = {}. x           // result {}
-{ def ({} x) => x }         // type { <A <: {}> (A) -> A }
+let any x = {}. x.           // binds x : {}, discards x
+{ def ({} x) => x. }         // type { <A <: {}> (A) }
 ```
 
 A constrained discard `T _` accepts `T` and introduces no parameter or binding.

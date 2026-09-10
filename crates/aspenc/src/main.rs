@@ -24,11 +24,11 @@ enum Command {
     Lex(Input),
     /// Parse a source file and print its located AST.
     Parse(Input),
-    /// Type-check a source file and print its inferred type.
+    /// Type-check a source file and report success.
     Check {
         #[command(flatten)]
         input: Input,
-        /// Print the full typed AST and its evidence instead of just the type.
+        /// Print the full typed AST and its evidence instead of just 'ok'.
         #[arg(long)]
         typed_ast: bool,
     },
@@ -65,7 +65,8 @@ fn diagnostic(
 fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::Result<()> {
     let span = match error {
         TypeError::Mismatch(mismatch) => mismatch.actual.expression,
-        TypeError::UnboundVariable { span, .. }
+        TypeError::NoReplyValue { span }
+        | TypeError::UnboundVariable { span, .. }
         | TypeError::UnknownType { span, .. }
         | TypeError::InvalidAnnotation { span, .. }
         | TypeError::InvalidActorType { span } => *span,
@@ -187,13 +188,11 @@ fn run(cli: Cli, stdout: &mut impl Write, stderr: &mut impl Write) -> io::Result
     match cli.command {
         Command::Parse(_) => writeln!(stdout, "{program:#?}")?,
         Command::Check { typed_ast, .. } => match check_program(&program) {
-            Ok(expressions) => {
-                for expression in expressions {
-                    if typed_ast {
-                        writeln!(stdout, "{expression:#?}")?;
-                    } else {
-                        writeln!(stdout, "{}", expression.evidence.ty)?;
-                    }
+            Ok(statements) => {
+                if typed_ast {
+                    writeln!(stdout, "{statements:#?}")?;
+                } else {
+                    writeln!(stdout, "ok")?;
                 }
             }
             Err(error) => {

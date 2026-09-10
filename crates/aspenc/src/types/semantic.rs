@@ -15,7 +15,8 @@ pub struct ActorType {
 pub struct MethodType {
     pub parameters: Vec<TypeParameter>,
     pub input: Type,
-    pub output: Type,
+    /// None denotes no reply, not a value type.
+    pub output: Option<Type>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,7 +138,7 @@ impl Type {
                         MethodType {
                             parameters,
                             input: method.input.substitute(&scope),
-                            output: method.output.substitute(&scope),
+                            output: method.output.as_ref().map(|ty| ty.substitute(&scope)),
                         }
                     })
                     .collect(),
@@ -173,7 +174,7 @@ impl Type {
                             .iter()
                             .all(|p| p.variable.upper_bound.is_well_formed())
                             && method.input.is_well_formed()
-                            && method.output.is_well_formed()
+                            && method.output.as_ref().is_none_or(Type::is_well_formed)
                     })
             }
             Self::Selector(selector) => selector.values().iter().all(|ty| ty.is_well_formed()),
@@ -218,14 +219,16 @@ impl MethodType {
         self.input.substitute(&substitutions)
     }
 
-    pub fn instantiate(&self, message: &Type) -> Option<Type> {
-        Some(self.output.substitute(&self.infer_instances(message)?))
+    /// Outer None means not applicable; Some(None) means an accepted no-reply send.
+    pub fn instantiate(&self, message: &Type) -> Option<Option<Type>> {
+        let instances = self.infer_instances(message)?;
+        Some(self.output.as_ref().map(|ty| ty.substitute(&instances)))
     }
 
     pub fn infer_instances(&self, message: &Type) -> Option<Vec<(TypeVariable, Type)>> {
         if !message.is_well_formed()
             || !self.input.is_well_formed()
-            || !self.output.is_well_formed()
+            || !self.output.as_ref().is_none_or(Type::is_well_formed)
         {
             return None;
         }
@@ -248,9 +251,9 @@ impl MethodType {
 
     pub fn is_subtype_of(&self, expected: &Self) -> bool {
         if !self.input.is_well_formed()
-            || !self.output.is_well_formed()
+            || !self.output.as_ref().is_none_or(Type::is_well_formed)
             || !expected.input.is_well_formed()
-            || !expected.output.is_well_formed()
+            || !expected.output.as_ref().is_none_or(Type::is_well_formed)
         {
             return false;
         }
@@ -264,9 +267,13 @@ impl MethodType {
             skolems.push((parameter.variable.clone(), Type::Variable(rigid)));
         }
         let required_input = expected.input.substitute(&skolems);
-        let required_output = expected.output.substitute(&skolems);
+        let required_output = expected.output.as_ref().map(|ty| ty.substitute(&skolems));
         self.instantiate(&required_input)
-            .is_some_and(|output| output.is_subtype_of(&required_output))
+            .is_some_and(|output| match (output, &required_output) {
+                (None, None) => true,
+                (Some(actual), Some(expected)) => actual.is_subtype_of(expected),
+                _ => false,
+            })
     }
 }
 
@@ -377,7 +384,12 @@ fn alpha_method(
         }
         scope.push((a.variable.clone(), b.variable.clone()));
     }
-    alpha_type(&left.input, &right.input, &scope) && alpha_type(&left.output, &right.output, &scope)
+    alpha_type(&left.input, &right.input, &scope)
+        && match (&left.output, &right.output) {
+            (None, None) => true,
+            (Some(left), Some(right)) => alpha_type(left, right, &scope),
+            _ => false,
+        }
 }
 
 fn variable_name(index: usize) -> String {
@@ -440,8 +452,10 @@ fn display_type(
                     display_type(&method.input, f, &mut local)?;
                     f.write_str(")")?;
                 }
-                f.write_str(" -> ")?;
-                display_type(&method.output, f, &mut local)?;
+                if let Some(output) = &method.output {
+                    f.write_str(" -> ")?;
+                    display_type(output, f, &mut local)?;
+                }
             }
             f.write_str(" }")
         }
@@ -498,7 +512,9 @@ fn free_variables(ty: &Type, bound: &[TypeVariable], free: &mut Vec<TypeVariable
                     local.push(parameter.variable.clone());
                 }
                 free_variables(&method.input, &local, free);
-                free_variables(&method.output, &local, free);
+                if let Some(output) = &method.output {
+                    free_variables(output, &local, free);
+                }
             }
         }
         _ => {}
@@ -526,7 +542,7 @@ mod tests {
         MethodType {
             parameters: vec![],
             input,
-            output,
+            output: Some(output),
         }
     }
     fn identity(bound: Type) -> MethodType {
@@ -535,8 +551,45 @@ mod tests {
         MethodType {
             parameters: vec![parameter],
             input: ty.clone(),
-            output: ty,
+            output: Some(ty),
         }
+    }
+
+    #[test]
+    fn reply_modes_are_distinct_from_all_value_types() {
+        let no_reply = MethodType {
+            parameters: vec![],
+            input: Type::Any,
+            output: None,
+        };
+        assert_eq!(no_reply.instantiate(&Type::UNIT), Some(None));
+        assert!(no_reply.is_subtype_of(&no_reply));
+        assert_eq!(actor(no_reply.clone()).to_string(), "{ (any) }");
+        for ty in [Type::Never, Type::UNIT, Type::Any] {
+            let reply = mono(Type::Any, ty.clone());
+            assert_eq!(reply.instantiate(&Type::UNIT), Some(Some(ty)));
+            assert!(!reply.is_subtype_of(&no_reply));
+            assert!(!no_reply.is_subtype_of(&reply));
+        }
+        let generic = MethodType {
+            output: None,
+            ..identity(Type::Any)
+        };
+        let renamed =
+            actor(generic.clone()).substitute(&[(TypeVariable::fresh(Type::Any), Type::UNIT)]);
+        assert!(actor(generic).is_subtype_of(&renamed));
+        assert!(no_reply.is_subtype_of(&MethodType {
+            input: Type::UNIT,
+            ..no_reply.clone()
+        }));
+        assert_eq!(
+            MethodType {
+                input: atom("go"),
+                ..no_reply
+            }
+            .instantiate(&atom("stop")),
+            None
+        );
     }
 
     #[test]
@@ -573,12 +626,12 @@ mod tests {
         let nested = actor(MethodType {
             parameters: vec![inner.clone()],
             input: inner_ty.clone(),
-            output: outer_ty.clone(),
+            output: Some(outer_ty.clone()),
         });
         let method = MethodType {
             parameters: vec![outer.clone()],
             input: outer_ty,
-            output: nested.clone(),
+            output: Some(nested.clone()),
         };
         assert_eq!(
             actor(method.clone()).to_string(),
@@ -590,7 +643,7 @@ mod tests {
         let Type::Actor(replaced) = replaced else {
             panic!()
         };
-        assert_eq!(replaced.methods[0].output, inner_ty);
+        assert_eq!(replaced.methods[0].output, Some(inner_ty));
         assert_ne!(replaced.methods[0].parameters[0].variable, inner.variable);
         assert_eq!(
             replaced.methods[0].input,
@@ -627,7 +680,7 @@ mod tests {
                 ),
                 ("second".into(), Type::Variable(b.variable.clone())),
             ])),
-            output: keyword("reply", Type::Variable(a.variable.clone())),
+            output: Some(keyword("reply", Type::Variable(a.variable.clone()))),
         };
         let message = |second| {
             Type::Selector(Selector::Keyword(vec![
@@ -637,7 +690,7 @@ mod tests {
         };
         assert_eq!(
             method.instantiate(&message(Type::UNIT)),
-            Some(keyword("reply", atom("yes")))
+            Some(Some(keyword("reply", atom("yes"))))
         );
         assert_eq!(method.instantiate(&message(atom("no"))), None);
         assert!(method.is_subtype_of(&method.clone()));

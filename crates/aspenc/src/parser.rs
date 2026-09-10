@@ -182,31 +182,17 @@ impl<'a, 'd> Parser<'a, 'd> {
         } else if self.eat(Token::Hash) {
             let precedence = self.operator().map_or(2, |(_, precedence)| precedence + 1);
             Expr::Selector(self.selector(|p| p.expr(precedence))?)
-        } else if self.eat(Token::Let) {
-            let pattern = self.pattern(false)?;
-            self.expect(Token::Equals, "expected '='")?;
-            let value = Box::new(self.expr(0)?);
-            self.expect(Token::Dot, "expected '.'")?;
-            let body = Box::new(self.expr(0)?);
-            Expr::Let(Let {
-                pattern,
-                value,
-                body,
-            })
         } else if self.eat(Token::OpenCurly) {
             let mut methods = Vec::new();
-            if self.peek() == Some(Token::Def) {
-                loop {
-                    let start = self.span().start;
-                    self.expect(Token::Def, "expected 'def'")?;
-                    let pattern = self.pattern(true)?;
-                    self.expect(Token::FatArrow, "expected '=>'")?;
-                    let body = Box::new(self.expr(0)?);
-                    methods.push(self.located(start, Method { pattern, body }));
-                    if !self.eat(Token::Dot) {
-                        break;
-                    }
+            while self.peek() == Some(Token::Def) {
+                let start = self.bump().span.start;
+                let pattern = self.pattern(true)?;
+                self.expect(Token::FatArrow, "expected '=>'")?;
+                let mut body = Vec::new();
+                while !matches!(self.peek(), None | Some(Token::Def | Token::CloseCurly)) {
+                    body.push(self.statement()?);
                 }
+                methods.push(self.located(start, Method { pattern, body }));
             }
             self.expect(Token::CloseCurly, "expected '}'")?;
             Expr::Actor(Actor { methods })
@@ -219,6 +205,20 @@ impl<'a, 'd> Parser<'a, 'd> {
         } else {
             return self.error("expected expression");
         };
+        Some(self.located(start, value))
+    }
+
+    fn statement(&mut self) -> Option<Loc<Stmt>> {
+        let start = self.span().start;
+        let value = if self.eat(Token::Let) {
+            let pattern = self.pattern(false)?;
+            self.expect(Token::Equals, "expected '='")?;
+            let value = Box::new(self.expr(0)?);
+            Stmt::Let(Let { pattern, value })
+        } else {
+            Stmt::Expr(self.expr(0)?)
+        };
+        self.expect(Token::Dot, "expected '.'")?;
         Some(self.located(start, value))
     }
 
@@ -278,8 +278,11 @@ impl<'a, 'd> Parser<'a, 'd> {
                 loop {
                     let method_start = self.span().start;
                     let input = self.ty(true)?;
-                    self.expect(Token::Arrow, "expected '->'")?;
-                    let output = self.ty(false)?;
+                    let output = if self.eat(Token::Arrow) {
+                        Some(self.ty(false)?)
+                    } else {
+                        None
+                    };
                     methods.push(self.located(method_start, TypeMethod { input, output }));
                     if !self.eat(Token::Dot) {
                         break;
@@ -306,20 +309,20 @@ impl<'a, 'd> Parser<'a, 'd> {
     }
 }
 
-/// Parse one expression and require end of input, reporting errors separately.
+/// Parse zero or more period-terminated statements, reporting errors separately.
 pub fn parse(lexer: Lexer<'_>, diagnostics: &mut Vec<Diagnostic>) -> Program {
     let (mut parser, invalid) = Parser::new(lexer, diagnostics);
-    let expression = parser.expr(0);
-    if expression.is_some() && parser.peek().is_some() {
-        parser.error::<()>("expected end of input");
+    let mut statements = Vec::new();
+    while parser.peek().is_some() {
+        let Some(statement) = parser.statement() else {
+            break;
+        };
+        statements.push(statement);
     }
-    Program {
-        expressions: if invalid {
-            Vec::new()
-        } else {
-            expression.into_iter().collect()
-        },
+    if invalid {
+        statements.clear();
     }
+    Program { statements }
 }
 
 /// Parse a type in ordinary mode; actor method inputs enter selector mode.
@@ -364,16 +367,19 @@ mod tests {
 
     fn expression(source: &str) -> Loc<Expr> {
         let mut diagnostics = Vec::new();
-        let mut program = parse(Lexer::new(source), &mut diagnostics);
+        let source = format!("{source}.");
+        let mut program = parse(Lexer::new(&source), &mut diagnostics);
         assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
-        program.expressions.pop().unwrap()
+        let Stmt::Expr(expr) = program.statements.pop().unwrap().value else {
+            panic!()
+        };
+        expr
     }
 
     fn shape(expr: &Expr) -> String {
         match expr {
             Expr::Variable(name) => name.clone(),
             Expr::Actor(_) => "{}".into(),
-            Expr::Let(_) => "let".into(),
             Expr::Send { callee, message } => format!("({} {})", shape(callee), shape(message)),
             Expr::Selector(Selector::Atomic(name)) => format!("#{name}"),
             Expr::Selector(Selector::Operator { operator, value }) => {
@@ -391,7 +397,11 @@ mod tests {
     }
 
     fn binding_pattern(source: &str) -> Loc<Pattern> {
-        let Expr::Let(binding) = expression(source).value else {
+        let mut diagnostics = Vec::new();
+        let source = format!("{source}.");
+        let program = parse(Lexer::new(&source), &mut diagnostics);
+        assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
+        let Stmt::Let(binding) = program.statements.into_iter().next().unwrap().value else {
             panic!()
         };
         binding.pattern
@@ -445,7 +455,7 @@ mod tests {
     #[test]
     fn annotations_do_not_change_receiver_selector_mode() {
         let Expr::Actor(actor) =
-            expression("{def x => {}. def (any x) => x. def put: T x => x}").value
+            expression("{def x => {}. def (any x) => x. def put: T x => x.}").value
         else {
             panic!()
         };
@@ -473,7 +483,10 @@ mod tests {
         };
         assert_eq!(methods[0].span.start.col, 2);
         assert_eq!(methods[0].span.end.col, 13);
-        assert_eq!(methods[0].output.value, TypeExpr::Variable("U".into()));
+        assert_eq!(
+            methods[0].output.as_ref().unwrap().value,
+            TypeExpr::Variable("U".into())
+        );
         let TypeExpr::Selector(Selector::Keyword(parts)) = &methods[0].input.value else {
             panic!()
         };
@@ -482,6 +495,34 @@ mod tests {
         assert_eq!(parts[0].1.span.end.col, 8);
         assert!(parse_type_expression("{foo -> any. foo -> any}", &mut diagnostics).is_some());
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn actor_type_signatures_distinguish_no_reply_from_never() {
+        let mut diagnostics = Vec::new();
+        let syntax = parse_type_expression(
+            "{notify: any. stop -> never. read -> any}",
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert!(diagnostics.is_empty());
+        let TypeExpr::Actor(methods) = syntax.value else {
+            panic!()
+        };
+        assert_eq!(methods.len(), 3);
+        assert!(methods[0].output.is_none());
+        assert_eq!(methods[0].span.start.col, 2);
+        assert_eq!(methods[0].span.end.col, 13);
+        assert_eq!(methods[1].output.as_ref().unwrap().value, TypeExpr::Never);
+        assert_eq!(methods[2].output.as_ref().unwrap().value, TypeExpr::Any);
+        for source in ["{foo ->}", "{foo.}", "{foo bar}"] {
+            let mut diagnostics = Vec::new();
+            assert!(
+                parse_type_expression(source, &mut diagnostics).is_none(),
+                "{source}"
+            );
+            assert!(!diagnostics.is_empty());
+        }
     }
 
     #[test]
@@ -530,8 +571,9 @@ mod tests {
 
     #[test]
     fn patterns_switch_modes_only_at_boundaries() {
-        let expr =
-            expression("{def foo => {}. def (x) => x. def put: x at: #slot: y => y. def + z => z}");
+        let expr = expression(
+            "{def foo => {}. def (x) => x. def put: x at: #slot: y => y. def + z => z.}",
+        );
         let Expr::Actor(actor) = expr.value else {
             panic!()
         };
@@ -551,10 +593,10 @@ mod tests {
             parts[1].1.value,
             Pattern::Selector(Selector::Keyword(_))
         ));
-        let Expr::Let(binding) = expression("let #put: x = #put: {}. x").value else {
-            panic!()
-        };
-        assert!(matches!(binding.pattern.value, Pattern::Selector(_)));
+        assert!(matches!(
+            binding_pattern("let #put: x = #put: {}. x").value,
+            Pattern::Selector(_)
+        ));
     }
 
     #[test]

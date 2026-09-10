@@ -22,13 +22,13 @@ cargo run -p aspenc -- lex example.aspen
 cargo run -p aspenc -- parse example.aspen
 cargo run -p aspenc -- check example.aspen
 cargo run -p aspenc -- check --typed-ast example.aspen
-printf '{ def (x) => x } (#home)' | cargo run -q -p aspenc -- check -
+printf 'let service = { def (x) => x. }. service (#home).' | cargo run -q -p aspenc -- check -
 ```
 
 - `lex` prints located tokens, including whitespace. It reports lexical errors
   while continuing to print the tokens it can recognize.
 - `parse` prints the located AST only if parsing succeeds.
-- `check` prints the inferred type on success (`#home` in the stdin example).
+- `check` prints `ok` on success. Programs are statement sequences, not values.
   `--typed-ast` instead prints the typed AST, including type evidence and bindings.
   Files with lexical or parse errors are not passed to the type checker.
 
@@ -40,3 +40,27 @@ one-based. The type checker currently stops at the first type error.
 Exit status is 0 for success, 1 for source or I/O errors, and 2 for invalid CLI
 arguments. AST and token dumps use Rust debug formatting and are intended for
 inspection, not as a stable machine-readable format.
+
+## Statements And Replies
+
+Programs and method bodies contain zero or more period-terminated statements:
+
+```text
+let service = {
+  def put: value =>
+    let saved = value.
+    saved.
+  def ready =>
+}.
+service put: #home.
+```
+
+`let` introduces bindings for subsequent statements in its sequence. Expression
+statements discard their values; even a method's final expression does not
+implicitly send a reply. Method-local bindings do not escape their method.
+
+A signature such as `{put: any. ready}` has no replies. `{ready -> {}}` promises
+a value reply and is a different contract. Actor expressions currently infer
+only no-reply signatures, pending an explicit reply statement. A no-reply send
+can stand alone as a statement, but cannot initialize a binding or supply an
+expression value.

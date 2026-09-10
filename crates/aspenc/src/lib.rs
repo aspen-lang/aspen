@@ -260,7 +260,8 @@ pub struct Actor {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Method {
     pub pattern: Loc<Pattern>,
-    pub body: Box<Loc<Expr>>,
+    /// Ends before the next `def` or `}`; the method span ends at `=>` if empty.
+    pub body: Vec<Loc<Stmt>>,
 }
 
 /// A source-level type, before names are resolved in a type environment.
@@ -276,7 +277,7 @@ pub enum TypeExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeMethod {
     pub input: Loc<TypeExpr>,
-    pub output: Loc<TypeExpr>,
+    pub output: Option<Loc<TypeExpr>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -294,7 +295,13 @@ pub enum Pattern {
 pub struct Let {
     pub pattern: Loc<Pattern>,
     pub value: Box<Loc<Expr>>,
-    pub body: Box<Loc<Expr>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+/// A statement location includes its terminating period; expression locations do not.
+pub enum Stmt {
+    Let(Let),
+    Expr(Loc<Expr>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -306,12 +313,11 @@ pub enum Expr {
     },
     Actor(Actor),
     Variable(String),
-    Let(Let),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Program {
-    pub expressions: Vec<Loc<Expr>>,
+    pub statements: Vec<Loc<Stmt>>,
 }
 
 mod parser;
@@ -360,59 +366,65 @@ mod tests {
     }
 
     #[test]
-    fn actor_span_excludes_surrounding_whitespace() {
-        let (program, diagnostics) = parsed(" \n{ \r\n }\t");
+    fn actor_and_statement_spans_exclude_surrounding_whitespace() {
+        let (program, diagnostics) = parsed(" \n{ \r\n }.\t");
         assert!(diagnostics.is_empty());
-        assert_eq!(
-            program.expressions,
-            vec![Loc {
-                value: Expr::Actor(Actor {
-                    methods: Vec::new()
-                }),
-                span: Span {
-                    start: Pos { line: 2, col: 1 },
-                    end: Pos { line: 3, col: 3 }
-                },
-            }]
-        );
+        let statement = &program.statements[0];
+        assert_eq!(statement.span.start, Pos { line: 2, col: 1 });
+        assert_eq!(statement.span.end, Pos { line: 3, col: 4 });
+        let Stmt::Expr(expression) = &statement.value else {
+            panic!()
+        };
+        assert_eq!(expression.span.end, Pos { line: 3, col: 3 });
+        assert!(matches!(expression.value, Expr::Actor(_)));
     }
 
     #[test]
-    fn missing_expression_and_close_report_actual_eof() {
-        for (source, message, eof) in [
-            ("", "expected expression", Pos { line: 1, col: 1 }),
-            (" \r\n", "expected expression", Pos { line: 2, col: 1 }),
-            ("{ \n", "expected '}'", Pos { line: 2, col: 1 }),
+    fn empty_programs_and_methods_are_valid() {
+        for source in [
+            "",
+            " \r\n",
+            "{}.",
+            "{def foo =>}.",
+            "{def foo => def bar =>}. ",
         ] {
-            let (program, diagnostics) = parsed(source);
-            assert!(program.expressions.is_empty());
-            assert_eq!(
-                diagnostics,
-                vec![Diagnostic {
-                    span: Span {
-                        start: eof,
-                        end: eof
-                    },
-                    message: message.into(),
-                }]
-            );
+            let (_, diagnostics) = parsed(source);
+            assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
         }
+        let (program, _) = parsed("{def foo => def bar =>}.");
+        let Stmt::Expr(expression) = &program.statements[0].value else {
+            panic!()
+        };
+        let Expr::Actor(actor) = &expression.value else {
+            panic!()
+        };
+        assert_eq!(actor.methods.len(), 2);
+        assert!(actor.methods.iter().all(|method| method.body.is_empty()));
     }
 
     #[test]
-    fn expr_does_not_require_eof_but_program_does() {
-        let (program, diagnostics) = parsed("{} {}");
-        assert_eq!(program.expressions.len(), 1);
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].message, "expected end of input");
-        assert_eq!(diagnostics[0].span.start.col, 4);
+    fn all_statements_require_periods() {
+        for source in [
+            "{}",
+            "x",
+            "let x = {}",
+            "{def foo => x}.",
+            "{def foo => let x = {} def bar =>}.",
+            "{}. {}",
+        ] {
+            let (_, diagnostics) = parsed(source);
+            assert_eq!(diagnostics[0].message, "expected '.'", "{source}");
+        }
+        let (_, diagnostics) = parsed("{ \n");
+        assert_eq!(diagnostics[0].message, "expected '}'");
+        assert_eq!(diagnostics[0].span.start, Pos { line: 2, col: 1 });
     }
 
     #[test]
     fn invalid_characters_never_create_valid_actors() {
-        for source in ["{x}", "@{}", "{}@", "@", "}", "{{}"] {
+        for source in ["{x}.", "@{}.", "{}.@", "@", "}", "{{}."] {
             let (program, diagnostics) = parsed(source);
-            assert!(program.expressions.is_empty(), "{source}");
+            assert!(program.statements.is_empty(), "{source}");
             assert!(!diagnostics.is_empty(), "{source}");
         }
     }
@@ -448,52 +460,45 @@ mod tests {
     }
 
     #[test]
-    fn let_expression_has_located_pattern_value_and_body() {
-        let (program, diagnostics) = parsed(" let _ = {} . {} ");
+    fn let_statement_has_located_pattern_and_value() {
+        let (program, diagnostics) = parsed(" let _ = {} . {}. ");
         assert!(diagnostics.is_empty());
-        let expression = &program.expressions[0];
-        assert_eq!(expression.span.start.col, 2);
-        assert_eq!(expression.span.end.col, 17);
-        let Expr::Let(binding) = &expression.value else {
+        assert_eq!(program.statements.len(), 2);
+        let statement = &program.statements[0];
+        assert_eq!(statement.span.start.col, 2);
+        assert_eq!(statement.span.end.col, 14);
+        let Stmt::Let(binding) = &statement.value else {
             panic!("expected let")
         };
         assert_eq!(binding.pattern.value, Pattern::Discard);
         assert_eq!(binding.pattern.span.start.col, 6);
         assert_eq!(binding.pattern.span.end.col, 7);
-        assert_eq!(
-            binding.value.value,
-            Expr::Actor(Actor {
-                methods: Vec::new()
-            })
-        );
+        assert!(matches!(binding.value.value, Expr::Actor(_)));
         assert_eq!(binding.value.span.start.col, 10);
         assert_eq!(binding.value.span.end.col, 12);
-        assert_eq!(
-            binding.body.value,
-            Expr::Actor(Actor {
-                methods: Vec::new()
-            })
-        );
-        assert_eq!(binding.body.span.start.col, 15);
-        assert_eq!(binding.body.span.end.col, 17);
     }
 
     #[test]
-    fn actor_methods_parse_with_nested_lets_and_locations() {
-        let (program, diagnostics) = parsed("{ def (x) => let y = x. y. def _ => {} }");
+    fn actor_methods_parse_statement_sequences_and_nested_actors() {
+        let (program, diagnostics) = parsed("{ def (x) => let y = x. y. def _ => {}. }.");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let Expr::Actor(actor) = &program.expressions[0].value else {
+        let Stmt::Expr(expression) = &program.statements[0].value else {
+            panic!()
+        };
+        let Expr::Actor(actor) = &expression.value else {
             panic!()
         };
         assert_eq!(actor.methods.len(), 2);
         assert_eq!(actor.methods[0].span.start.col, 3);
-        assert_eq!(actor.methods[0].span.end.col, 26);
+        assert_eq!(actor.methods[0].span.end.col, 27);
         assert_eq!(actor.methods[0].pattern.span.start.col, 7);
-        assert!(matches!(actor.methods[0].body.value, Expr::Let(_)));
+        assert_eq!(actor.methods[0].body.len(), 2);
+        assert!(matches!(actor.methods[0].body[0].value, Stmt::Let(_)));
+        assert!(matches!(actor.methods[0].body[1].value, Stmt::Expr(_)));
         assert_eq!(actor.methods[1].pattern.value, Pattern::Discard);
-        let (program, diagnostics) = parsed("{def _=>{def (x)=>x}}");
+        let (program, diagnostics) = parsed("{def _=>{def (x)=>x.}.}.");
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        assert_eq!(program.expressions.len(), 1);
+        assert_eq!(program.statements.len(), 1);
     }
 
     #[test]
@@ -501,9 +506,7 @@ mod tests {
         for source in [
             "{ def }",
             "{ def x {} }",
-            "{ def _ => }",
             "{ def x => x def y => y }",
-            "{ def x => x. }",
             "def x => x",
             "{ x => x }",
             "{ def def => {} }",
@@ -524,33 +527,40 @@ mod tests {
     #[test]
     fn variable_patterns_and_reserved_words() {
         for name in ["x", "value1", "_value", "let_value", "letter", "é"] {
-            let source = format!("let {name} = {{}}. {{}}");
+            let source = format!("let {name} = {{}}. {{}}.");
             let (program, diagnostics) = parsed(&source);
             assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
-            let Expr::Let(binding) = &program.expressions[0].value else {
+            let Stmt::Let(binding) = &program.statements[0].value else {
                 panic!()
             };
             assert_eq!(binding.pattern.value, Pattern::Variable(name.into()));
         }
-        for source in ["let let = {}. {}", "let 1x = {}. {}", "let x = {}. _"] {
+        for source in ["let let = {}. {}", "let 1x = {}. {}", "let x = _ ."] {
             let (program, diagnostics) = parsed(source);
-            assert!(program.expressions.is_empty(), "{source}");
+            assert!(program.statements.is_empty(), "{source}");
             assert!(!diagnostics.is_empty(), "{source}");
         }
-        let (program, diagnostics) = parsed("{}x");
+        let (program, diagnostics) = parsed("{}x.");
         assert!(diagnostics.is_empty());
-        assert!(matches!(program.expressions[0].value, Expr::Send { .. }));
+        assert!(
+            matches!(&program.statements[0].value, Stmt::Expr(expr) if matches!(expr.value, Expr::Send { .. }))
+        );
     }
 
     #[test]
-    fn lets_nest_in_value_and_body() {
-        let (program, diagnostics) = parsed("let _ = let _ = {} . {} . let _ = {} . {}");
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let Expr::Let(binding) = &program.expressions[0].value else {
-            panic!("expected let")
-        };
-        assert!(matches!(binding.value.value, Expr::Let(_)));
-        assert!(matches!(binding.body.value, Expr::Let(_)));
+    fn lets_are_not_expressions() {
+        for source in [
+            "let x = let y = {}. y.",
+            "(let x = {}. x).",
+            "a (let x = {}. x).",
+            "#foo: let x = {}. x.",
+        ] {
+            let (_, diagnostics) = parsed(source);
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+        let (program, diagnostics) = parsed("let x = {}. let y = x. y.");
+        assert!(diagnostics.is_empty());
+        assert_eq!(program.statements.len(), 3);
     }
 
     #[test]
@@ -561,10 +571,9 @@ mod tests {
             ("let _", "expected '='", 6),
             ("let _ = . {}", "expected expression", 9),
             ("let _ = {}", "expected '.'", 11),
-            ("let _ = {} .", "expected expression", 13),
         ] {
             let (program, diagnostics) = parsed(source);
-            assert!(program.expressions.is_empty(), "{source}");
+            assert!(program.statements.is_empty(), "{source}");
             assert_eq!(diagnostics[0].message, message, "{source}");
             assert_eq!(diagnostics[0].span.start.col, col, "{source}");
         }

@@ -47,15 +47,15 @@ fn debug_commands_read_stdin() {
     assert!(output.status.success());
     assert!(stdout(&output).contains("Whitespace"));
     assert!(stdout(&output).contains("Hash"));
-    let output = cli(&["parse", "-"], "{ def (x) => x }");
+    let output = cli(&["parse", "-"], "{ def (x) => x. }.");
     assert!(output.status.success());
     assert!(stdout(&output).contains("Program"));
     assert!(stdout(&output).contains("Method"));
     assert!(output.stderr.is_empty());
-    let output = cli(&["check", "-"], "{ def (x) => x } (#home)");
+    let output = cli(&["check", "-"], "{ def (x) => x. } (#home).");
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(stdout(&output), "#home\n");
-    let output = cli(&["check", "--typed-ast", "-"], "{}");
+    assert_eq!(stdout(&output), "ok\n");
+    let output = cli(&["check", "--typed-ast", "-"], "{}.");
     assert!(output.status.success());
     assert!(stdout(&output).contains("TypedExpression"));
     assert!(stdout(&output).contains("TypeEvidence"));
@@ -68,7 +68,7 @@ fn lexical_and_parse_errors_fail_without_type_checking() {
         assert_eq!(output.status.code(), Some(1));
         assert!(stderr(&output).contains("<stdin>:1:1: error: unexpected character"));
     }
-    for source in ["", "{} {}", "{ def }", "unknown {}"] {
+    for source in ["{}", "{} {}", "{ def }", "unknown {}"] {
         let output = cli(&["check", "-"], source);
         assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
@@ -79,35 +79,35 @@ fn lexical_and_parse_errors_fail_without_type_checking() {
 #[test]
 fn type_errors_include_locations_and_related_sites() {
     for (source, error, note) in [
-        ("x", "unbound variable", None),
+        ("x.", "unbound variable", None),
         (
-            "let {} x = #ready. x",
+            "let {} x = #ready. x.",
             "expected {}, found #ready",
             Some("type required here"),
         ),
         (
-            "{ def ready => {}. def ready => {} }",
+            "{ def ready => {}. def ready => {}. }.",
             "receiver input types are not disjoint",
             Some("overlapping receiver declared here"),
         ),
         (
-            "{ def put: x at: x => x }",
+            "{ def put: x at: x => x. }.",
             "duplicate pattern binding",
             Some("first binding declared here"),
         ),
         (
-            "#ready stop",
+            "#ready stop.",
             "message receiver is not an actor",
             Some("callee has type #ready"),
         ),
         (
-            "{} ready",
+            "{} ready.",
             "no receiver accepts",
             Some("message has type #ready"),
         ),
-        ("let T x = {}. x", "unknown type", None),
+        ("let T x = {}. x.", "unknown type", None),
         (
-            "let {} (#ready) = #ready. {}",
+            "let {} (#ready) = #ready. {}.",
             "annotation does not accept",
             None,
         ),
@@ -129,11 +129,11 @@ fn files_and_io_errors() {
     let directory = std::env::temp_dir().join(format!("aspenc-cli-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let file = directory.join("input.aspen");
-    std::fs::write(&file, "{}").unwrap();
+    std::fs::write(&file, "{}.").unwrap();
     let output = cli(&["check", file.to_str().unwrap()], "");
     assert!(output.status.success());
-    assert_eq!(stdout(&output), "{}\n");
-    std::fs::write(&file, "missing").unwrap();
+    assert_eq!(stdout(&output), "ok\n");
+    std::fs::write(&file, "missing.").unwrap();
     let output = cli(&["check", file.to_str().unwrap()], "");
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains(&format!("{}:1:1: error:", file.display())));
@@ -147,4 +147,37 @@ fn files_and_io_errors() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("error:"));
     std::fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn statement_sequences_and_no_reply_contracts() {
+    for source in [
+        "",
+        "let x = #ready. let x = x. x.",
+        "let service = {def put: value => let saved = value. saved. def ready =>}. service put: #home. service ready.",
+        "let {ready} service = {def ready => #done.}. service ready.",
+        "{def use: {ready -> {}} service => let result = service ready. result.}.",
+        "{def use: {ready} service => service ready. #after.}.",
+    ] {
+        let output = cli(&["check", "-"], source);
+        assert!(output.status.success(), "{source}: {}", stderr(&output));
+        assert_eq!(stdout(&output), "ok\n");
+    }
+    for source in [
+        "let {ready -> {}} service = {def ready => {}.}.",
+        "let {ready -> never} service = {def ready =>}.",
+        "let {ready -> any} service = {def ready => #done.}.",
+        "{def use: {ready} service => let result = service ready.}.",
+        "let result = {def ready =>} ready.",
+        "#payload: ({def ready =>} ready).",
+        "{def ready =>} ready again.",
+        "{def first => let local = {}. def second => local.}.",
+        "{def first => let local = {}.}. local.",
+        "let x = x.",
+    ] {
+        let output = cli(&["check", "-"], source);
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr(&output).contains("error:"));
+    }
 }
