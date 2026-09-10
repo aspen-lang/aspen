@@ -65,14 +65,18 @@ a value reply and is a different contract. Methods declare replies explicitly:
 ```text
 let service = {
   def ready -> #done =>
-    ^ (#done).
-    ^ (#done).
+    ^ #done.
+    ^ #done.
 }.
 service ready.
 ```
 
 Inside an annotated method, `^` names its reply-to actor, with type `{ (type) }`
-for the declared reply type. Sending to it is an ordinary send: it does not exit
+for the declared reply type. Direct `^` sends parse their message in ordinary
+expression mode: `^ x` replies with variable `x`, `^ #done` replies with the
+selector, and `^ service get` replies with the value of `service get`. Bare `^`
+still names the actor; aliases use ordinary actor-send syntax.
+Sending to it is an ordinary send: it does not exit
 the method. Zero or multiple replies are permitted; the annotation constrains
 reply messages, not their number or delivery.
 

@@ -237,7 +237,38 @@ impl<'a, 'd> Parser<'a, 'd> {
     }
 
     fn expr(&mut self, minimum: u8) -> Option<Loc<Expr>> {
+        let reply_send = self.peek() == Some(Token::Caret);
         let mut callee = self.primary()?;
+        // A direct caret send takes an ordinary expression, not a selector.
+        // Keep bare `^` available at expression boundaries for lexical aliases.
+        if reply_send
+            && matches!(
+                self.peek(),
+                Some(
+                    Token::Identifier(_)
+                        | Token::Hash
+                        | Token::OpenParen
+                        | Token::OpenCurly
+                        | Token::Caret
+                )
+            )
+        {
+            let message = self.expr(minimum)?;
+            let span = Span {
+                start: callee.span.start,
+                end: message.span.end,
+            };
+            return Some(Loc {
+                value: Expr::Send {
+                    callee: Box::new(callee),
+                    message: Box::new(message),
+                },
+                span,
+            });
+        }
+        if reply_send {
+            return Some(callee);
+        }
         loop {
             let start = self.span().start;
             let message = if self.keyword() && minimum <= 1 {
@@ -506,10 +537,16 @@ mod tests {
         for (source, expected) in [
             ("^", "^"),
             ("^ (#done)", "(^ #done)"),
-            ("^ done", "(^ #done)"),
+            ("^ done", "(^ done)"),
+            ("^ #done", "(^ #done)"),
+            ("^ x foo", "(^ (x #foo))"),
+            ("^ x + y", "(^ (x #+[y]))"),
+            ("^ x put: y", "(^ (x #put:[y]))"),
+            ("^ {}", "(^ {})"),
+            ("(^) done", "(^ #done)"),
             ("target (^)", "(target ^)"),
             ("#target: ^", "#target:[^]"),
-            ("^ + ^", "(^ #+[^])"),
+            ("^ #+ x", "(^ #+[x])"),
         ] {
             assert_eq!(shape(&expression(source)), expected);
         }
@@ -521,6 +558,8 @@ mod tests {
             "{def put: ^ =>}.",
             "#^.",
             "^: x.",
+            "^ + x.",
+            "^ put: x.",
         ] {
             let mut diagnostics = Vec::new();
             parse(Lexer::new(source), &mut diagnostics);

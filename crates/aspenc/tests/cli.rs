@@ -227,3 +227,20 @@ fn annotated_methods_send_zero_or_multiple_replies() {
         );
     }
 }
+
+#[test]
+fn caret_messages_use_ordinary_expression_mode() {
+    for source in [
+        "{def echo: any x -> any => ^ x.}.",
+        "{def ready -> #done => ^ #done.}.",
+        "{def ready -> {} => ^ {}.}.",
+        "{def ready -> #done => let service = {def get -> #done => ^ #done.}. ^ service get.}.",
+        "{def ready -> #done => let reply_to = ^. reply_to (#done).}.",
+    ] {
+        let output = cli(&["check", "-"], source);
+        assert!(output.status.success(), "{source}: {}", stderr(&output));
+    }
+    let output = cli(&["check", "-"], "{def ready -> #done => ^ done.}.");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("unbound variable"));
+}

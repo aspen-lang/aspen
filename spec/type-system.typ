@@ -366,6 +366,14 @@ environment, not inferred from body statements or from uses of `^`.
   : { idle -> #done }
 ```
 
+A direct `^` send is a parsing exception to selector mode: its message is an
+ordinary expression, respecting the enclosing expression's precedence boundary.
+Thus `^ x` sends variable `x`, `^ #done` sends an atomic selector, and
+`^ service get` sends the value of `service get`. Parentheses remain valid but
+are unnecessary for these messages. Bare `^` at an expression boundary still
+names the reply-to actor. Parenthesized `(^)` and lexical aliases use ordinary
+actor-send syntax, so `(^) done` sends `#done`.
+
 Sending to `^` is an ordinary message send, not a control-flow exit. The body
 continues after the send. Zero, one, or multiple replies are permitted. An
 incompatible reply message is rejected by the ordinary send typing rules.
