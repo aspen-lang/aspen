@@ -1,8 +1,9 @@
 use std::{
     fs,
     io::{self, Read, Write},
-    path::PathBuf,
-    process::ExitCode,
+    path::{Path, PathBuf},
+    process::{Command as ProcessCommand, ExitCode},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use aspenc::{
@@ -12,7 +13,7 @@ use aspenc::{
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(version, about = "Low-level debugging tools for the Aspen compiler")]
+#[command(version, about = "Aspen compiler and BEAM runner")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -26,6 +27,24 @@ enum Command {
     Parse(Input),
     /// Type-check and lower to the executable IR (no execution or code generation).
     Lower(Input),
+    /// Emit Erlang source for the checked program to stdout.
+    Emit(Input),
+    /// Compile the program and runtime with erlc.
+    Build {
+        #[command(flatten)]
+        input: Input,
+        /// Output directory for generated Erlang and BEAM files.
+        #[arg(long, default_value = "aspen-build")]
+        out_dir: PathBuf,
+    },
+    /// Run on BEAM; explicitly shut down all actors at top-level completion.
+    Run {
+        #[command(flatten)]
+        input: Input,
+        /// Hard runtime deadline in milliseconds; expiry is an error.
+        #[arg(long)]
+        timeout_ms: Option<u32>,
+    },
     /// Type-check a source file and report success.
     Check {
         #[command(flatten)]
@@ -48,6 +67,9 @@ impl Command {
             Self::Lex(input)
             | Self::Parse(input)
             | Self::Lower(input)
+            | Self::Emit(input)
+            | Self::Build { input, .. }
+            | Self::Run { input, .. }
             | Self::Check { input, .. } => input,
         }
     }
@@ -206,6 +228,58 @@ fn run(cli: Cli, stdout: &mut impl Write, stderr: &mut impl Write) -> io::Result
                 return Ok(false);
             }
         },
+        command @ (Command::Emit(_) | Command::Build { .. } | Command::Run { .. }) => {
+            let statements = match check_program(&program) {
+                Ok(statements) => statements,
+                Err(error) => {
+                    type_diagnostic(stderr, &file, &error)?;
+                    return Ok(false);
+                }
+            };
+            let generated = aspenc::ir::lower_program(&statements)
+                .map_err(|error| error.to_string())
+                .and_then(|ir| {
+                    aspenc::beam::emit_program(&ir, "aspen_program")
+                        .map_err(|error| error.to_string())
+                });
+            let generated = match generated {
+                Ok(generated) => generated,
+                Err(error) => {
+                    writeln!(stderr, "{file}: error: code generation failed: {error}")?;
+                    return Ok(false);
+                }
+            };
+            match command {
+                Command::Emit(_) => write!(stdout, "{generated}")?,
+                Command::Build { out_dir, .. } => {
+                    return build(&generated, &out_dir, stdout, stderr);
+                }
+                Command::Run { timeout_ms, .. } => {
+                    let directory = TemporaryDirectory::new()?;
+                    if !build(&generated, &directory.0, stdout, stderr)? {
+                        return Ok(false);
+                    }
+                    let timeout = timeout_ms.map_or_else(|| "infinity".into(), |n| n.to_string());
+                    let evaluation = format!(
+                        "case aspen_runtime:run(aspen_program, {timeout}) of ok -> halt(0); {{error, Reason}} -> io:format(standard_error, \"Aspen runtime error: ~p~n\", [Reason]), halt(1) end."
+                    );
+                    let output = ProcessCommand::new("erl")
+                        .arg("-noshell")
+                        .arg("-pa")
+                        .arg(&directory.0)
+                        .arg("-eval")
+                        .arg(evaluation)
+                        .output()
+                        .map_err(|error| {
+                            io::Error::new(error.kind(), format!("cannot run erl: {error}"))
+                        })?;
+                    stdout.write_all(&output.stdout)?;
+                    stderr.write_all(&output.stderr)?;
+                    return Ok(output.status.success());
+                }
+                _ => unreachable!(),
+            }
+        }
         Command::Check { typed_ast, .. } => match check_program(&program) {
             Ok(statements) => {
                 if typed_ast {
@@ -222,6 +296,56 @@ fn run(cli: Cli, stdout: &mut impl Write, stderr: &mut impl Write) -> io::Result
         Command::Lex(_) => unreachable!(),
     }
     Ok(true)
+}
+
+fn build(
+    source: &str,
+    directory: &Path,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> io::Result<bool> {
+    fs::create_dir_all(directory)?;
+    let directory = fs::canonicalize(directory)?;
+    let program = directory.join("aspen_program.erl");
+    let runtime = directory.join("aspen_runtime.erl");
+    fs::write(&program, source)?;
+    fs::write(&runtime, include_str!("../runtime/aspen_runtime.erl"))?;
+    let output = ProcessCommand::new("erlc")
+        .arg("-o")
+        .arg(&directory)
+        .arg(&runtime)
+        .arg(&program)
+        .output()
+        .map_err(|error| io::Error::new(error.kind(), format!("cannot run erlc: {error}")))?;
+    stdout.write_all(&output.stdout)?;
+    stderr.write_all(&output.stderr)?;
+    Ok(output.status.success())
+}
+
+struct TemporaryDirectory(PathBuf);
+
+impl TemporaryDirectory {
+    fn new() -> io::Result<Self> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "aspenc-run-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
+impl Drop for TemporaryDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
 }
 
 fn main() -> ExitCode {

@@ -5,17 +5,44 @@ The agreed BEAM runtime contract and compiler milestones are documented in
 
 Aspen is an experimental language with structural actors, selectors, message
 sends, and bounded method polymorphism. The compiler currently implements lexing,
-parsing, and static type checking; it does not execute programs or generate code.
+parsing, static type checking, Erlang source generation, and execution on BEAM.
 The current language fragment is specified in `spec/type-system.typ`.
 
 ## Development
 
-Use the Nix development shell for the compiler's Rust toolchain:
+Use the Nix development shell for the compiler's Rust and Erlang/OTP 28 toolchains:
 
 ```sh
 nix develop
 cargo test --workspace --locked
 ```
+
+## Build And Run
+
+```sh
+nix develop
+cargo run -p aspenc -- emit example.aspen > aspen_program.erl
+cargo run -p aspenc -- build example.aspen --out-dir aspen-build
+cargo run -p aspenc -- run example.aspen --timeout-ms 5000
+```
+
+`emit` prints one generated Erlang module, `aspen_program`, without invoking
+Erlang. `build` writes that module and `aspen_runtime.erl`, then invokes `erlc`
+to produce both BEAM modules in the output directory. Each build compiles one
+whole Aspen program; separate package compilation is not yet supported. `erlc`
+and `erl` must be on `PATH` for `build` and `run`, respectively. The development
+shell supplies Erlang/OTP 28, including the process aliases used for replies.
+
+`run` builds in a temporary directory and executes a fresh BEAM VM. It explicitly
+shuts down the session when the top-level statement sequence finishes; this is
+not a claim that all actors or delegated work have finished. To await delegated
+work, the program must use a replying send as its completion signal. The runtime
+also exposes a session API for Erlang hosts that need a longer-lived session.
+There is no automatic actor reclamation, supervision, request failure detection,
+or implicit request timeout. `--timeout-ms` sets an optional hard runtime deadline;
+expiration fails the run, never reports successful completion. Compilation and VM
+startup are outside this runtime deadline. Without the flag, a missing reply can
+wait indefinitely.
 
 ## Compiler Debugging CLI
 
@@ -44,8 +71,8 @@ stdout, and diagnostics go to stderr as `file:line:column: error: message`, with
 related source locations where available. Lines and Unicode scalar columns are
 one-based. The type checker currently stops at the first type error.
 
-Exit status is 0 for success, 1 for source or I/O errors, and 2 for invalid CLI
-arguments. AST and token dumps use Rust debug formatting and are intended for
+Exit status is 0 for success, 1 for source, I/O, build, or runtime errors
+(including runner timeout), and 2 for invalid CLI arguments. AST and token dumps use Rust debug formatting and are intended for
 inspection, not as a stable machine-readable format.
 
 ## Statements And Replies

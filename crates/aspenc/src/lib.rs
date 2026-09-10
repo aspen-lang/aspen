@@ -2,6 +2,7 @@
 
 use std::ops::{Deref, DerefMut};
 
+pub mod beam;
 pub mod dispatch;
 pub mod ir;
 pub mod types;

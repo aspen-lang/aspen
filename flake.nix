@@ -28,7 +28,7 @@
         in
         {
           default = pkgs.mkShell {
-            packages = [ pkgs.rust-bin.nightly.latest.default ];
+            packages = [ pkgs.rust-bin.nightly.latest.default pkgs.beam28Packages.erlang ];
           };
         });
     };

@@ -1,6 +1,6 @@
 # BEAM runtime direction and compiler foundations
 
-Status: agreed design; compiler foundations only. No BEAM execution is implemented.
+Status: initial Erlang-source backend and BEAM runtime implemented (OTP 28+).
 This document extends the static language specification with the intended runtime
 contract. It does not claim a mechanized type-safety or erasure proof.
 
@@ -145,7 +145,7 @@ are not runtime type checks or wrapper allocation. Runtime operations use lexica
 binding/value IDs, explicit capture lists and payload projection paths, full
 message sends with wait-first/no-reply modes, and erased receiver shapes. Source
 spans support diagnostics without making provenance pointers executable identity.
-A future emitter must omit proof metadata and empty receiver clauses.
+The Erlang emitter omits proof metadata and empty receiver clauses.
 
 ## Compiler milestones
 
@@ -164,3 +164,35 @@ will export type metadata and an ABI contract. Consumers can derive subsumption
 plans without concrete implementation knowledge. No package-local selector IDs,
 physical interface slots, or concrete-callee specialization may be required for
 correctness. Package metadata formats and nonidentity adapter linkage are deferred.
+
+## Initial runtime API and lifecycle
+
+The generated module exports `entry(Session)`. `aspen_runtime:start_session/0`
+creates a session owned by its calling process; `spawn_actor/2` registers every
+actor before returning its handle. Creation is serialized by the session so a
+concurrent shutdown cannot miss a newly created actor. `shutdown/1` kills all
+registered processes and waits for their termination. Owner death also shuts the
+session down. These lifecycle monitors do not resolve outstanding Aspen calls.
+
+`aspen_runtime:run(Module, Timeout)` explicitly chooses top-level completion as
+its shutdown boundary. It returns `ok`, `{error, timeout}`, or an entry-failure
+error. `infinity` disables the runner deadline. This is not a quiescence detector:
+applications needing delegated work to complete must await an acknowledgment in
+their top-level sequence, or embed the generated module and call `shutdown/1`
+after an application-specific completion signal. There is no source-level host
+I/O or shutdown primitive in this milestone.
+
+The internal transport ABI is `{aspen_request, Message, ReplyTarget}`, where a
+no-reply send uses `none`. Reply handles are `{aspen_reply, Alias}` and reply
+transport is `{aspen_response, Alias, Value}` delivered to that alias. `call/2`
+uses an explicit-un-alias process alias and selective receive; its cleanup first
+deactivates the alias, then drains only responses carrying that exact alias.
+No receiver monitor or request timer participates in this protocol. A failed
+receiver emits the normal BEAM error diagnostic; a caller still waits, since a
+delegate could hold its reply endpoint.
+
+The supported toolchain baseline is OTP 28 (tested on 28.2). Generated source is
+compiled by `erlc`, not translated directly to bytecode. Programs compile as one
+unit, with one generated module plus the runtime module; separate compilation,
+nonidentity adaptations, supervision, and automatic actor reclamation remain
+deferred.

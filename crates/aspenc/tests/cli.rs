@@ -262,3 +262,26 @@ fn lower_checks_before_emitting_ir() {
     assert!(!stdout(&output).contains("TypeEvidence"));
     assert!(!stdout(&output).contains("MethodEvidence"));
 }
+
+#[test]
+fn emit_checks_before_generating_erlang() {
+    let output = cli(
+        &["emit", "-"],
+        "let a = { def ready -> #ok => ^ #ok. }. a ready.",
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(stdout(&output).contains("-module('aspen_program')."));
+    assert!(stdout(&output).contains("aspen_runtime:call"));
+    for command in ["emit", "build", "run"] {
+        let output = cli(&[command, "-"], "missing.");
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(stderr(&output).contains("unbound variable"));
+    }
+    assert_eq!(
+        cli(&["run", "--timeout-ms", "invalid", "-"], "")
+            .status
+            .code(),
+        Some(2)
+    );
+}
