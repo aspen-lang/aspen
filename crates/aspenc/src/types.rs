@@ -18,16 +18,17 @@ pub struct Expectation {
 pub enum EvidenceOrigin {
     Expression,
     ReceiverPattern,
+    ReplyAnnotation,
 }
 
-/// A result's origin is explicit: expression and pattern trees need not align.
+/// A value's origin is explicit: expression and pattern trees need not align.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeEvidence {
     pub ty: Type,
     /// The originating source span; receiver values originate at their pattern.
     pub expression: Span,
     pub origin: EvidenceOrigin,
-    pub result_from: Option<Rc<TypeEvidence>>,
+    pub value_from: Option<Rc<TypeEvidence>>,
     /// Actor components live at the producer, including through lexical aliases.
     pub methods: Vec<MethodEvidence>,
     pub selector: Option<Selector<Rc<TypeEvidence>>>,
@@ -38,12 +39,12 @@ pub struct MethodEvidence {
     pub parameters: Vec<LocatedParameter>,
     pub span: Span,
     pub input: Expectation,
-    pub output: Option<Rc<TypeEvidence>>,
+    pub reply: Option<Rc<TypeEvidence>>,
 }
 
 impl TypeEvidence {
     pub fn producer(&self) -> &Self {
-        match &self.result_from {
+        match &self.value_from {
             Some(source) => source.producer(),
             None => self,
         }
@@ -77,6 +78,9 @@ pub enum TypedExprKind {
     Variable {
         binding: Binding,
     },
+    ReplyTo {
+        binding: Binding,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +89,7 @@ pub struct TypedMethod {
     pub span: Span,
     pub pattern: Span,
     pub expectation: Expectation,
+    pub reply: Option<Rc<TypeEvidence>>,
     pub bindings: Vec<Binding>,
     pub body: Vec<TypedStatement>,
 }
@@ -125,6 +130,9 @@ pub enum TypeError {
     NoReplyValue {
         span: Span,
     },
+    ReplyToOutsideAnnotatedMethod {
+        span: Span,
+    },
     UnboundVariable {
         name: String,
         span: Span,
@@ -163,6 +171,9 @@ impl fmt::Display for TypeError {
         match self {
             Self::Mismatch(mismatch) => mismatch.fmt(f),
             Self::NoReplyValue { .. } => f.write_str("a no-reply send cannot be used as a value"),
+            Self::ReplyToOutsideAnnotatedMethod { .. } => f.write_str(
+                "^ is reply-to actor is only available in a method with a reply annotation",
+            ),
             Self::UnknownType { name, .. } => write!(f, "unknown type {name:?}"),
             Self::InvalidAnnotation { message, .. } => f.write_str(message),
             Self::OverlappingReceivers { .. } => {
@@ -187,6 +198,7 @@ pub type TypeResult<T> = Result<T, TypeError>;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Environment {
     bindings: Vec<Binding>,
+    pub reply_to: Option<Binding>,
     pub types: TypeEnvironment,
 }
 
@@ -250,10 +262,10 @@ pub fn resolve_type(environment: &TypeEnvironment, syntax: &Loc<TypeExpr>) -> Ty
                     Ok(MethodType {
                         parameters: Vec::new(),
                         input: resolve_type(environment, &method.input)?,
-                        output: method
-                            .output
+                        reply: method
+                            .reply
                             .as_ref()
-                            .map(|output| resolve_type(environment, output))
+                            .map(|reply| resolve_type(environment, reply))
                             .transpose()?,
                     })
                 })
@@ -540,7 +552,7 @@ impl PatternPlan {
                                         .unwrap_or(Type::Never),
                                     expression: value.expression,
                                     origin: value.origin,
-                                    result_from: None,
+                                    value_from: None,
                                     methods: Vec::new(),
                                     selector: None,
                                 })
@@ -613,7 +625,7 @@ impl PatternPlan {
                     ty: Type::Variable(parameter.clone()),
                     expression: *origin,
                     origin: EvidenceOrigin::ReceiverPattern,
-                    result_from: None,
+                    value_from: None,
                     methods: Vec::new(),
                     selector: None,
                 }),
@@ -697,8 +709,8 @@ fn mismatch_path(actual: &Type, expected: &Type) -> Vec<String> {
                 path.push("input (contravariant)".into());
                 path.extend(mismatch_path(&required.input, &provided.input));
             } else {
-                path.push("output (covariant)".into());
-                if let (Some(actual), Some(expected)) = (&provided.output, &required.output) {
+                path.push("reply (covariant)".into());
+                if let (Some(actual), Some(expected)) = (&provided.reply, &required.reply) {
                     path.extend(mismatch_path(actual, expected));
                 } else {
                     path.push("reply mode".into());
@@ -758,7 +770,7 @@ fn substitute_evidence(
             ty: actual.ty.clone(),
             expression: evidence.expression,
             origin: evidence.origin,
-            result_from: Some(Rc::clone(actual)),
+            value_from: Some(Rc::clone(actual)),
             methods: Vec::new(),
             selector: None,
         });
@@ -767,8 +779,8 @@ fn substitute_evidence(
         ty: evidence.ty.substitute(instances),
         expression: evidence.expression,
         origin: evidence.origin,
-        result_from: evidence
-            .result_from
+        value_from: evidence
+            .value_from
             .as_ref()
             .map(|source| substitute_evidence(source, instances, arguments)),
         selector: evidence
@@ -785,10 +797,10 @@ fn substitute_evidence(
                     ty: method.input.ty.substitute(instances),
                     origin: method.input.origin,
                 },
-                output: method
-                    .output
+                reply: method
+                    .reply
                     .as_ref()
-                    .map(|output| substitute_evidence(output, instances, arguments)),
+                    .map(|reply| substitute_evidence(reply, instances, arguments)),
             })
             .collect(),
     })
@@ -820,7 +832,7 @@ fn type_send(
     while let Type::Variable(variable) = ty {
         ty = &variable.upper_bound;
     }
-    let (output, method) = if *ty == Type::Never || message.evidence.ty == Type::Never {
+    let (reply, method) = if *ty == Type::Never || message.evidence.ty == Type::Never {
         (Some(Type::Never), None)
     } else {
         let Type::Actor(actor) = ty else {
@@ -845,7 +857,7 @@ fn type_send(
         };
         (reply, Some(index))
     };
-    let result_from = method.and_then(|index| {
+    let value_from = method.and_then(|index| {
         let Type::Actor(actor) = ty else {
             return None;
         };
@@ -861,10 +873,10 @@ fn type_send(
             .producer()
             .methods
             .get(index)
-            .and_then(|method| method.output.as_ref())
-            .map(|output| substitute_evidence(output, &instances, &arguments))
+            .and_then(|method| method.reply.as_ref())
+            .map(|reply| substitute_evidence(reply, &instances, &arguments))
     });
-    let Some(output) = output else {
+    let Some(reply) = reply else {
         return Ok(TypedStatement::NoReplySend {
             span,
             callee,
@@ -874,10 +886,10 @@ fn type_send(
     };
     Ok(TypedStatement::Expr(TypedExpression {
         evidence: Rc::new(TypeEvidence {
-            ty: output,
+            ty: reply,
             expression: span,
             origin: EvidenceOrigin::Expression,
-            result_from,
+            value_from,
             methods: Vec::new(),
             selector: None,
         }),
@@ -894,7 +906,7 @@ fn type_expression(
     expression: &Loc<Expr>,
     expected: Option<&Expectation>,
 ) -> TypeResult<TypedExpression> {
-    let (ty, result_from, kind) = match &expression.value {
+    let (ty, value_from, kind) = match &expression.value {
         Expr::Selector(selector) => {
             let mut error = None;
             let typed = selector.map(|value| match synthesize_in(environment, value) {
@@ -936,7 +948,48 @@ fn type_expression(
                 let plan = prepare_pattern_in(&environment.types, &method.pattern)?;
                 validate_bindings(&plan)?;
                 let bindings = plan.receiver_bindings();
-                let scope = environment.extended(bindings.iter().cloned());
+                let reply = method
+                    .reply
+                    .as_ref()
+                    .map(|annotation| {
+                        Ok(Rc::new(TypeEvidence {
+                            ty: resolve_type(&environment.types, annotation)?,
+                            expression: annotation.span,
+                            origin: EvidenceOrigin::ReplyAnnotation,
+                            value_from: None,
+                            methods: Vec::new(),
+                            selector: None,
+                        }))
+                    })
+                    .transpose()?;
+                let mut scope = environment.extended(bindings.iter().cloned());
+                // Each method owns its implicit reply-to actor; lexical aliases still capture.
+                scope.reply_to = reply.as_ref().map(|annotation| Binding {
+                    name: "^".into(),
+                    pattern: annotation.expression,
+                    value: Rc::new(TypeEvidence {
+                        ty: Type::Actor(ActorType {
+                            methods: vec![MethodType {
+                                parameters: Vec::new(),
+                                input: annotation.ty.clone(),
+                                reply: None,
+                            }],
+                        }),
+                        expression: annotation.expression,
+                        origin: EvidenceOrigin::ReplyAnnotation,
+                        value_from: None,
+                        methods: vec![MethodEvidence {
+                            parameters: Vec::new(),
+                            span: method.span,
+                            input: Expectation {
+                                ty: annotation.ty.clone(),
+                                origin: annotation.expression,
+                            },
+                            reply: None,
+                        }],
+                        selector: None,
+                    }),
+                });
                 let body = check_statements_in(&scope, &method.body)?;
                 method_types.push(MethodType {
                     parameters: plan
@@ -945,13 +998,14 @@ fn type_expression(
                         .map(|p| p.parameter.clone())
                         .collect(),
                     input: plan.expectation.ty.clone(),
-                    output: None,
+                    reply: reply.as_ref().map(|annotation| annotation.ty.clone()),
                 });
                 methods.push(TypedMethod {
                     parameters: plan.parameters,
                     span: method.span,
                     pattern: method.pattern.span,
                     expectation: plan.expectation,
+                    reply,
                     bindings,
                     body,
                 });
@@ -975,6 +1029,22 @@ fn type_expression(
                 }),
                 None,
                 TypedExprKind::Actor { methods },
+            )
+        }
+        Expr::ReplyTo => {
+            let binding =
+                environment
+                    .reply_to
+                    .as_ref()
+                    .ok_or(TypeError::ReplyToOutsideAnnotatedMethod {
+                        span: expression.span,
+                    })?;
+            (
+                binding.value.ty.clone(),
+                Some(Rc::clone(&binding.value)),
+                TypedExprKind::ReplyTo {
+                    binding: binding.clone(),
+                },
             )
         }
         Expr::Variable(name) => {
@@ -1005,7 +1075,7 @@ fn type_expression(
                 parameters: method.parameters.clone(),
                 span: method.span,
                 input: method.expectation.clone(),
-                output: None,
+                reply: method.reply.clone(),
             })
             .collect(),
         _ => Vec::new(),
@@ -1019,7 +1089,7 @@ fn type_expression(
             ty,
             expression: expression.span,
             origin: EvidenceOrigin::Expression,
-            result_from,
+            value_from,
             methods,
             selector,
         }),
@@ -1103,10 +1173,10 @@ mod tests {
         Type::Actor(ActorType {
             methods: methods
                 .into_iter()
-                .map(|(input, output)| MethodType {
+                .map(|(input, reply)| MethodType {
                     parameters: Vec::new(),
                     input,
-                    output: Some(output),
+                    reply: Some(reply),
                 })
                 .collect(),
         })
@@ -1120,7 +1190,7 @@ mod tests {
                 ty,
                 expression: site(),
                 origin: EvidenceOrigin::ReceiverPattern,
-                result_from: None,
+                value_from: None,
                 methods: Vec::new(),
                 selector: None,
             }),
@@ -1285,7 +1355,7 @@ mod tests {
             *actor.methods[0].parameters[0].variable.upper_bound,
             *environment.types.lookup("T").unwrap()
         );
-        assert_eq!(actor.methods[0].output, None);
+        assert_eq!(actor.methods[0].reply, None);
     }
 
     #[test]
@@ -1336,6 +1406,105 @@ mod tests {
     }
 
     #[test]
+    fn annotated_methods_declare_replies_without_counting_sends() {
+        for body in ["", "{}. ", "^ (#ok). ", "^ (#ok). ^ (#ok). "] {
+            let source = format!("let a = {{ def go -> any => {body}}}. let reply = a go. reply.");
+            let typed = statements(&source).unwrap();
+            assert_eq!(value(&typed[2]).evidence.ty, Type::Any);
+            let evidence = value(&typed[0]).evidence.methods[0].reply.as_ref().unwrap();
+            assert_eq!(evidence.ty, Type::Any);
+            assert_eq!(evidence.origin, EvidenceOrigin::ReplyAnnotation);
+            assert_eq!(
+                evidence.expression.start.col as usize,
+                source.find("any").unwrap() + 1
+            );
+            assert_eq!(value(&typed[2]).evidence.producer(), evidence.as_ref());
+        }
+        assert!(statements("{ def go -> never => }. ").is_ok());
+        assert!(matches!(
+            statements("{ def go -> {} => ^ (#bad). }."),
+            Err(TypeError::NoReceiver { .. })
+        ));
+        assert!(matches!(
+            statements("{ def go -> any => let x = ^ (#ok). }."),
+            Err(TypeError::NoReplyValue { .. })
+        ));
+        assert!(matches!(
+            statements("{ def go -> Missing => }."),
+            Err(TypeError::UnknownType { .. })
+        ));
+    }
+
+    #[test]
+    fn reply_to_is_method_local_but_aliases_are_lexical() {
+        for source in [
+            "^.",
+            "{ def go => ^. }.",
+            "{ def go -> any => { def inner => ^ (#ok). }. }.",
+            "{ def go -> any => ^ (#ok). def other => ^ (#ok). }.",
+        ] {
+            let TypeError::ReplyToOutsideAnnotatedMethod { span } = statements(source).unwrap_err()
+            else {
+                panic!("{source}")
+            };
+            assert_eq!(
+                &source[span.start.col as usize - 1..span.end.col as usize - 1],
+                "^"
+            );
+        }
+        assert!(
+            statements("{ def go -> {} => { def inner -> #ok => ^ (#ok). }. ^ ({}). }.").is_ok()
+        );
+        assert!(matches!(
+            statements("{ def go -> any => { def inner -> {} => ^ (#bad). }. }."),
+            Err(TypeError::NoReceiver { .. })
+        ));
+        let typed =
+            statements("{ def go -> #ok => let reply_to = ^. { def inner => reply_to (#ok). }. }.")
+                .unwrap();
+        let TypedExprKind::Actor { methods } = &value(&typed[0]).kind else {
+            panic!()
+        };
+        assert!(matches!(
+            value(&methods[0].body[0]).kind,
+            TypedExprKind::ReplyTo { .. }
+        ));
+        assert_eq!(value(&methods[0].body[0]).evidence.ty.to_string(), "{ ok }");
+        assert!(
+            statements("{ def go -> any => let { (any) } reply_to = ^. reply_to (#ok). }.").is_ok()
+        );
+    }
+
+    #[test]
+    fn replies_keep_annotations_and_obey_receiver_bounds() {
+        assert!(statements("let { go -> any } a = { def go -> any => ^ ({}). }. a go.").is_ok());
+        assert!(matches!(
+            statements("let {} x = { def go -> any => ^ ({}). } go."),
+            Err(TypeError::Mismatch(_))
+        ));
+        assert!(matches!(
+            statements("let { go } a = { def go -> {} => }."),
+            Err(TypeError::Mismatch(_))
+        ));
+        assert!(statements("let x = { def ({} x) -> {} => ^ (x). } ({}). x.").is_ok());
+        assert!(matches!(
+            statements("{ def (x) -> {} => ^ (x). }."),
+            Err(TypeError::NoReceiver { .. })
+        ));
+        let parameter = TypeVariable::fresh(Type::UNIT);
+        let mut environment = Environment::default();
+        environment.types = environment
+            .types
+            .extended("T", Type::Variable(parameter.clone()));
+        let typed =
+            synthesize_in(&environment, &expression("{ def (T x) -> T => ^ (x). }")).unwrap();
+        let Type::Actor(actor) = typed.evidence.ty.clone() else {
+            panic!()
+        };
+        assert_eq!(actor.methods[0].reply, Some(Type::Variable(parameter)));
+    }
+
+    #[test]
     fn receiver_bodies_are_sequences_not_implicit_replies() {
         for source in [
             "{ def go => }",
@@ -1344,13 +1513,13 @@ mod tests {
         ] {
             let typed = synthesize(&expression(source)).unwrap();
             assert_eq!(typed.evidence.ty.to_string(), "{ go }");
-            assert!(typed.evidence.methods[0].output.is_none());
+            assert!(typed.evidence.methods[0].reply.is_none());
         }
         assert!(statements("let { go } a = { def go => {}. }. a go.").is_ok());
-        for output in ["{}", "any", "never"] {
+        for reply in ["{}", "any", "never"] {
             assert!(matches!(
                 statements(&format!(
-                    "let {{ go -> {output} }} a = {{ def go => {{}}. }}."
+                    "let {{ go -> {reply} }} a = {{ def go => {{}}. }}."
                 )),
                 Err(TypeError::Mismatch(_))
             ));
@@ -1429,7 +1598,7 @@ mod tests {
     }
 
     #[test]
-    fn supplied_reply_signatures_still_instantiate_generic_results() {
+    fn supplied_reply_signatures_still_instantiate_generic_replies() {
         let parameter = TypeParameter::new(Type::Any);
         let variable = Type::Variable(parameter.variable.clone());
         let environment = Environment::default().extended([bound(
@@ -1441,7 +1610,7 @@ mod tests {
                         "value".into(),
                         variable.clone(),
                     )])),
-                    output: Some(variable),
+                    reply: Some(variable),
                 }],
             }),
         )]);
@@ -1468,7 +1637,7 @@ mod tests {
                         "value".into(),
                         variable.clone(),
                     )])),
-                    output: Some(variable.clone()),
+                    reply: Some(variable.clone()),
                 }],
             }),
         );
@@ -1484,7 +1653,7 @@ mod tests {
                     ty: variable.clone(),
                     origin: site(),
                 },
-                output: Some(bound("result", variable).value),
+                reply: Some(bound("result", variable).value),
             });
         let environment = Environment::default().extended([binding]);
         let source = "let alias = identity. let x = alias value: #hello. x.";
@@ -1513,7 +1682,7 @@ mod tests {
         };
         assert!(error.comparison_path.contains(&"reply mode".into()));
         assert_eq!(error.expected.origin, site());
-        assert!(error.actual.producer().methods[0].output.is_none());
+        assert!(error.actual.producer().methods[0].reply.is_none());
         let TypeError::Mismatch(error) = check(&expression("{}"), &expected).unwrap_err() else {
             panic!()
         };

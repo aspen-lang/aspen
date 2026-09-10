@@ -65,7 +65,8 @@ fn diagnostic(
 fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::Result<()> {
     let span = match error {
         TypeError::Mismatch(mismatch) => mismatch.actual.expression,
-        TypeError::NoReplyValue { span }
+        TypeError::ReplyToOutsideAnnotatedMethod { span }
+        | TypeError::NoReplyValue { span }
         | TypeError::UnboundVariable { span, .. }
         | TypeError::UnknownType { span, .. }
         | TypeError::InvalidAnnotation { span, .. }

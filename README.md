@@ -60,7 +60,25 @@ statements discard their values; even a method's final expression does not
 implicitly send a reply. Method-local bindings do not escape their method.
 
 A signature such as `{put: any. ready}` has no replies. `{ready -> {}}` promises
-a value reply and is a different contract. Actor expressions currently infer
-only no-reply signatures, pending an explicit reply statement. A no-reply send
-can stand alone as a statement, but cannot initialize a binding or supply an
-expression value.
+a value reply and is a different contract. Methods declare replies explicitly:
+
+```text
+let service = {
+  def ready -> #done =>
+    ^ (#done).
+    ^ (#done).
+}.
+service ready.
+```
+
+Inside an annotated method, `^` names its reply-to actor, with type `{ (type) }`
+for the declared reply type. Sending to it is an ordinary send: it does not exit
+the method. Zero or multiple replies are permitted; the annotation constrains
+reply messages, not their number or delivery.
+
+An unannotated method has no reply and cannot use `^`. Each nested method gets
+its own reply-to actor only if annotated; to capture an enclosing reply-to actor,
+first bind an explicit alias with `let reply_to = ^.`.
+
+A no-reply send can stand alone as a statement, but cannot initialize a binding
+or supply an expression value. This includes sends to `^` itself.

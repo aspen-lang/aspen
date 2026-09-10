@@ -20,7 +20,7 @@ implementation or an evaluation protocol.
 ```text
 program   ::= statement*
 actor     ::= "{" method* "}"
-method    ::= "def" receiver-pattern "=>" statement*
+method    ::= "def" receiver-pattern ("->" type)? "=>" statement*
 statement ::= "let" pattern "=" expression "."
             | expression "."
 ```
@@ -69,7 +69,7 @@ introduces no variable; `def (x) => x.` binds a whole incoming value. Likewise,
 `let x = ...` binds a variable, while `let #x = ...` requires an atomic selector.
 Use `def (_) => ...` for an ordinary discard receiver.
 
-Actor type inputs start in selector mode and outputs in ordinary mode. Types
+Actor type inputs start in selector mode and reply types in ordinary mode. Types
 outside actor inputs start in ordinary mode. The `def` keyword is not part of
 type notation:
 
@@ -83,9 +83,10 @@ type notation:
 Omitting `-> type` denotes no reply, distinct from replying with any value,
 including the empty actor value (whose type is the current unit type `{}`).
 No reply is a signature property, not a value type: it is neither
-`never` nor `{}`. Explicit output signatures remain valid type syntax, but actor
-expressions currently only implement no-reply methods; there is no reply
-statement yet.
+`never` nor `{}`. An actor method declares its reply type with
+`def pattern -> type => statements`; an unannotated method has no reply.
+Annotations constrain the type of reply messages, not whether or how many
+replies are sent.
 
 The parameter notation describes semantic signatures. Receiver variables
 introduce those parameters implicitly; source patterns need no annotations.
@@ -124,7 +125,7 @@ Types are semantic values, independent of source locations:
 
 - `never` is bottom, representing absence of a normally produced value.
 - `any` is top, accepting every type.
-- Actor types contain finite collections of quantified input/output signatures.
+- Actor types contain finite collections of quantified input/reply signatures.
   The empty actor type is `{}`.
 - Selector types contain an atomic tag, an operator tag and payload type, or an
   ordered nonempty sequence of keyword labels and payload types.
@@ -167,8 +168,8 @@ reply-compatible(no reply, reply O) = false
 reply-compatible(reply O, no reply) = false
 ```
 
-Inputs are contravariant and value outputs covariant. No-reply outputs match
-only no-reply outputs; neither reply mode substitutes for the other. Extra
+Inputs are contravariant and reply types covariant. No-reply signatures match
+only no-reply signatures; neither reply mode substitutes for the other. Extra
 methods are permitted;
 an empty actor does not satisfy a nonempty actor requirement. Comparisons
 recurse through selector payloads and actor signatures. Quantified signature
@@ -190,17 +191,18 @@ Actual(T, evidence)
 ```
 
 The expected origin explains why a type is required, such as a receiver or let
-pattern and its recursive components. Actual evidence explains where a result
+pattern and its recursive components. Actual evidence explains where a value's
 type arose, which need not be the whole expression's span. A binding keeps the
 checked actual type and evidence separately from its declaration origin.
 
 An actor's evidence stores method input expectations and explicit reply mode.
-No-reply methods have no output value evidence.
+No-reply methods have no reply evidence. Annotated methods retain their declared
+reply type and annotation origin, independently of their body statements.
 Receiver input evidence is a pattern origin, not a fictitious expression.
 Selector evidence stores corresponding payload evidence recursively. References
 retain their use site and link to binding evidence; aliases must not discard
 that component structure. A let statement preserves its initializer evidence in
-its exported bindings, but has no result value. An empty actor's
+its exported bindings, but has no value. An empty actor's
 evidence identifies that actor expression.
 
 = Typing Interface
@@ -218,7 +220,7 @@ then checks subtyping, with no conversion or implicit widening. For example,
 checking `{}` against `any` still returns `{}` and its evidence.
 
 Statement checking produces a typed statement and exports any new bindings to
-subsequent statements in the same sequence. A sequence has no result type and
+subsequent statements in the same sequence. A sequence has no value type and
 does not implicitly reply with its final expression's value. Public convenience
 operations start with an empty environment; environment-aware operations can
 accept caller-supplied bindings.
@@ -280,8 +282,8 @@ parameter to its bound or quantifying it again.
 
 A receiver has no particular initializer. Its variables remain rigid while its
 body is checked. All parameters collected from the complete recursive pattern
-are universally quantified together over the method input and output, including
-nested outputs. There are no separate payload-level quantifiers.
+are universally quantified together over the method input and reply, including
+nested replies. There are no separate payload-level quantifiers.
 
 ```text
 { def (x) => x. }
@@ -307,8 +309,8 @@ signature.
 The expression `{}` synthesizes the empty structural actor type with evidence
 at those braces. Braces produce an actor, not a type annotation or a declaration
 block. For a nonempty actor, prepare each receiver, type its body under its rigid
-bindings, infer no reply regardless of its final statement, collect the
-quantified signature and method evidence, and validate
+bindings, resolve its declared reply type (or infer no reply if unannotated),
+collect the quantified signature and method evidence, and validate
 pairwise input disjointness before accepting the actor. Preserve source order
 for evidence and representation, not to give earlier methods priority.
 
@@ -348,11 +350,45 @@ An expression statement checks its expression and discards any value. A send
 to a no-reply method is permitted as an expression statement, but cannot be
 used where a value is required: in an initializer, selector payload, or as
 another send's callee or message. No-reply sends are not assigned `never` or a
-unit type. No statement currently sends a reply.
+unit type.
+
+== Reply-To Actor
+
+Within a method declaring reply type `T`, the special expression `^` refers to
+that invocation's reply-to actor and has type `{ (T) }`. Its sole signature
+accepts `T` and does not reply. Reply type annotations are resolved in the type
+environment, not inferred from body statements or from uses of `^`.
+
+```text
+{ def ready -> #done => ^ (#done). ^ (#done). }
+  : { ready -> #done }
+{ def idle -> #done => }
+  : { idle -> #done }
+```
+
+Sending to `^` is an ordinary message send, not a control-flow exit. The body
+continues after the send. Zero, one, or multiple replies are permitted. An
+incompatible reply message is rejected by the ordinary send typing rules.
+
+Each method establishes a fresh special reply-to scope. `^` is unavailable at
+program level and in unannotated methods, even when an enclosing method is
+annotated. Nested annotated methods use their own declared reply-to actor.
+Capturing an outer reply-to actor is explicit:
+
+```text
+{ def ready -> #done =>
+    let reply_to = ^.
+    { def later => reply_to (#done). }.
+}
+```
+
+`^` is an expression, not a bindable identifier or a pattern. An alias remains
+an ordinary actor value and follows normal lexical scoping. These rules specify
+static typing only; annotations do not guarantee reply delivery or cardinality.
 
 == Sends
 
-Synthesize both callee and message without using an expected result to infer
+Synthesize both callee and message without using an expected reply type to infer
 method parameters. Expose a callee variable's upper bound when looking for its
 actor capabilities. If the callee or message is `never`, the send synthesizes
 `never`; both operands are still statically typed.
@@ -362,7 +398,7 @@ each signature, infer parameter instances recursively from the message type
 and the input template, check upper bounds, and test that the message is a
 subtype of the instantiated input. A signature passing these tests is applicable.
 Disjoint receiver domains ensure at most one applicable receiver for an inhabited
-message. A value-producing send returns that receiver's instantiated output type; a
+message. A replying send has that receiver's instantiated reply type; a
 no-reply send produces no value and is valid only as a statement. Both retain
 the callee, message, and selected method in its typed representation.
 
@@ -399,7 +435,7 @@ The conservative disjointness proof uses these rules:
 
 Failure to prove disjointness rejects the actor with both receiver origins.
 This is stricter than merely rejecting identical signatures: neither ordering,
-shadowing, nor result-type differences resolve overlapping domains.
+shadowing, nor reply-type differences resolve overlapping domains.
 
 ```text
 { def ready => {}. def stop => {}. }          // accepted
@@ -421,7 +457,7 @@ selector structure recursively exposes those leaves. A captured message variable
 can expose selector structure through its upper bound. Check the inferred
 instances against substituted bounds, substitute into the entire input, and
 finally verify message subtyping. Parameters not exposed by a bottom input may
-fall back to their bounds. Substitute successful instances throughout the output,
+fall back to their bounds. Substitute successful instances throughout the reply,
 including selector payloads and nested actor signatures.
 
 For actor subtyping, every expected signature must have a compatible provided
@@ -449,13 +485,13 @@ selector input structure is not implied.
 
 A failed subtype or pattern check retains the expected semantic type and origin,
 the actual semantic type and evidence, and the structural disagreement path.
-Paths may descend through selector payloads and actor method inputs and outputs.
+Paths may descend through selector payloads and actor method inputs and replies.
 A shape mismatch can stop at the selector itself; a missing required method can
 remain a root actor mismatch. Available child origins and actual component
 evidence remain attached rather than being replaced by coarse enclosing spans.
 
 For a failed actor comparison, record the first unsatisfied expected method and,
-when available, a representative actual candidate and its failing input or output
+when available, a representative actual candidate and its failing input or reply
 path. Subtyping first checks that no actual method satisfies the requirement;
 a representative candidate is diagnostic context, not a dispatch selection.
 For quantified comparisons, a path may stop at the signature while retaining

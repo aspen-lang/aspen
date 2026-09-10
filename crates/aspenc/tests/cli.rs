@@ -181,3 +181,49 @@ fn statement_sequences_and_no_reply_contracts() {
         assert!(stderr(&output).contains("error:"));
     }
 }
+
+#[test]
+fn annotated_methods_send_zero_or_multiple_replies() {
+    for source in [
+        "let service = {def ready -> #done => ^ (#done). ^ (#done).}. let reply = service ready. reply.",
+        "let {ready -> {}} service = {def ready -> {} =>}. service ready.",
+        "{def ready -> #done => ^ (#done). let after = #done. ^ (after).}.",
+        "{def outer -> #outer => {def inner -> #inner => ^ (#inner).}. ^ (#outer).}.",
+        "{def outer -> #done => let reply_to = ^. {def later => reply_to (#done).}.}.",
+    ] {
+        let output = cli(&["check", "-"], source);
+        assert!(output.status.success(), "{source}: {}", stderr(&output));
+        assert_eq!(stdout(&output), "ok\n");
+    }
+    for (source, expected) in [
+        ("^ (#done).", "reply-to"),
+        ("{def ready => ^ (#done).}.", "reply-to"),
+        (
+            "{def outer -> #done => {def inner => ^ (#done).}.}.",
+            "reply-to",
+        ),
+        (
+            "{def ready -> #done => ^ (#wrong).}.",
+            "no receiver accepts",
+        ),
+        ("{def ready -> Missing =>}.", "unknown type"),
+        (
+            "{def ready -> #done => let x = ^ (#done).}.",
+            "no-reply send",
+        ),
+        (
+            "{def outer -> #outer => {def inner -> #inner => ^ (#outer).}.}.",
+            "no receiver accepts",
+        ),
+        ("let {ready} service = {def ready -> #done =>}.", "expected"),
+    ] {
+        let output = cli(&["check", "-"], source);
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            stderr(&output).contains(expected),
+            "{source}: {}",
+            stderr(&output)
+        );
+    }
+}

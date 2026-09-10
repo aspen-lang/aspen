@@ -53,6 +53,7 @@ pub enum Token<'a> {
     FatArrow,
     Arrow,
     Hash,
+    Caret,
     Colon,
     OpenParen,
     CloseParen,
@@ -172,6 +173,7 @@ impl<'a> Iterator for Lexer<'a> {
                 self.advance(ch);
                 match ch {
                     '#' => Token::Hash,
+                    '^' => Token::Caret,
                     ':' => Token::Colon,
                     '(' => Token::OpenParen,
                     ')' => Token::CloseParen,
@@ -260,6 +262,8 @@ pub struct Actor {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Method {
     pub pattern: Loc<Pattern>,
+    /// The type accepted by the reply target; omission means no reply target.
+    pub reply: Option<Loc<TypeExpr>>,
     /// Ends before the next `def` or `}`; the method span ends at `=>` if empty.
     pub body: Vec<Loc<Stmt>>,
 }
@@ -277,7 +281,7 @@ pub enum TypeExpr {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeMethod {
     pub input: Loc<TypeExpr>,
-    pub output: Option<Loc<TypeExpr>>,
+    pub reply: Option<Loc<TypeExpr>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -306,6 +310,8 @@ pub enum Stmt {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Expr {
+    /// The lexically enclosing method's reply target (`^`).
+    ReplyTo,
     Selector(Selector<Loc<Expr>>),
     Send {
         callee: Box<Loc<Expr>>,

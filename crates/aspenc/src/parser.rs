@@ -187,15 +187,29 @@ impl<'a, 'd> Parser<'a, 'd> {
             while self.peek() == Some(Token::Def) {
                 let start = self.bump().span.start;
                 let pattern = self.pattern(true)?;
+                let reply = if self.eat(Token::Arrow) {
+                    Some(self.ty(false)?)
+                } else {
+                    None
+                };
                 self.expect(Token::FatArrow, "expected '=>'")?;
                 let mut body = Vec::new();
                 while !matches!(self.peek(), None | Some(Token::Def | Token::CloseCurly)) {
                     body.push(self.statement()?);
                 }
-                methods.push(self.located(start, Method { pattern, body }));
+                methods.push(self.located(
+                    start,
+                    Method {
+                        pattern,
+                        reply,
+                        body,
+                    },
+                ));
             }
             self.expect(Token::CloseCurly, "expected '}'")?;
             Expr::Actor(Actor { methods })
+        } else if self.eat(Token::Caret) {
+            Expr::ReplyTo
         } else if let Some(Token::Identifier(name)) = self.peek() {
             if self.keyword() {
                 return self.error("expected expression");
@@ -278,12 +292,12 @@ impl<'a, 'd> Parser<'a, 'd> {
                 loop {
                     let method_start = self.span().start;
                     let input = self.ty(true)?;
-                    let output = if self.eat(Token::Arrow) {
+                    let reply = if self.eat(Token::Arrow) {
                         Some(self.ty(false)?)
                     } else {
                         None
                     };
-                    methods.push(self.located(method_start, TypeMethod { input, output }));
+                    methods.push(self.located(method_start, TypeMethod { input, reply }));
                     if !self.eat(Token::Dot) {
                         break;
                     }
@@ -378,6 +392,7 @@ mod tests {
 
     fn shape(expr: &Expr) -> String {
         match expr {
+            Expr::ReplyTo => "^".into(),
             Expr::Variable(name) => name.clone(),
             Expr::Actor(_) => "{}".into(),
             Expr::Send { callee, message } => format!("({} {})", shape(callee), shape(message)),
@@ -421,6 +436,96 @@ mod tests {
         assert_eq!(pattern.value, Pattern::Variable("abc".into()));
         assert_eq!(pattern.span.start.col, 9);
         assert_eq!(pattern.span.end.col, 12);
+    }
+
+    #[test]
+    fn methods_preserve_explicit_reply_types_and_locations() {
+        let Expr::Actor(actor) =
+            expression("{def done -> #done => ^ (#done). def stop -> never => def notify =>}")
+                .value
+        else {
+            panic!()
+        };
+        let method = &actor.methods[0];
+        assert_eq!(method.span.start.col, 2);
+        assert_eq!(method.span.end.col, 33);
+        assert_eq!(method.pattern.span.start.col, 6);
+        assert_eq!(method.pattern.span.end.col, 10);
+        let reply = method.reply.as_ref().unwrap();
+        assert_eq!(
+            reply.value,
+            TypeExpr::Selector(Selector::Atomic("done".into()))
+        );
+        assert_eq!(reply.span.start.col, 14);
+        assert_eq!(reply.span.end.col, 19);
+        let Stmt::Expr(send) = &method.body[0].value else {
+            panic!()
+        };
+        assert_eq!(shape(send), "(^ #done)");
+        let Expr::Send { callee, .. } = &send.value else {
+            panic!()
+        };
+        assert_eq!(callee.value, Expr::ReplyTo);
+        assert_eq!(callee.span.start.col, 23);
+        assert_eq!(callee.span.end.col, 24);
+        assert_eq!(
+            actor.methods[1].reply.as_ref().unwrap().value,
+            TypeExpr::Never
+        );
+        assert!(actor.methods[1].body.is_empty());
+        assert_eq!(actor.methods[1].span.end.col, 54);
+        assert!(actor.methods[2].reply.is_none());
+        for source in [
+            "{def put: any x -> any => ^ (x).}",
+            "{def (any x) -> (#ok: any) =>}",
+            "{def + x -> {done -> #ok} =>}",
+            "{def _ -> Reply =>}",
+        ] {
+            expression(source);
+        }
+    }
+
+    #[test]
+    fn malformed_reply_annotations_are_rejected() {
+        for (source, expected) in [
+            ("{def done -> =>}.", "expected type"),
+            ("{def done ->", "expected type"),
+            ("{def done -> ^ =>}.", "expected type"),
+            ("{def done -> # =>}.", "expected selector"),
+            ("{def done -> any}.", "expected '=>'"),
+            ("{def done -> any -> any =>}.", "expected '=>'"),
+        ] {
+            let mut diagnostics = Vec::new();
+            parse(Lexer::new(source), &mut diagnostics);
+            assert_eq!(diagnostics[0].message, expected, "{source}");
+        }
+    }
+
+    #[test]
+    fn reply_target_is_an_ordinary_expression_but_not_a_name_or_pattern() {
+        for (source, expected) in [
+            ("^", "^"),
+            ("^ (#done)", "(^ #done)"),
+            ("^ done", "(^ #done)"),
+            ("target (^)", "(target ^)"),
+            ("#target: ^", "#target:[^]"),
+            ("^ + ^", "(^ #+[^])"),
+        ] {
+            assert_eq!(shape(&expression(source)), expected);
+        }
+        for source in [
+            "let ^ = {}.",
+            "let any ^ = {}.",
+            "{def ^ =>}.",
+            "{def (^) =>}.",
+            "{def put: ^ =>}.",
+            "#^.",
+            "^: x.",
+        ] {
+            let mut diagnostics = Vec::new();
+            parse(Lexer::new(source), &mut diagnostics);
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
     }
 
     #[test]
@@ -484,7 +589,7 @@ mod tests {
         assert_eq!(methods[0].span.start.col, 2);
         assert_eq!(methods[0].span.end.col, 13);
         assert_eq!(
-            methods[0].output.as_ref().unwrap().value,
+            methods[0].reply.as_ref().unwrap().value,
             TypeExpr::Variable("U".into())
         );
         let TypeExpr::Selector(Selector::Keyword(parts)) = &methods[0].input.value else {
@@ -510,11 +615,11 @@ mod tests {
             panic!()
         };
         assert_eq!(methods.len(), 3);
-        assert!(methods[0].output.is_none());
+        assert!(methods[0].reply.is_none());
         assert_eq!(methods[0].span.start.col, 2);
         assert_eq!(methods[0].span.end.col, 13);
-        assert_eq!(methods[1].output.as_ref().unwrap().value, TypeExpr::Never);
-        assert_eq!(methods[2].output.as_ref().unwrap().value, TypeExpr::Any);
+        assert_eq!(methods[1].reply.as_ref().unwrap().value, TypeExpr::Never);
+        assert_eq!(methods[2].reply.as_ref().unwrap().value, TypeExpr::Any);
         for source in ["{foo ->}", "{foo.}", "{foo bar}"] {
             let mut diagnostics = Vec::new();
             assert!(
@@ -677,7 +782,7 @@ mod tests {
 
     #[test]
     fn selector_punctuation_lexes_without_splitting_arrows() {
-        let mut lexer = Lexer::new("#:()+-*/->=>");
+        let mut lexer = Lexer::new("#:()+-*/->=>^");
         let tokens = lexer.by_ref().map(|t| t.value).collect::<Vec<_>>();
         assert_eq!(
             tokens,
@@ -691,7 +796,8 @@ mod tests {
                 Token::Star,
                 Token::Slash,
                 Token::Arrow,
-                Token::FatArrow
+                Token::FatArrow,
+                Token::Caret
             ]
         );
         assert!(lexer.diagnostics.is_empty());
