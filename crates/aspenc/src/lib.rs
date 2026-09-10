@@ -2,6 +2,8 @@
 
 use std::ops::{Deref, DerefMut};
 
+pub mod dispatch;
+pub mod ir;
 pub mod types;
 
 /// One-based line and Unicode scalar column.

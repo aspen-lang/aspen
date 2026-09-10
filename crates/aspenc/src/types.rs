@@ -60,6 +60,7 @@ pub struct Binding {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedExpression {
+    pub adaptations: Vec<AdaptationPlan>,
     pub evidence: Rc<TypeEvidence>,
     pub kind: TypedExprKind,
 }
@@ -71,6 +72,8 @@ pub enum TypedExprKind {
         callee: Box<TypedExpression>,
         message: Box<TypedExpression>,
         method: Option<usize>,
+        adaptation: Option<AdaptationPlan>,
+        bound_adaptations: Vec<BoundAdaptation>,
     },
     Actor {
         methods: Vec<TypedMethod>,
@@ -85,6 +88,7 @@ pub enum TypedExprKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypedMethod {
+    pub plan: PatternPlan,
     pub parameters: Vec<LocatedParameter>,
     pub span: Span,
     pub pattern: Span,
@@ -104,6 +108,8 @@ pub enum TypedStatement {
         callee: TypedExpression,
         message: TypedExpression,
         method: usize,
+        adaptation: AdaptationPlan,
+        bound_adaptations: Vec<BoundAdaptation>,
     },
 }
 
@@ -478,7 +484,16 @@ fn locate_annotation_components(plan: &mut PatternPlan, syntax: &Loc<TypeExpr>, 
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BoundAdaptation {
+    pub parameter: TypeVariable,
+    pub actual: Type,
+    pub expected: Type,
+    pub plan: AdaptationPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParameterInstantiation {
+    pub adaptation: AdaptationPlan,
     pub parameter: LocatedParameter,
     pub actual: Rc<TypeEvidence>,
 }
@@ -587,6 +602,10 @@ impl PatternPlan {
                 assert_evidence(value, &expected)?;
                 Ok(PatternInstantiation {
                     arguments: vec![ParameterInstantiation {
+                        adaptation: value
+                            .ty
+                            .adaptation_to(&expected.ty)
+                            .expect("checked parameter bound"),
                         parameter: declaration.clone(),
                         actual: Rc::clone(value),
                     }],
@@ -636,6 +655,8 @@ impl PatternPlan {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckedBinding {
+    pub adaptation: AdaptationPlan,
+    pub plan: PatternPlan,
     pub value: TypedExpression,
     pub bindings: Vec<Binding>,
     pub instantiations: Vec<ParameterInstantiation>,
@@ -650,7 +671,24 @@ pub fn check_binding(
     validate_bindings(&plan)?;
     let value = synthesize_in(environment, expression)?;
     let instance = plan.instantiate(&value)?;
+    let bounds = plan
+        .parameters
+        .iter()
+        .map(|p| {
+            (
+                p.parameter.variable.clone(),
+                (*p.parameter.variable.upper_bound).clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let adaptation = value
+        .evidence
+        .ty
+        .adaptation_to(&plan.expectation.ty.substitute(&bounds))
+        .expect("checked binding has an adaptation");
     Ok(CheckedBinding {
+        adaptation,
+        plan,
         value,
         bindings: instance.bindings,
         instantiations: instance.arguments,
@@ -876,15 +914,52 @@ fn type_send(
             .and_then(|method| method.reply.as_ref())
             .map(|reply| substitute_evidence(reply, &instances, &arguments))
     });
+    let bound_adaptations = method
+        .map(|index| {
+            let Type::Actor(actor) = ty else {
+                unreachable!()
+            };
+            let selected = &actor.methods[index];
+            let instances = selected
+                .infer_instances(&message.evidence.ty)
+                .expect("checked send instances");
+            instances
+                .iter()
+                .map(|(parameter, actual)| {
+                    let expected = parameter.upper_bound.substitute(&instances);
+                    BoundAdaptation {
+                        parameter: parameter.clone(),
+                        actual: actual.clone(),
+                        plan: actual.adaptation_to(&expected).expect("checked send bound"),
+                        expected,
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let adaptation = method.and_then(|index| {
+        let Type::Actor(actor) = ty else {
+            return None;
+        };
+        let method = &actor.methods[index];
+        let instances = method.infer_instances(&message.evidence.ty)?;
+        message
+            .evidence
+            .ty
+            .adaptation_to(&method.input.substitute(&instances))
+    });
     let Some(reply) = reply else {
         return Ok(TypedStatement::NoReplySend {
             span,
             callee,
             message,
             method: method.expect("no-reply send selects a method"),
+            adaptation: adaptation.expect("checked send has an adaptation"),
+            bound_adaptations,
         });
     };
     Ok(TypedStatement::Expr(TypedExpression {
+        adaptations: Vec::new(),
         evidence: Rc::new(TypeEvidence {
             ty: reply,
             expression: span,
@@ -897,6 +972,8 @@ fn type_send(
             callee: Box::new(callee),
             message: Box::new(message),
             method,
+            adaptation,
+            bound_adaptations,
         },
     }))
 }
@@ -929,9 +1006,12 @@ fn type_expression(
         }
         Expr::Send { callee, message } => {
             return match type_send(environment, expression.span, callee, message)? {
-                TypedStatement::Expr(typed) => {
+                TypedStatement::Expr(mut typed) => {
                     if let Some(expected) = expected {
                         assert_type(&typed, expected)?;
+                        typed
+                            .adaptations
+                            .push(typed.evidence.ty.adaptation_to(&expected.ty).unwrap());
                     }
                     Ok(typed)
                 }
@@ -1001,6 +1081,7 @@ fn type_expression(
                     reply: reply.as_ref().map(|annotation| annotation.ty.clone()),
                 });
                 methods.push(TypedMethod {
+                    plan: plan.clone(),
                     parameters: plan.parameters,
                     span: method.span,
                     pattern: method.pattern.span,
@@ -1084,7 +1165,8 @@ fn type_expression(
         TypedExprKind::Selector(s) => Some(s.map(|v| Rc::clone(&v.evidence))),
         _ => None,
     };
-    let typed = TypedExpression {
+    let mut typed = TypedExpression {
+        adaptations: Vec::new(),
         evidence: Rc::new(TypeEvidence {
             ty,
             expression: expression.span,
@@ -1097,6 +1179,9 @@ fn type_expression(
     };
     if let Some(expected) = expected {
         assert_type(&typed, expected)?;
+        typed
+            .adaptations
+            .push(typed.evidence.ty.adaptation_to(&expected.ty).unwrap());
     }
     Ok(typed)
 }

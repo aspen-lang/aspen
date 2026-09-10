@@ -1,5 +1,8 @@
 # Aspen
 
+The agreed BEAM runtime contract and compiler milestones are documented in
+[`docs/beam-runtime.md`](docs/beam-runtime.md).
+
 Aspen is an experimental language with structural actors, selectors, message
 sends, and bounded method polymorphism. The compiler currently implements lexing,
 parsing, and static type checking; it does not execute programs or generate code.
@@ -22,6 +25,7 @@ cargo run -p aspenc -- lex example.aspen
 cargo run -p aspenc -- parse example.aspen
 cargo run -p aspenc -- check example.aspen
 cargo run -p aspenc -- check --typed-ast example.aspen
+cargo run -p aspenc -- lower example.aspen
 printf 'let service = { def (x) => x. }. service (#home).' | cargo run -q -p aspenc -- check -
 ```
 
@@ -31,6 +35,9 @@ printf 'let service = { def (x) => x. }. service (#home).' | cargo run -q -p asp
 - `check` prints `ok` on success. Programs are statement sequences, not values.
   `--typed-ast` instead prints the typed AST, including type evidence and bindings.
   Files with lexical or parse errors are not passed to the type checker.
+- `lower` checks a program and prints the backend-independent executable IR.
+  It does not execute the program or generate BEAM code. The dump exposes
+  sequencing, message sends, captures, projections, and static adaptation plans.
 
 Each command accepts one UTF-8 file; `-` reads standard input. Debug output goes to
 stdout, and diagnostics go to stderr as `file:line:column: error: message`, with

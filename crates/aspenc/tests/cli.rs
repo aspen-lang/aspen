@@ -32,7 +32,7 @@ fn stderr(output: &Output) -> String {
 fn help_version_and_usage() {
     let output = cli(&["--help"], "");
     assert!(output.status.success());
-    for command in ["lex", "parse", "check"] {
+    for command in ["lex", "parse", "check", "lower"] {
         assert!(stdout(&output).contains(command));
     }
     assert!(cli(&["--version"], "").status.success());
@@ -63,7 +63,7 @@ fn debug_commands_read_stdin() {
 
 #[test]
 fn lexical_and_parse_errors_fail_without_type_checking() {
-    for command in ["lex", "parse", "check"] {
+    for command in ["lex", "parse", "check", "lower"] {
         let output = cli(&[command, "-"], "@");
         assert_eq!(output.status.code(), Some(1));
         assert!(stderr(&output).contains("<stdin>:1:1: error: unexpected character"));
@@ -243,4 +243,22 @@ fn caret_messages_use_ordinary_expression_mode() {
     let output = cli(&["check", "-"], "{def ready -> #done => ^ done.}.");
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("unbound variable"));
+}
+
+#[test]
+fn lower_checks_before_emitting_ir() {
+    for source in ["missing.", "let {} x = #ready.", "{ def x => def x => }."] {
+        let output = cli(&["lower", "-"], source);
+        assert_eq!(output.status.code(), Some(1), "{source}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr(&output).contains("error:"));
+    }
+    let output = cli(
+        &["lower", "-"],
+        "let a = { def ready -> #ok => ^ #ok. }. a ready.",
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(!output.stdout.is_empty());
+    assert!(!stdout(&output).contains("TypeEvidence"));
+    assert!(!stdout(&output).contains("MethodEvidence"));
 }

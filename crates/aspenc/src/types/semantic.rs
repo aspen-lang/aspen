@@ -67,31 +67,118 @@ impl TypeParameter {
     }
 }
 
+/// A structural subsumption proof, not an executable runtime adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdaptationPlan {
+    /// Equal types, bottom elimination, top introduction, or alpha-renaming.
+    Identity,
+    Actor {
+        provided_method_count: usize,
+        methods: Vec<MethodCorrespondence>,
+    },
+    /// Payload plans in selector order; the selector shape is unchanged.
+    Selector(Vec<AdaptationPlan>),
+    /// Expose a variable's upper bound before continuing the adaptation.
+    Variable(Box<AdaptationPlan>),
+}
+
+/// Indices refer to structural declarations, never executable dispatch slots.
+/// Multiple required methods may correspond to the same provided method.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MethodCorrespondence {
+    pub provided_index: usize,
+    pub expected_index: usize,
+    pub adaptation: MethodAdaptationPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MethodAdaptationPlan {
+    /// Inferred provided parameter instances to their substituted upper bounds.
+    pub parameter_bounds: Vec<AdaptationPlan>,
+    /// Required input to instantiated provided input (contravariant).
+    pub input: AdaptationPlan,
+    /// Instantiated provided reply to required reply (covariant).
+    /// None means both methods have no reply.
+    pub reply: Option<AdaptationPlan>,
+}
+
+impl AdaptationPlan {
+    /// Whether the current full-message-dispatch ABI can reuse the value.
+    /// Structural correspondence is proof evidence, not a dispatch table:
+    /// width, reordering, and many-to-one matches do not change representation.
+    pub fn is_identity(&self) -> bool {
+        match self {
+            Self::Identity => true,
+            Self::Actor { methods, .. } => {
+                methods.iter().all(|method| method.adaptation.is_identity())
+            }
+            Self::Selector(payloads) => payloads.iter().all(Self::is_identity),
+            Self::Variable(bound) => bound.is_identity(),
+        }
+    }
+}
+
+impl MethodAdaptationPlan {
+    pub fn is_identity(&self) -> bool {
+        self.parameter_bounds
+            .iter()
+            .all(AdaptationPlan::is_identity)
+            && self.input.is_identity()
+            && self.reply.as_ref().is_none_or(AdaptationPlan::is_identity)
+    }
+}
+
 impl Type {
     pub const UNIT: Self = Self::Actor(ActorType {
         methods: Vec::new(),
     });
 
     pub fn is_subtype_of(&self, expected: &Self) -> bool {
+        self.adaptation_to(expected).is_some()
+    }
+
+    pub fn adaptation_to(&self, expected: &Self) -> Option<AdaptationPlan> {
         if !self.is_well_formed() || !expected.is_well_formed() {
-            return false;
+            return None;
         }
         if self == expected || *self == Self::Never || *expected == Self::Any {
-            return true;
+            return Some(AdaptationPlan::Identity);
         }
         match (self, expected) {
-            (Self::Selector(actual), Self::Selector(expected)) => selector_pairs(actual, expected)
-                .is_some_and(|pairs| pairs.into_iter().all(|(a, b)| a.is_subtype_of(b))),
-            (Self::Variable(variable), _) => variable.upper_bound.is_subtype_of(expected),
+            (Self::Selector(actual), Self::Selector(expected)) => {
+                let payloads = selector_pairs(actual, expected)?
+                    .into_iter()
+                    .map(|(a, b)| a.adaptation_to(b))
+                    .collect::<Option<Vec<_>>>()?;
+                Some(AdaptationPlan::Selector(payloads))
+            }
+            (Self::Variable(variable), _) => Some(AdaptationPlan::Variable(Box::new(
+                variable.upper_bound.adaptation_to(expected)?,
+            ))),
             (Self::Actor(actual), Self::Actor(expected)) => {
-                expected.methods.iter().all(|required| {
-                    actual
+                let methods =
+                    expected
                         .methods
                         .iter()
-                        .any(|provided| provided.is_subtype_of(required))
+                        .enumerate()
+                        .map(|(expected_index, required)| {
+                            actual.methods.iter().enumerate().find_map(
+                                |(provided_index, provided)| {
+                                    Some(MethodCorrespondence {
+                                        provided_index,
+                                        expected_index,
+                                        adaptation: provided.adaptation_to(required)?,
+                                    })
+                                },
+                            )
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                Some(AdaptationPlan::Actor {
+                    provided_method_count: actual.methods.len(),
+                    methods,
                 })
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -250,15 +337,26 @@ impl MethodType {
     }
 
     pub fn is_subtype_of(&self, expected: &Self) -> bool {
+        self.adaptation_to(expected).is_some()
+    }
+
+    pub fn adaptation_to(&self, expected: &Self) -> Option<MethodAdaptationPlan> {
         if !self.input.is_well_formed()
             || !self.reply.as_ref().is_none_or(Type::is_well_formed)
             || !expected.input.is_well_formed()
             || !expected.reply.as_ref().is_none_or(Type::is_well_formed)
         {
-            return false;
+            return None;
         }
         if alpha_method(self, expected, &[]) {
-            return true;
+            // Alpha-renaming preserves representation, including nested actors.
+            // Keep this escape hatch: inference intentionally does not solve
+            // every externally supplied quantified signature (e.g. actor inputs).
+            return Some(MethodAdaptationPlan {
+                parameter_bounds: Vec::new(),
+                input: AdaptationPlan::Identity,
+                reply: self.reply.as_ref().map(|_| AdaptationPlan::Identity),
+            });
         }
         // Required quantifiers remain rigid; only the provided method is instantiated.
         let mut skolems = Vec::new();
@@ -268,12 +366,30 @@ impl MethodType {
         }
         let required_input = expected.input.substitute(&skolems);
         let required_reply = expected.reply.as_ref().map(|ty| ty.substitute(&skolems));
-        self.instantiate(&required_input)
-            .is_some_and(|reply| match (reply, &required_reply) {
-                (None, None) => true,
-                (Some(actual), Some(expected)) => actual.is_subtype_of(expected),
-                _ => false,
+        let instances = self.infer_instances(&required_input)?;
+        let parameter_bounds = self
+            .parameters
+            .iter()
+            .map(|parameter| {
+                let (_, instance) = instances
+                    .iter()
+                    .find(|(variable, _)| *variable == parameter.variable)?;
+                instance.adaptation_to(&parameter.variable.upper_bound.substitute(&instances))
             })
+            .collect::<Option<Vec<_>>>()?;
+        let input = required_input.adaptation_to(&self.input.substitute(&instances))?;
+        let reply = match (&self.reply, &required_reply) {
+            (None, None) => None,
+            (Some(actual), Some(expected)) => {
+                Some(actual.substitute(&instances).adaptation_to(expected)?)
+            }
+            _ => return None,
+        };
+        Some(MethodAdaptationPlan {
+            parameter_bounds,
+            input,
+            reply,
+        })
     }
 }
 
@@ -728,6 +844,193 @@ mod tests {
         let invalid = Type::Actor(invalid);
         assert!(!invalid.is_subtype_of(&invalid));
         assert!(!invalid.is_subtype_of(&Type::Any));
+    }
+
+    fn two_methods() -> Type {
+        Type::Actor(ActorType {
+            methods: vec![mono(atom("yes"), Type::UNIT), mono(atom("no"), Type::UNIT)],
+        })
+    }
+
+    #[test]
+    fn actor_plans_record_reordering_width_and_many_to_one() {
+        let provided = two_methods();
+        let Type::Actor(mut reversed) = provided.clone() else {
+            panic!()
+        };
+        reversed.methods.reverse();
+        let plan = provided.adaptation_to(&Type::Actor(reversed)).unwrap();
+        assert!(plan.is_identity());
+        let AdaptationPlan::Actor { methods, .. } = plan else {
+            panic!()
+        };
+        assert_eq!(
+            methods
+                .iter()
+                .map(|m| (m.expected_index, m.provided_index))
+                .collect::<Vec<_>>(),
+            vec![(0, 1), (1, 0)]
+        );
+        assert!(methods.iter().all(|m| m.adaptation.is_identity()));
+        assert!(
+            provided
+                .adaptation_to(&actor(mono(atom("no"), Type::UNIT)))
+                .unwrap()
+                .is_identity()
+        );
+        assert!(provided.adaptation_to(&Type::UNIT).unwrap().is_identity());
+        assert!(provided.adaptation_to(&provided).unwrap().is_identity());
+
+        let broad = actor(mono(Type::Any, Type::UNIT));
+        let plan = broad.adaptation_to(&provided).unwrap();
+        assert!(plan.is_identity());
+        let AdaptationPlan::Actor { methods, .. } = plan else {
+            panic!()
+        };
+        assert_eq!(
+            methods.iter().map(|m| m.provided_index).collect::<Vec<_>>(),
+            vec![0, 0]
+        );
+        assert!(provided.adaptation_to(&broad).is_none());
+    }
+
+    #[test]
+    fn method_plans_have_contravariant_inputs_and_covariant_replies() {
+        let wide = two_methods();
+        let narrow = actor(mono(atom("yes"), Type::UNIT));
+        let provided = mono(narrow.clone(), wide.clone());
+        let required = mono(wide.clone(), narrow.clone());
+        let plan = provided.adaptation_to(&required).unwrap();
+        assert_eq!(plan.input, wide.adaptation_to(&narrow).unwrap());
+        assert_eq!(plan.reply, wide.adaptation_to(&narrow));
+        assert!(plan.is_identity());
+        assert!(required.adaptation_to(&provided).is_none());
+        let outer = actor(provided).adaptation_to(&actor(required)).unwrap();
+        assert!(outer.is_identity());
+    }
+
+    #[test]
+    fn payload_and_variable_plans_preserve_nested_adaptations() {
+        let wide = two_methods();
+        let narrow = actor(mono(atom("yes"), Type::UNIT));
+        let nested = keyword("outer", keyword("inner", wide.clone()));
+        let required = keyword("outer", keyword("inner", narrow.clone()));
+        let plan = nested.adaptation_to(&required).unwrap();
+        assert!(plan.is_identity());
+        assert!(matches!(plan, AdaptationPlan::Selector(_)));
+        let variable = Type::Variable(TypeVariable::fresh(wide));
+        let plan = variable.adaptation_to(&narrow).unwrap();
+        assert!(matches!(plan, AdaptationPlan::Variable(_)));
+        assert!(plan.is_identity());
+        assert!(
+            keyword("x", Type::UNIT)
+                .adaptation_to(&keyword("x", Type::Any))
+                .unwrap()
+                .is_identity()
+        );
+        assert!(
+            nested
+                .adaptation_to(&keyword("different", Type::Any))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn generic_bounds_retain_structural_adaptation_evidence() {
+        let wide = two_methods();
+        let narrow = actor(mono(atom("yes"), Type::UNIT));
+        let plan = identity(narrow.clone())
+            .adaptation_to(&mono(wide.clone(), wide.clone()))
+            .unwrap();
+        assert_eq!(
+            plan.parameter_bounds,
+            vec![wide.adaptation_to(&narrow).unwrap()]
+        );
+        assert!(matches!(
+            plan.parameter_bounds[0],
+            AdaptationPlan::Actor { .. }
+        ));
+        assert!(plan.is_identity());
+        assert!(
+            identity(Type::Any)
+                .adaptation_to(&identity(Type::Any))
+                .unwrap()
+                .parameter_bounds
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn generic_plans_instantiate_and_keep_required_variables_rigid() {
+        assert!(
+            identity(Type::Any)
+                .adaptation_to(&mono(Type::UNIT, Type::UNIT))
+                .unwrap()
+                .is_identity()
+        );
+        assert!(
+            identity(Type::Any)
+                .adaptation_to(&identity(Type::Any))
+                .unwrap()
+                .is_identity()
+        );
+        assert!(
+            mono(Type::Any, Type::Any)
+                .adaptation_to(&identity(Type::Any))
+                .is_none()
+        );
+        // Inference only descends through selectors, so an alpha-equivalent
+        // quantified actor input must retain the representation-identity escape.
+        let parameter = TypeParameter::new(Type::Any);
+        let ty = Type::Variable(parameter.variable.clone());
+        let method = MethodType {
+            parameters: vec![parameter],
+            input: actor(mono(atom("get"), ty.clone())),
+            reply: Some(ty),
+        };
+        let original = actor(method);
+        let renamed = original.substitute(&[(TypeVariable::fresh(Type::Any), Type::UNIT)]);
+        assert_ne!(original, renamed);
+        assert!(original.adaptation_to(&renamed).unwrap().is_identity());
+    }
+
+    #[test]
+    fn plans_preserve_reply_modes_and_reject_invalid_actors() {
+        let no_reply = MethodType {
+            parameters: vec![],
+            input: Type::Any,
+            reply: None,
+        };
+        let plan = no_reply
+            .adaptation_to(&MethodType {
+                input: Type::UNIT,
+                ..no_reply.clone()
+            })
+            .unwrap();
+        assert_eq!(plan.reply, None);
+        assert!(plan.is_identity());
+        for reply in [Type::Never, Type::UNIT, Type::Any] {
+            let replying = mono(Type::Any, reply);
+            assert!(no_reply.adaptation_to(&replying).is_none());
+            assert!(replying.adaptation_to(&no_reply).is_none());
+        }
+        let invalid = Type::Actor(ActorType {
+            methods: vec![no_reply.clone(), no_reply],
+        });
+        assert!(invalid.adaptation_to(&invalid).is_none());
+        assert!(invalid.adaptation_to(&Type::Any).is_none());
+        assert!(
+            Type::Never
+                .adaptation_to(&two_methods())
+                .unwrap()
+                .is_identity()
+        );
+        assert!(
+            two_methods()
+                .adaptation_to(&Type::Any)
+                .unwrap()
+                .is_identity()
+        );
     }
 
     #[test]

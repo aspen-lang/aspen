@@ -14,7 +14,9 @@
 This specification describes selectors, recursive patterns, structural actors,
 message sends, statement sequences, explicit no-reply signatures, implicit
 bounded method polymorphism, bidirectional typing, and
-diagnostic provenance. It specifies parsing and static typing, not a runtime
+diagnostic provenance. The proposed BEAM execution contract and compiler
+foundation milestones are recorded separately in `docs/beam-runtime.md`.
+This specification describes parsing and static typing, not a runtime
 implementation or an evaluation protocol.
 
 ```text

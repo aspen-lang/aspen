@@ -24,6 +24,8 @@ enum Command {
     Lex(Input),
     /// Parse a source file and print its located AST.
     Parse(Input),
+    /// Type-check and lower to the executable IR (no execution or code generation).
+    Lower(Input),
     /// Type-check a source file and report success.
     Check {
         #[command(flatten)]
@@ -43,7 +45,10 @@ struct Input {
 impl Command {
     fn input(&self) -> &Input {
         match self {
-            Self::Lex(input) | Self::Parse(input) | Self::Check { input, .. } => input,
+            Self::Lex(input)
+            | Self::Parse(input)
+            | Self::Lower(input)
+            | Self::Check { input, .. } => input,
         }
     }
 }
@@ -188,6 +193,19 @@ fn run(cli: Cli, stdout: &mut impl Write, stderr: &mut impl Write) -> io::Result
     }
     match cli.command {
         Command::Parse(_) => writeln!(stdout, "{program:#?}")?,
+        Command::Lower(_) => match check_program(&program) {
+            Ok(statements) => match aspenc::ir::lower_program(&statements) {
+                Ok(program) => writeln!(stdout, "{program:#?}")?,
+                Err(error) => {
+                    writeln!(stderr, "{file}: error: IR lowering failed: {error}")?;
+                    return Ok(false);
+                }
+            },
+            Err(error) => {
+                type_diagnostic(stderr, &file, &error)?;
+                return Ok(false);
+            }
+        },
         Command::Check { typed_ast, .. } => match check_program(&program) {
             Ok(statements) => {
                 if typed_ast {
