@@ -236,7 +236,7 @@ entry-failure error. The same deadline covers entry execution and draining;
 preventing completion. Autonomous active loops continue running after the entry
 returns. Host-pinned actors can prevent draining, so embedders with their own
 completion contract can instead call `shutdown/1` explicitly. Source-level host
-output is available through `syscall`; a source-level shutdown primitive remains
+output is available through the injected syscall capability; a source-level shutdown primitive remains
 deferred.
 
 ## Actor liveness collection
@@ -285,13 +285,16 @@ receiver emits the normal BEAM error diagnostic; its death does not resolve the
 call, since a delegate could hold the reply endpoint. Liveness tracing may collect
 an unreachable suspended caller only when no root reaches its activation graph.
 
-## Global Syscall Actor
+## Injected Syscall Actor
 
-The global `syscall` is an ordinary, first-class actor with interface
-`{ write: int data: bytes -> int }`. It is a fallback for unbound references named
-`syscall` in every lexical scope; user bindings shadow it normally. The runtime
-provides one shared syscall actor per session and registers it for session
-shutdown. Aliasing or passing the global preserves that endpoint's identity.
+The runtime supplies an ordinary, first-class actor with interface
+`{ write: int data: bytes -> int }`, declared by `std/runtime`'s `Syscall` alias.
+The compiled entry sends it as the sole payload of the configured keyword
+message (by default convention, `start:`). No source-level global lookup exposes
+it. The runtime provides one shared syscall actor per session and registers it
+for session shutdown. Aliasing or passing the capability preserves that
+endpoint's identity. The Erlang `syscall/1` function is an internal runtime ABI,
+not an Aspen acquisition mechanism.
 
 `syscall write: 1 data: "Hello!\n".` invokes POSIX `write(2)` against descriptor
 1 in the BEAM VM process. The method accepts strings by `string <: bytes` and

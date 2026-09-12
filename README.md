@@ -75,11 +75,14 @@ See [modules](docs/modules.md) for namespace and visibility details.
 
 ## Low-Level Output
 
-The global actor `syscall` exposes real OS syscalls. For example:
+The runtime passes a syscall capability to the entry actor. Its interface is
+defined in the bundled standard library:
 
 ```aspen
+import std/runtime (type Syscall).
+
 export let main = {
-  def start => syscall write: 1 data: "Hello, world!\n".
+  def start: Syscall syscall => syscall write: 1 data: "Hello, world!\n".
 }.
 ```
 
@@ -91,17 +94,18 @@ bytes as text. Descriptors refer to the BEAM process: `1` is normally stdout and
 A discarded reply still waits for the write attempt to finish before execution
 continues.
 
-`syscall` is a first-class actor shared within each runtime session. It is available
-inside methods as well as at top level; lexical bindings can shadow it, and it can
-be passed or aliased like any other actor.
+The injected value is a first-class actor shared within each runtime session.
+There is no global `syscall` binding: other code must receive or capture the
+capability explicitly. Importing `Syscall` grants a type, not access to I/O.
+The actor's implementation remains internal to the runtime.
 
 ## Modules
 
 Each source file defines a module, with private `let` and public `export let`
 globals. Initializers are declarative; effects run only inside actor methods.
 Modules import exported globals using package paths. A YAML package manifest
-selects the source root and a global actor plus an initial no-reply atomic
-message. `index.aspen` names its containing directory's module.
+selects the source root and a global actor plus an initial no-reply keyword
+message carrying the syscall capability. `index.aspen` names its containing directory's module.
 
 See [`docs/modules.md`](docs/modules.md) for the manifest, import syntax,
 qualified references, recursive module checking, and global identity rules.

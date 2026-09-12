@@ -45,7 +45,7 @@ impl Drop for Fixture {
 fn forward_aliases_and_separate_value_namespace() {
     let f = Fixture::new();
     f.root();
-    f.write("src/index.aspen", "let Count count = 1. type Count Later. type Later int. let Count = 2. export let main = {def start => let Count local = Count.}.");
+    f.write("src/index.aspen", "let Count count = 1. type Count Later. type Later int. let Count = 2. export let main = {def start: {} capability => let Count local = Count.}.");
     assert!(f.check().is_ok(), "{:?}", f.check());
 }
 
@@ -53,7 +53,7 @@ fn forward_aliases_and_separate_value_namespace() {
 fn mixed_imports_and_qualified_aliases() {
     let f = Fixture::new();
     f.root();
-    f.write("src/index.aspen", "import demo/types (type Number as N, Number as number). import demo/types as t. let N x = number. let t/Number y = t/Number. export let main = {def start =>}.");
+    f.write("src/index.aspen", "import demo/types (type Number as N, Number as number). import demo/types as t. let N x = number. let t/Number y = t/Number. export let main = {def start: {} capability =>}.");
     f.write(
         "src/types.aspen",
         "export type Number int. export let Number = 1.",
@@ -67,7 +67,7 @@ fn imported_aliases_can_expand_private_helpers() {
     f.root();
     f.write(
         "src/index.aspen",
-        "import demo/types (type Public). let Public x = 1. export let main = {def start =>}.",
+        "import demo/types (type Public). let Public x = 1. export let main = {def start: {} capability =>}.",
     );
     f.write(
         "src/types.aspen",
@@ -80,7 +80,7 @@ fn imported_aliases_can_expand_private_helpers() {
 fn aliases_resolve_parameters_bounds_replies_and_nested_annotations() {
     let f = Fixture::new();
     f.root();
-    f.write("src/index.aspen", "type Box<T> #box: T. type Number int. type Service {get -> Number}. let service = {def get -> Number => ^ 1.}. let identity = {def <Number> id: Number x -> Number => let Number y = x. ^ y.}. let use = {def <T <: Service> use: T x -> Number => ^ x get.}. export let main = {def start => let Box<Number> boxed = #box: 1. let nested = {def get -> Number => ^ 2.}.}.");
+    f.write("src/index.aspen", "type Box<T> #box: T. type Number int. type Service {get -> Number}. let service = {def get -> Number => ^ 1.}. let identity = {def <Number> id: Number x -> Number => let Number y = x. ^ y.}. let use = {def <T <: Service> use: T x -> Number => ^ x get.}. export let main = {def start: {} capability => let Box<Number> boxed = #box: 1. let nested = {def get -> Number => ^ 2.}.}.");
     assert!(f.check().is_ok(), "{:?}", f.check());
 }
 
@@ -88,7 +88,7 @@ fn aliases_resolve_parameters_bounds_replies_and_nested_annotations() {
 fn cyclic_module_imports_can_define_noncyclic_aliases() {
     let f = Fixture::new();
     f.root();
-    f.write("src/index.aspen", "import demo/types (type Other). export type Number int. type Local Other. let Local x = 1. export let main = {def start =>}.");
+    f.write("src/index.aspen", "import demo/types (type Other). export type Number int. type Local Other. let Local x = 1. export let main = {def start: {} capability =>}.");
     f.write(
         "src/types.aspen",
         "import demo (type Number). export type Other Number.",
@@ -131,7 +131,7 @@ fn inaccessible_duplicate_and_wrong_namespace_types_are_rejected() {
         f.root();
         f.write(
             "src/index.aspen",
-            &format!("{source} export let main = {{def start =>}}."),
+            &format!("{source} export let main = {{def start: {{}} capability =>}}."),
         );
         f.write("src/types.aspen", other);
         let error = f.check().unwrap_err();
@@ -143,7 +143,10 @@ fn inaccessible_duplicate_and_wrong_namespace_types_are_rejected() {
 fn aliases_are_checked_even_when_unused_with_source_provenance() {
     let f = Fixture::new();
     f.root();
-    f.write("src/index.aspen", "export let main = {def start =>}.");
+    f.write(
+        "src/index.aspen",
+        "export let main = {def start: {} capability =>}.",
+    );
     f.write("src/types.aspen", "\n\ntype Bad Bad.");
     let error = f.check().unwrap_err();
     assert!(error.contains("types.aspen:3:"), "{error}");
@@ -157,7 +160,7 @@ fn aliases_work_across_declared_package_dependencies() {
     f.write("helper/src/index.aspen", "export type Number int.");
     f.write(
         "src/index.aspen",
-        "import helper (type Number). let Number x = 1. export let main = {def start =>}.",
+        "import helper (type Number). let Number x = 1. export let main = {def start: {} capability =>}.",
     );
     assert!(f.check().is_ok(), "{:?}", f.check());
 }
@@ -170,6 +173,6 @@ fn imported_generic_alias_parameters_do_not_capture_importer_names() {
         "src/types.aspen",
         "type Number int. export type Box<T> #box: T with: Number.",
     );
-    f.write("src/index.aspen", "import demo/types (type Box). type Number string. let Box<Number> x = #box: \"hello\" with: 1. export let main = {def start =>}.");
+    f.write("src/index.aspen", "import demo/types (type Box). type Number string. let Box<Number> x = #box: \"hello\" with: 1. export let main = {def start: {} capability =>}.");
     assert!(f.check().is_ok(), "{:?}", f.check());
 }

@@ -45,7 +45,7 @@ impl Drop for Fixture {
 fn forward_globals_and_mutually_recursive_actors() {
     let f = Fixture::new();
     f.root();
-    f.write("src/index.aspen", "export let main = {def start => other go.}. let alias = other. let other = {def go => main start.}.");
+    f.write("src/index.aspen", "export let main = {def start: {} capability => other go.}. let alias = other. let other = {def go => main start: #none.}.");
     let checked = f.check().unwrap();
     assert_eq!(checked.globals.len(), 3);
 }
@@ -55,11 +55,11 @@ fn cyclic_module_imports_are_valid() {
     f.root();
     f.write(
         "src/index.aspen",
-        "import demo/other. export let main = {def start => other/worker go.}.",
+        "import demo/other. export let main = {def start: {} capability => other/worker go.}.",
     );
     f.write(
         "src/other.aspen",
-        "import demo (main). export let worker = {def go => main start.}.",
+        "import demo (main). export let worker = {def go => main start: #none.}.",
     );
     assert!(f.check().is_ok(), "{}", f.check().err().unwrap_or_default());
 }
@@ -77,7 +77,7 @@ fn private_imports_are_rejected_with_filename() {
     f.root();
     f.write(
         "src/index.aspen",
-        "import demo/other (secret). export let main = {def start =>}.",
+        "import demo/other (secret). export let main = {def start: {} capability =>}.",
     );
     f.write("src/other.aspen", "let secret = 1.");
     let error = f.check().err().unwrap();
@@ -102,7 +102,7 @@ fn global_annotations_are_checked() {
     f.root();
     f.write(
         "src/index.aspen",
-        "let int x = \"bad\". export let main = {def start =>}.",
+        "let int x = \"bad\". export let main = {def start: {} capability =>}.",
     );
     assert!(f.check().is_err());
 }
@@ -112,7 +112,7 @@ fn module_aliases_reserve_names_even_without_exports() {
     f.root();
     f.write(
         "src/index.aspen",
-        "import demo/empty as main. export let main = {def start =>}.",
+        "import demo/empty as main. export let main = {def start: {} capability =>}.",
     );
     f.write("src/empty.aspen", "");
     assert!(f.check().err().unwrap().contains("duplicate binding"));
@@ -123,7 +123,7 @@ fn lexical_bindings_shadow_globals() {
     f.root();
     f.write(
         "src/index.aspen",
-        "let value = \"global\". export let main = {def start => let value = 1. value.}.",
+        "let value = \"global\". export let main = {def start: {} capability => let value = 1. value.}.",
     );
     assert!(f.check().is_ok());
 }
@@ -133,7 +133,7 @@ fn local_dependencies_and_selective_aliases() {
     f.write("aspen.yaml", "name: demo\nsource: src\ndependencies: {lib: lib}\nentry: {actor: demo/main, message: start}\n");
     f.write(
         "src/index.aspen",
-        "import lib (worker as w). export let main = {def start => w go.}.",
+        "import lib (worker as w). export let main = {def start: {} capability => w go.}.",
     );
     f.write("lib/aspen.yaml", "name: lib\nsource: src\n");
     f.write("lib/src/index.aspen", "export let worker = {def go =>}.");
@@ -142,8 +142,11 @@ fn local_dependencies_and_selective_aliases() {
 #[test]
 fn entry_requires_export_atomic_message_and_no_reply() {
     for (source, message) in [
-        ("let main = {def start =>}.", "start"),
-        ("export let main = {def start -> int => ^ 1.}.", "start"),
+        ("let main = {def start: {} capability =>}.", "start"),
+        (
+            "export let main = {def start: {} capability -> int => ^ 1.}.",
+            "start",
+        ),
         ("export let main = {def start: _ =>}.", "'start: 1'"),
     ] {
         let f = Fixture::new();
@@ -172,7 +175,7 @@ fn transitive_dependencies_are_not_implicitly_importable() {
     f.write("aspen.yaml", "name: demo\nsource: src\ndependencies: {lib: lib}\nentry: {actor: demo/main, message: start}\n");
     f.write(
         "src/index.aspen",
-        "import hidden. export let main = {def start =>}.",
+        "import hidden. export let main = {def start: {} capability =>}.",
     );
     f.write(
         "lib/aspen.yaml",
@@ -193,7 +196,10 @@ fn same_package_manifest_is_deduplicated_but_distinct_manifests_collide() {
     for duplicate in [false, true] {
         let f = Fixture::new();
         f.write("aspen.yaml", "name: demo\nsource: src\ndependencies: {a: a, b: b}\nentry: {actor: demo/main, message: start}\n");
-        f.write("src/index.aspen", "export let main = {def start =>}.");
+        f.write(
+            "src/index.aspen",
+            "export let main = {def start: {} capability =>}.",
+        );
         f.write(
             "a/aspen.yaml",
             "name: a\nsource: src\ndependencies: {shared: ../shared}\n",
@@ -224,12 +230,12 @@ fn selectors_can_contain_recursive_global_actors_but_not_value_cycles() {
     f.root();
     f.write(
         "src/index.aspen",
-        "let box = #actor: {def go => main start.}. export let main = {def start => box.}.",
+        "let box = #actor: {def go => main start: #none.}. export let main = {def start: {} capability => box.}.",
     );
     assert!(f.check().is_ok());
     f.write(
         "src/index.aspen",
-        "let box = #actor: other. let other = box. export let main = {def start =>}.",
+        "let box = #actor: other. let other = box. export let main = {def start: {} capability =>}.",
     );
     assert!(
         f.check()
@@ -244,7 +250,10 @@ fn source_map_keeps_parse_and_resolution_errors_local() {
     for source in ["\nexport let broken = {", "\nexport let broken = missing."] {
         let f = Fixture::new();
         f.root();
-        f.write("src/index.aspen", "\n\n\nexport let main = {def start =>}.");
+        f.write(
+            "src/index.aspen",
+            "\n\n\nexport let main = {def start: {} capability =>}.",
+        );
         f.write("src/other.aspen", source);
         let errors = load_and_check(&f.0).unwrap_err();
         assert!(errors[0].path.ends_with("other.aspen"));
@@ -271,10 +280,10 @@ fn package_source_line_capacity_is_reported_without_wrapping() {
 fn recursive_generic_bounds_accept_linked_actor_interfaces() {
     let f = Fixture::new();
     f.root();
-    f.write("src/index.aspen", "export let main = { def start => runner run: node. }.\nlet runner = { def <T <: { next -> T }> run: T t => t next next next. }.\nlet node = { def next -> { next -> {} } => ^ node. }.");
+    f.write("src/index.aspen", "export let main = { def start: {} capability => runner run: node. }.\nlet runner = { def <T <: { next -> T }> run: T t => t next next next. }.\nlet node = { def next -> { next -> {} } => ^ node. }.");
     // A finite interface does not promise that every successor has the same T.
     assert!(f.check().is_err());
-    f.write("src/index.aspen", "export let main = { def start => identity do: 42. }.\nlet identity = { def <T> do: T x -> T => ^ x. }.");
+    f.write("src/index.aspen", "export let main = { def start: {} capability => identity do: 42. }.\nlet identity = { def <T> do: T x -> T => ^ x. }.");
     let checked = f.check().unwrap();
     assert_eq!(checked.globals.len(), 2);
 }

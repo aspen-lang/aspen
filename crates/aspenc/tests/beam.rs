@@ -313,10 +313,12 @@ fn unmatched_full_message_fails_receiver_diagnostically() {
 }
 
 #[test]
-fn syscall_writes_real_descriptors_from_global_aliases_and_captures() {
+fn injected_syscall_writes_real_descriptors_through_aliases_and_captures() {
     let scratch = Scratch::new();
     runtime(&scratch.0);
     let source = r#"
+        import std/runtime (type Syscall).
+        export let main = { def start: Syscall syscall =>
         let os = syscall.
         let writer = { def go -> int => ^ os write: 1 data: "stdout\n". }.
         writer go.
@@ -325,11 +327,17 @@ fn syscall_writes_real_descriptors_from_global_aliases_and_captures() {
         syscall write: 1 data: buffer.
         let syscall = { def write: (int fd) data: (bytes data) -> int => ^ 0. }.
         syscall write: 1 data: "must-not-print".
+        }.
     "#;
-    let mut diagnostics = Vec::new();
-    let parsed = parse(Lexer::new(source), &mut diagnostics);
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    let ir = lower_program(&check_program(&parsed).unwrap()).unwrap();
+    fs::create_dir(scratch.0.join("src")).unwrap();
+    fs::write(
+        scratch.0.join("aspen.yaml"),
+        "name: fixture\nsource: src\nentry: {actor: fixture/main, message: start}\n",
+    )
+    .unwrap();
+    fs::write(scratch.0.join("src/index.aspen"), source).unwrap();
+    let checked = aspenc::package::load_and_check(&scratch.0).unwrap();
+    let ir = aspenc::ir::lower_globals(&checked.globals, &checked.entry).unwrap();
     fs::write(
         scratch.0.join("syscalls.erl"),
         emit_program(&ir, "syscalls").unwrap(),
@@ -386,9 +394,10 @@ fn compiled_package_globals_and_nested_actor_dependencies() {
     fs::write(
         scratch.0.join("src/index.aspen"),
         r#"
+        import std/runtime (type Syscall).
         import fixture/service (factory, wrapped).
-        export let main = { def start =>
-            let child = factory make.
+        export let main = { def start: Syscall syscall =>
+            let child = factory make: syscall.
             child go.
             let use = { def take: (#target: ({ ready -> string } actor)) -> string =>
                 ^ actor ready.
@@ -401,7 +410,8 @@ fn compiled_package_globals_and_nested_actor_dependencies() {
     fs::write(
         scratch.0.join("src/service.aspen"),
         r#"
-        export let factory = { def make -> { go } =>
+        import std/runtime (type Syscall).
+        export let factory = { def make: Syscall syscall -> { go } =>
             ^ { def go => syscall write: 1 data: (alias ready). }.
         }.
         export let wrapped = #target: alias.

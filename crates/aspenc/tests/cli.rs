@@ -52,7 +52,9 @@ impl Package {
     }
 
     fn body(source: &str) -> Self {
-        Self::new(&format!("export let main = {{ def start => {source} }}."))
+        Self::new(&format!(
+            "import std/runtime (type Syscall). export let main = {{ def start: Syscall syscall => {source} }}."
+        ))
     }
 
     fn command(&self, args: &[&str]) -> Output {
@@ -90,7 +92,10 @@ fn debug_commands_read_module_source_from_stdin() {
     assert!(output.status.success());
     assert!(stdout(&output).contains("Whitespace"));
     assert!(stdout(&output).contains("Hash"));
-    let output = cli(&["parse", "-"], "export let main = { def start => }. ");
+    let output = cli(
+        &["parse", "-"],
+        "export let main = { def start: { write: int data: bytes -> int } syscall => }. ",
+    );
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(stdout(&output).contains("Module"));
     assert!(stdout(&output).contains("Method"));
@@ -222,8 +227,8 @@ fn compilation_rejects_stdin_and_standalone_scripts() {
 #[test]
 fn module_top_level_rejects_effects_and_checks_configured_entry() {
     for source in [
-        "export let main = { def start => }. main start.",
-        "export let main = { def start => }. let value = main start.",
+        "export let main = { def start: { write: int data: bytes -> int } syscall => }. main start.",
+        "export let main = { def start: { write: int data: bytes -> int } syscall => }. let value = main start.",
         "export let main = { def wrong => }.",
         "export let main = #start.",
     ] {
@@ -300,8 +305,8 @@ fn lower_and_emit_check_before_generating_output() {
 #[test]
 fn run_uses_configured_actor_and_message() {
     let package = Package::new(
-        r#"export let main = { def start => syscall write: 1 data: "wrong". }.
-        export let selected = { def launch => syscall write: 1 data: "selected\n". }."#,
+        r#"export let main = { def start: { write: int data: bytes -> int } syscall => syscall write: 1 data: "wrong". }.
+        export let selected = { def launch: { write: int data: bytes -> int } syscall => syscall write: 1 data: "selected\n". }."#,
     );
     fs::write(
         package.0.join("aspen.yaml"),
@@ -317,14 +322,15 @@ fn run_uses_configured_actor_and_message() {
 #[test]
 fn run_drains_fire_and_forget_work_after_entry_returns() {
     let package = Package::new(
-        r#"let io = {
-        def print: string s =>
+        r#"import std/runtime (type Syscall).
+    let io = {
+        def print: string s using: Syscall syscall =>
             syscall write: 1 data: s.
             syscall write: 1 data: "\n".
     }.
-    export let main = { def start =>
-        io print: "hello".
-        io print: "world".
+    export let main = { def start: { write: int data: bytes -> int } syscall =>
+        io print: "hello" using: syscall.
+        io print: "world" using: syscall.
     }."#,
     );
     let output = package.command(&["run", "--timeout-ms", "5000"]);
@@ -348,7 +354,7 @@ fn run_builds_native_syscall_and_prints_to_real_descriptors() {
 #[test]
 fn imported_producer_diagnostic_uses_its_own_file() {
     let package = Package::new(
-        "import demo/other (value).\nexport let main = {def start => let int x = value.}.",
+        "import demo/other (value).\nexport let main = {def start: { write: int data: bytes -> int } syscall => let int x = value.}.",
     );
     fs::write(
         package.0.join("src/other.aspen"),
@@ -358,9 +364,9 @@ fn imported_producer_diagnostic_uses_its_own_file() {
     let output = package.command(&["check"]);
     assert_eq!(output.status.code(), Some(1));
     let text = stderr(&output);
-    assert!(text.contains("main.aspen:2:45: error:"), "{text}");
+    assert!(text.contains("main.aspen:2:88: error:"), "{text}");
     assert!(
-        text.contains("main.aspen:2:37: note: type required here"),
+        text.contains("main.aspen:2:80: note: type required here"),
         "{text}"
     );
     assert!(
@@ -372,7 +378,7 @@ fn imported_producer_diagnostic_uses_its_own_file() {
 #[test]
 fn imported_receiver_no_match_notes_use_local_expression_sites() {
     let package = Package::new(
-        "import demo/other (worker).\nexport let main = {def start => worker take: \"bad\".}.",
+        "import demo/other (worker).\nexport let main = {def start: { write: int data: bytes -> int } syscall => worker take: \"bad\".}.",
     );
     fs::write(
         package.0.join("src/other.aspen"),

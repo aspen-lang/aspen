@@ -481,25 +481,33 @@ pairwise input disjointness before accepting the actor. Preserve source order
 for evidence and representation, not to give earlier methods priority.
 
 A reference resolves to the nearest enclosing binding and synthesizes its type
-with reference evidence linked to the bound value and declaration. If no lexical
-binding exists, the name `syscall` resolves to the runtime's global syscall actor;
-any other absent name is an unbound-variable error retaining the name and use
-span. Checking a reference preserves its evidence.
+with reference evidence linked to the bound value and declaration. An absent
+name is an unbound-variable error retaining the name and use span. There is no
+special fallback for `syscall`. Checking a reference preserves its evidence.
 
-== Global Syscall Actor
+== Injected Syscall Capability
 
-The ever-present global `syscall` synthesizes this structural actor type:
+The bundled standard library exports `std/runtime`'s transparent alias `Syscall`
+for this structural actor type:
 
 ```text
 { write: int data: bytes -> int }
 ```
 
-It is available in every scope, including method bodies. An ordinary lexical
-binding named `syscall` shadows the global; programs can alias, capture, or pass
-the actor as a value. References to the global identify the same actor within
-one runtime session, rather than creating an actor on every evaluation.
+The runtime supplies an actor of this type as the payload of the entry keyword
+message. The entry parameter must accept the resolved alias's type; it need not
+use the alias's name and may expose a narrower compatible interface. The entry
+method must not reply. Native implementation conformance is a trusted runtime
+boundary, not an Aspen actor definition.
 
-For example, `syscall write: 1 data: "Hello!\n".` is well typed because
+Importing the alias does not grant authority. Programs can alias, capture, or
+pass the injected actor as an ordinary value, preserving its identity. There is
+no ambient binding or source-level constructor for acquiring the capability.
+Narrowing a structural interface limits statically available operations, not the
+underlying actor's behavior or the values of arguments accepted by an operation.
+
+For example, with a parameter `Syscall syscall`, the expression
+`syscall write: 1 data: "Hello!\n".` is well typed because
 `string <: bytes`. Its replying method makes statement checking wait for the
 write attempt even when the returned integer is discarded. The runtime contract
 is a single POSIX write against a real BEAM-process file descriptor, returning

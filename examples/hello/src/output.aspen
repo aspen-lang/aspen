@@ -1,5 +1,7 @@
+import std/runtime (type Syscall).
+
 export let printer = {
-  def print: string text =>
+  def print: string text using: Syscall syscall =>
     syscall write: 1 data: text.
     syscall write: 1 data: "\n".
 }.

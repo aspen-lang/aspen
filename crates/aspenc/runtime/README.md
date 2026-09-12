@@ -37,10 +37,12 @@ nonblocking descriptors or use an external process deadline where necessary.
 The returned count means the OS accepted those bytes, not that data is durable
 or that a terminal displayed it.
 
-The session creates its syscall actor lazily on first global lookup and returns
-the same PID on subsequent lookups. It owns that actor's lifetime like other
-actors. Missing native libraries fail at global lookup rather than creating an
-actor that would silently leave the first call waiting forever.
+The compiled startup path obtains the session's syscall actor through the
+internal `syscall/1` ABI and passes it to the entry actor. Repeated internal
+requests return the same PID. Aspen code has no global acquisition mechanism;
+it must receive or capture the capability. The session owns that actor's
+lifetime like other actors. Missing native libraries fail during startup rather
+than creating an actor that would silently leave the first call waiting forever.
 
 ## Actor collection and embedding
 

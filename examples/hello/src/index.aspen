@@ -1,7 +1,8 @@
+import std/runtime (type Syscall).
 import hello/output (printer).
 
 export let main = {
-  def start =>
-    printer print: "hello".
-    printer print: "world".
+  def start: Syscall syscall =>
+    printer print: "hello" using: syscall.
+    printer print: "world" using: syscall.
 }.

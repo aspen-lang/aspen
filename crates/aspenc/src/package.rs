@@ -156,6 +156,13 @@ fn load_units(
     }
     let text = fs::read_to_string(&path).map_err(|e| error(&path, None, e))?;
     let manifest: Manifest = serde_yaml::from_str(&text).map_err(|e| error(&path, None, e))?;
+    if manifest.name == "std" || manifest.dependencies.contains_key("std") {
+        return Err(error(
+            &path,
+            None,
+            "'std' is reserved for the bundled standard library",
+        ));
+    }
     if !identifier(&manifest.name) {
         return Err(error(&path, None, "package name must be an identifier"));
     }
@@ -249,7 +256,7 @@ fn resolve_expr(
                     ));
                 }
                 *name = target.clone();
-            } else if name != "syscall" {
+            } else {
                 return Err(error(
                     path,
                     Some(expr.span),
@@ -436,9 +443,7 @@ fn static_refs(
 ) -> Result<(), PackageDiagnostic> {
     match &expr.value {
         Expr::Variable(name) => {
-            if name != "syscall" {
-                refs.insert(name.clone());
-            }
+            refs.insert(name.clone());
         }
         Expr::Selector(selector) => {
             for value in selector.values() {
@@ -625,6 +630,24 @@ fn check_package(
             );
         }
     }
+    // Embed sources so installed compilers do not depend on a checkout layout.
+    let std_path = PathBuf::from("<std>/runtime.aspen");
+    let mut diagnostics = Vec::new();
+    let syntax = crate::parse_module(
+        sources.lexer(&std_path, include_str!("../std/src/runtime.aspen"))?,
+        &mut diagnostics,
+    );
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(error(&std_path, Some(diagnostic.span), diagnostic.message));
+    }
+    modules.insert(
+        "std/runtime".into(),
+        Module {
+            path: std_path,
+            package: "std".into(),
+            syntax,
+        },
+    );
     let mut exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut type_exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (name, module) in &modules {
@@ -693,10 +716,10 @@ fn check_package(
             let target = &import.path.value;
             let dependency = target.split('/').next().unwrap_or("");
             if dependency != module.package
-                && !units[&module.package]
-                    .manifest
-                    .dependencies
-                    .contains_key(dependency)
+                && dependency != "std"
+                && !units
+                    .get(&module.package)
+                    .is_some_and(|unit| unit.manifest.dependencies.contains_key(dependency))
             {
                 return Err(error(
                     &module.path,
@@ -926,15 +949,42 @@ fn check_package(
     if !matches!(message.value, Expr::Selector(Selector::Atomic(_))) {
         return Err(error(&unit.path, None, "entry message must be a selector"));
     }
-    let mut refs = BTreeSet::new();
-    static_refs(&message, &mut refs, &unit.path)?;
-    if !refs.is_empty() {
-        return Err(error(
-            &unit.path,
-            None,
-            "entry message cannot reference globals",
-        ));
-    }
+    let Expr::Selector(Selector::Atomic(selector)) = message.value else {
+        unreachable!()
+    };
+    let capability_type = types::resolve_type(
+        &environment.types,
+        &Loc {
+            span,
+            value: crate::TypeExpr::Variable("std/runtime/Syscall".into()),
+        },
+    )
+    .map_err(|e| type_error(&unit.path, None, e))?;
+    // The synthetic name cannot be written in source. Only startup receives it.
+    let capability_name = "@entry:syscall";
+    let capability = types::Binding {
+        name: capability_name.into(),
+        pattern: span,
+        value: std::rc::Rc::new(types::TypeEvidence {
+            ty: capability_type,
+            expression: span,
+            origin: types::EvidenceOrigin::Expression,
+            value_from: None,
+            methods: Vec::new(),
+            selector: None,
+        }),
+    };
+    let entry_environment = environment.extended([capability]);
+    let message = Loc {
+        span,
+        value: Expr::Selector(Selector::Keyword(vec![(
+            selector,
+            Loc {
+                span,
+                value: Expr::Variable(capability_name.into()),
+            },
+        )])),
+    };
     let expression = Loc {
         span,
         value: Expr::Send {
@@ -946,7 +996,7 @@ fn check_package(
         },
     };
     let mut statements = types::check_statements_in(
-        &environment,
+        &entry_environment,
         &[Loc {
             span,
             value: Stmt::Expr(expression),
@@ -959,6 +1009,12 @@ fn check_package(
             None,
             "entry actor must accept the message without a reply",
         ));
+    }
+    if let TypedStatement::NoReplySend { message, .. } = &mut statements[0] {
+        let types::TypedExprKind::Selector(Selector::Keyword(payloads)) = &mut message.kind else {
+            unreachable!()
+        };
+        payloads[0].1.kind = types::TypedExprKind::Syscall;
     }
     Ok(CheckedPackage {
         globals: order

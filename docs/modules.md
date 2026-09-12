@@ -2,7 +2,7 @@
 
 A source file defines one module. A compilation unit contains all modules in one
 package; a program links those units and selects a global actor to receive an
-initial atomic message. There is no script-style top-level statement sequence.
+initial keyword message carrying the runtime syscall capability. There is no script-style top-level statement sequence.
 
 ## Package Layout
 
@@ -23,13 +23,17 @@ not include the `.aspen` extension or a terminal `index` component. Defining
 both `src/sub.aspen` and `src/sub/index.aspen` is an error.
 
 ```aspen
+import std/runtime (type Syscall).
+
 export let main = {
-  def start => syscall write: 1 data: "Hello, world!\n".
+  def start: Syscall syscall => syscall write: 1 data: "Hello, world!\n".
 }.
 ```
 
-The entry actor must be exported and accept the configured atomic message with
-no reply. Execution uses an ordinary send, then the existing runtime waits for
+The manifest's `message: start` selects `start:`. The runtime supplies its sole
+payload: an actor satisfying the bundled `std/runtime` type `Syscall`. The entry
+actor must be exported and accept that message with no reply. Its parameter can
+use `Syscall` or any compatible structural interface, including a narrower one. Execution uses an ordinary send, then the existing runtime waits for
 actor work to drain. Global declarations do not implicitly execute any method.
 
 Local dependencies name other packages:
@@ -70,7 +74,27 @@ tools / output     // operator message send
 
 Partially spaced paths are rejected. Every slash in a qualified reference must
 be adjacent to both names. Local method bindings remain lexical and may shadow
-global value bindings. The existing shadowable `syscall` fallback is unchanged.
+global value bindings. There is no ambient `syscall` binding; access to the
+runtime capability must be passed or captured explicitly.
+
+## Standard Library
+
+The compiler bundles the `std` package; no dependency path is needed to import
+`std/runtime`. The package name `std` is reserved so dependencies cannot replace
+the runtime's trusted interface. Its exported `Syscall` type is a transparent
+alias for `{ write: int data: bytes -> int }`, not an actor value or constructor.
+The native actor is created internally and injected only at program startup.
+
+When migrating from the global syscall API, keep `message: start` in the
+manifest, replace `def start =>` with `def start: Syscall syscall =>`, and import
+`Syscall` explicitly. An entrypoint that needs no authority may instead accept
+`start: {} ignored`. Helpers that previously used the global must accept the
+capability in messages or capture it in actors created during startup.
+
+Narrower structural types restrict calls available to checked code; they do not
+remove methods from the underlying actor. To restrict which file descriptors
+may be written, pass a wrapper actor enforcing that policy rather than the raw
+syscall capability.
 
 ## Type Aliases
 

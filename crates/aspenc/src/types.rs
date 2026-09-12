@@ -67,6 +67,7 @@ pub struct TypedExpression {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypedExprKind {
+    /// Startup-only runtime capability; never synthesized from a source name.
     Syscall,
     Int(i64),
     Float(crate::FloatValue),
@@ -1416,20 +1417,6 @@ fn type_expression(
                 },
             )
         }
-        Expr::Variable(name) if name == "syscall" && environment.lookup(name).is_none() => (
-            Type::Actor(ActorType {
-                methods: vec![MethodType {
-                    parameters: Vec::new(),
-                    input: Type::Selector(Selector::Keyword(vec![
-                        ("write".into(), Type::Int),
-                        ("data".into(), Type::Bytes),
-                    ])),
-                    reply: Some(Type::Int),
-                }],
-            }),
-            None,
-            TypedExprKind::Syscall,
-        ),
         Expr::Variable(name) => {
             let binding = environment
                 .lookup(name)

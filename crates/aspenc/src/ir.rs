@@ -38,7 +38,7 @@ pub enum SendMode {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operation {
-    /// The session's shared syscall actor; lexical bindings may shadow it.
+    /// Startup's runtime-provided syscall capability, unavailable to source lookup.
     Syscall,
     Global(String),
     DefineGlobal {
