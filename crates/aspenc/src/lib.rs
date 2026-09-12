@@ -8,7 +8,7 @@ pub mod ir;
 pub mod modules_syntax;
 pub mod package;
 pub use modules_syntax::{
-    GlobalSyntax, ImportBinding, ImportSyntax, ImportedName, ModuleSyntax, parse_module,
+    GlobalSyntax, ImportBinding, ImportSyntax, ImportedName, ModuleSyntax, TypeAlias, parse_module,
 };
 mod numbers;
 mod strings;
@@ -80,6 +80,9 @@ pub enum Token<'a> {
     Equals,
     Dot,
     Comma,
+    Less,
+    Greater,
+    Subtype,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -197,6 +200,10 @@ impl<'a> Iterator for Lexer<'a> {
                 self.advance('-');
                 self.advance('>');
                 Token::Arrow
+            } else if self.remaining.starts_with("<:") {
+                self.advance('<');
+                self.advance(':');
+                Token::Subtype
             } else if self.remaining.starts_with("=>") {
                 self.advance('=');
                 self.advance('>');
@@ -219,6 +226,8 @@ impl<'a> Iterator for Lexer<'a> {
                     '=' => Token::Equals,
                     '.' => Token::Dot,
                     ',' => Token::Comma,
+                    '<' => Token::Less,
+                    '>' => Token::Greater,
                     _ => {
                         self.diagnostics.push(Diagnostic {
                             span: Span {
@@ -294,6 +303,7 @@ pub struct Actor {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Method {
+    pub parameters: Vec<Loc<TypeParameterExpr>>,
     pub pattern: Loc<Pattern>,
     /// The type accepted by the reply target; omission means no reply target.
     pub reply: Option<Loc<TypeExpr>>,
@@ -314,12 +324,24 @@ pub enum TypeExpr {
     OpTagged,
     KeywordTagged,
     Variable(String),
+    Apply {
+        name: String,
+        arguments: Vec<Loc<TypeExpr>>,
+    },
     Actor(Vec<Loc<TypeMethod>>),
     Selector(Selector<Loc<TypeExpr>>),
 }
 
+/// A method-local type parameter; an omitted bound is the empty actor type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeParameterExpr {
+    pub name: Loc<String>,
+    pub upper_bound: Option<Loc<TypeExpr>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeMethod {
+    pub parameters: Vec<Loc<TypeParameterExpr>>,
     pub input: Loc<TypeExpr>,
     pub reply: Option<Loc<TypeExpr>>,
 }
@@ -366,6 +388,7 @@ pub enum Expr {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Program {
+    pub aliases: Vec<Loc<TypeAlias>>,
     pub statements: Vec<Loc<Stmt>>,
 }
 

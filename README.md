@@ -27,6 +27,52 @@ They follow the same sign and separator rules as integers; decimal points requir
 digits on both sides, leaving `1.` as an integer followed by a statement terminator.
 Overflow is rejected; rounding and underflow to signed zero are allowed.
 
+## Method Type Parameters
+
+Methods can name their type parameters explicitly. Bounds default to `{}`, and
+calls infer type arguments from the message:
+
+```aspen
+export let service = {
+  def <T1, T2 <: { x -> #y }> do: T1 t1 with: T2 t2 -> T1 =>
+    let #y = t2 x.
+    ^ t1.
+}.
+```
+
+`T1 t1` binds `t1` at exactly type `T1`, without introducing another parameter.
+The reply retains the caller's inferred type rather than widening to `{}`.
+Structural actor annotations use the same syntax: `{ <T> do: T -> T }`.
+There is no explicit type-argument syntax on calls.
+
+All parameters are in scope throughout their list's bounds. Guarded self and
+mutual bounds are supported, for example
+`def <T <: { next -> T }> run: T t => t next next next.` inside an actor.
+Bare cycles such as `<T <: T>` or `<T <: U, U <: T>` are rejected. These are
+F-bounded subtype constraints, not equirecursive equalities: the bound exposes
+methods on `T` but does not make `T` equal to its bound. Unannotated receiver
+variables continue to introduce implicit bounded parameters.
+
+## Type Aliases
+
+Aliases are transparent, private by default, and live in a separate namespace:
+
+```aspen
+type Text string.
+export type Box<T> { get -> T. }.
+type Chain { value -> int. next -> Chain. }.
+```
+
+Use `Box<string>` to supply explicit type arguments. Bounds use `<T <: Other>`;
+omitted bounds are `{}`. Forward references and guarded mutual recursion are
+supported, with implicit unfolding on either side of type comparisons. Bare
+recursive cycles and recursive applications that change their type arguments
+are rejected. Aliases have no runtime representation.
+
+Import types explicitly with `import app/model (value, type Box as LocalBox).`,
+or access exported types through a module import, such as `model/Box<string>`.
+See [modules](docs/modules.md) for namespace and visibility details.
+
 ## Low-Level Output
 
 The global actor `syscall` exposes real OS syscalls. For example:

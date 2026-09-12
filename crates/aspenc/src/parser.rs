@@ -83,11 +83,53 @@ impl<'a, 'd> Parser<'a, 'd> {
     }
     fn operator(&self) -> Option<(&'static str, u8)> {
         match self.peek()? {
+            Token::Less => Some(("<", 2)),
+            Token::Greater => Some((">", 2)),
             Token::Plus => Some(("+", 2)),
             Token::Minus => Some(("-", 2)),
             Token::Star => Some(("*", 3)),
             Token::Slash => Some(("/", 3)),
             _ => None,
+        }
+    }
+
+    pub(crate) fn type_parameters(&mut self) -> Option<Vec<Loc<TypeParameterExpr>>> {
+        if self.peek() != Some(Token::Less) {
+            return Some(Vec::new());
+        }
+        // A bare `<` selector can still introduce a method. A list instead
+        // continues its first name with a bound, comma, or closing angle.
+        let next = self.tokens.get(self.index + 1).map(|t| t.value);
+        let after = self.tokens.get(self.index + 2).map(|t| t.value);
+        if matches!(
+            next,
+            Some(Token::OpenParen | Token::OpenCurly | Token::Underscore | Token::Hash)
+        ) || (matches!(next, Some(Token::Identifier(_)))
+            && !matches!(after, Some(Token::Comma | Token::Greater | Token::Subtype)))
+        {
+            return Some(Vec::new());
+        }
+        self.bump();
+        let mut parameters = Vec::new();
+        loop {
+            let Some(Token::Identifier(name)) = self.peek() else {
+                return self.error("expected type parameter name");
+            };
+            let span = self.bump().span;
+            let name = Loc {
+                value: name.to_owned(),
+                span,
+            };
+            let upper_bound = if self.eat(Token::Subtype) {
+                Some(self.ty(false)?)
+            } else {
+                None
+            };
+            parameters.push(self.located(span.start, TypeParameterExpr { name, upper_bound }));
+            if self.eat(Token::Greater) {
+                return Some(parameters);
+            }
+            self.expect(Token::Comma, "expected ',' or '>' after type parameter")?;
         }
     }
 
@@ -186,6 +228,7 @@ impl<'a, 'd> Parser<'a, 'd> {
             let mut methods = Vec::new();
             while self.peek() == Some(Token::Def) {
                 let start = self.bump().span.start;
+                let parameters = self.type_parameters()?;
                 let pattern = self.pattern(true)?;
                 let reply = if self.eat(Token::Arrow) {
                     Some(self.ty(false)?)
@@ -200,6 +243,7 @@ impl<'a, 'd> Parser<'a, 'd> {
                 methods.push(self.located(
                     start,
                     Method {
+                        parameters,
                         pattern,
                         reply,
                         body,
@@ -231,7 +275,8 @@ impl<'a, 'd> Parser<'a, 'd> {
                     return self.error("qualified names require adjacent '/' and identifiers; division requires spaces on both sides");
                 }
                 let Some(Token::Identifier(part)) = self.peek() else {
-                    return self.error("expected name after '/' (division requires spaces on both sides)");
+                    return self
+                        .error("expected name after '/' (division requires spaces on both sides)");
                 };
                 name.push('/');
                 name.push_str(part);
@@ -305,7 +350,9 @@ impl<'a, 'd> Parser<'a, 'd> {
                 if operator == "/" {
                     let slash = self.tokens[self.index];
                     let left_adjacent = self.tokens[self.index - 1].span.end == slash.span.start;
-                    let right_adjacent = self.tokens.get(self.index + 1)
+                    let right_adjacent = self
+                        .tokens
+                        .get(self.index + 1)
                         .is_some_and(|next| slash.span.end == next.span.start);
                     if left_adjacent || right_adjacent {
                         return self.error("division requires spaces on both sides of '/' (qualified names use adjacent identifiers)");
@@ -343,7 +390,7 @@ impl<'a, 'd> Parser<'a, 'd> {
         Some(callee)
     }
 
-    fn ty(&mut self, selector_mode: bool) -> Option<Loc<TypeExpr>> {
+    pub(crate) fn ty(&mut self, selector_mode: bool) -> Option<Loc<TypeExpr>> {
         let start = self.span().start;
         let value = if self.eat(Token::OpenParen) {
             let ty = self.ty(false)?;
@@ -356,14 +403,22 @@ impl<'a, 'd> Parser<'a, 'd> {
             if self.peek() != Some(Token::CloseCurly) {
                 loop {
                     let method_start = self.span().start;
+                    let parameters = self.type_parameters()?;
                     let input = self.ty(true)?;
                     let reply = if self.eat(Token::Arrow) {
                         Some(self.ty(false)?)
                     } else {
                         None
                     };
-                    methods.push(self.located(method_start, TypeMethod { input, reply }));
-                    if !self.eat(Token::Dot) {
+                    methods.push(self.located(
+                        method_start,
+                        TypeMethod {
+                            parameters,
+                            input,
+                            reply,
+                        },
+                    ));
+                    if !self.eat(Token::Dot) || self.peek() == Some(Token::CloseCurly) {
                         break;
                     }
                 }
@@ -373,8 +428,32 @@ impl<'a, 'd> Parser<'a, 'd> {
         } else if selector_mode {
             TypeExpr::Selector(self.selector(|p| p.ty(false))?)
         } else if let Some(Token::Identifier(name)) = self.peek() {
-            self.bump();
-            match name {
+            let mut name = name.to_owned();
+            let mut end = self.bump().span.end;
+            while self.peek() == Some(Token::Slash) {
+                let slash = self.bump();
+                if slash.span.start != end || slash.span.end != self.span().start {
+                    return self.error("qualified type names require adjacent '/' and identifiers");
+                }
+                let Some(Token::Identifier(part)) = self.peek() else {
+                    return self.error("expected type name after '/'");
+                };
+                name.push('/');
+                name.push_str(part);
+                end = self.bump().span.end;
+            }
+            if self.eat(Token::Less) {
+                let mut arguments = Vec::new();
+                loop {
+                    arguments.push(self.ty(false)?);
+                    if self.eat(Token::Greater) {
+                        break;
+                    }
+                    self.expect(Token::Comma, "expected ',' or '>' after type argument")?;
+                }
+                return Some(self.located(start, TypeExpr::Apply { name, arguments }));
+            }
+            match name.as_str() {
                 "never" => TypeExpr::Never,
                 "bytes" => TypeExpr::Bytes,
                 "string" => TypeExpr::String,
@@ -397,7 +476,16 @@ impl<'a, 'd> Parser<'a, 'd> {
 pub fn parse(lexer: Lexer<'_>, diagnostics: &mut Vec<Diagnostic>) -> Program {
     let (mut parser, invalid) = Parser::new(lexer, diagnostics);
     let mut statements = Vec::new();
+    let mut aliases = Vec::new();
     while parser.peek().is_some() {
+        let start = parser.span().start;
+        if parser.eat(Token::Identifier("type")) {
+            let Some(alias) = modules_syntax::type_alias(&mut parser, start, false) else {
+                break;
+            };
+            aliases.push(alias);
+            continue;
+        }
         let Some(statement) = parser.statement() else {
             break;
         };
@@ -405,8 +493,12 @@ pub fn parse(lexer: Lexer<'_>, diagnostics: &mut Vec<Diagnostic>) -> Program {
     }
     if invalid {
         statements.clear();
+        aliases.clear();
     }
-    Program { statements }
+    Program {
+        aliases,
+        statements,
+    }
 }
 
 /// Parse a type in ordinary mode; actor method inputs enter selector mode.
@@ -493,6 +585,147 @@ mod tests {
             panic!()
         };
         binding.pattern
+    }
+
+    #[test]
+    fn generic_and_qualified_type_syntax() {
+        let mut diagnostics = Vec::new();
+        let syntax =
+            parse_type_expression("pkg/Box<int, Other<string>>", &mut diagnostics).unwrap();
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let TypeExpr::Apply { name, arguments } = syntax.value else {
+            panic!()
+        };
+        assert_eq!(name, "pkg/Box");
+        assert_eq!(arguments[0].value, TypeExpr::Int);
+        assert!(matches!(&arguments[1].value, TypeExpr::Apply { name, .. } if name == "Other"));
+        assert_eq!(arguments[0].span.start, Pos { line: 1, col: 9 });
+        let syntax = parse_type_expression("pkg/Number", &mut diagnostics).unwrap();
+        assert_eq!(syntax.value, TypeExpr::Variable("pkg/Number".into()));
+        for source in [
+            "Box<>",
+            "Box<int,>",
+            "Box<int",
+            "pkg/ Number",
+            "pkg /Number",
+        ] {
+            diagnostics.clear();
+            assert!(
+                parse_type_expression(source, &mut diagnostics).is_none(),
+                "{source}"
+            );
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn programs_preserve_alias_declarations_separately() {
+        let mut diagnostics = Vec::new();
+        let program = parse(
+            Lexer::new("type Box<T> { get -> T. }. let Box<int> x = {}."),
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(program.aliases.len(), 1);
+        assert_eq!(program.aliases[0].name.value, "Box");
+        assert_eq!(program.statements.len(), 1);
+        diagnostics.clear();
+        parse(Lexer::new("type Name int"), &mut diagnostics);
+        assert!(!diagnostics.is_empty());
+    }
+
+    #[test]
+    fn explicit_method_type_parameters_preserve_bounds_and_locations() {
+        let Expr::Actor(actor) =
+            expression("{def <T1, T2 <: { x -> #y }> do: T1 t1 with: T2 t2 -> T1 => ^ t1.}").value
+        else {
+            panic!()
+        };
+        let method = &actor.methods[0];
+        assert_eq!(method.parameters.len(), 2);
+        assert_eq!(method.parameters[0].name.value, "T1");
+        assert_eq!(method.parameters[0].span.start.col, 7);
+        assert_eq!(method.parameters[0].span.end.col, 9);
+        assert!(method.parameters[0].upper_bound.is_none());
+        let parameter = &method.parameters[1];
+        assert_eq!(parameter.name.value, "T2");
+        assert_eq!(parameter.name.span.start.col, 11);
+        assert_eq!(parameter.name.span.end.col, 13);
+        assert!(matches!(
+            parameter.upper_bound.as_ref().unwrap().value,
+            TypeExpr::Actor(_)
+        ));
+        assert_eq!(parameter.span.end.col, 28);
+        assert_eq!(
+            method.reply.as_ref().unwrap().value,
+            TypeExpr::Variable("T1".into())
+        );
+    }
+
+    #[test]
+    fn structural_methods_and_mutual_bounds_have_explicit_parameters() {
+        for source in [
+            "{ <T> do: T -> T }",
+            "{ <T <: U, U <: T> do: T with: U -> T }",
+            "{ <T <: { <U <: T> do: U -> T }> do: T -> T }",
+            "{ <T <: #> int> do: T -> T }",
+        ] {
+            let mut diagnostics = Vec::new();
+            let ty = parse_type_expression(source, &mut diagnostics).unwrap();
+            assert!(diagnostics.is_empty(), "{source}: {diagnostics:?}");
+            let TypeExpr::Actor(methods) = ty.value else {
+                panic!()
+            };
+            assert!(!methods[0].parameters.is_empty());
+        }
+        expression("{def <T <: U, U <: T> do: T t with: U u -> T =>}");
+    }
+
+    #[test]
+    fn malformed_type_parameter_lists_are_rejected() {
+        for list in [
+            "<>",
+            "<,T>",
+            "<T,>",
+            "<T U>",
+            "<T <:>",
+            "<T <: , U>",
+            "<T",
+            "<T,,U>",
+        ] {
+            for source in [
+                format!("{{def {list} do: T t =>}}."),
+                format!("{{ {list} do: T -> T }}"),
+            ] {
+                let mut diagnostics = Vec::new();
+                if source.starts_with("{def") {
+                    parse(Lexer::new(&source), &mut diagnostics);
+                } else {
+                    parse_type_expression(&source, &mut diagnostics);
+                }
+                assert!(!diagnostics.is_empty(), "{source}");
+            }
+        }
+    }
+
+    #[test]
+    fn angle_tokens_do_not_break_operator_selectors() {
+        for operator in ["+", "-", "*", "/", "<", ">"] {
+            let Expr::Actor(actor) = expression(&format!("{{def {operator} x =>}}")).value else {
+                panic!()
+            };
+            assert!(actor.methods[0].parameters.is_empty());
+            assert_eq!(
+                shape(&expression(&format!("a {operator} b"))),
+                format!("(a #{operator}[b])")
+            );
+            let mut diagnostics = Vec::new();
+            assert!(
+                parse_type_expression(&format!("{{ {operator} int -> int }}"), &mut diagnostics)
+                    .is_some()
+            );
+            assert!(diagnostics.is_empty());
+        }
     }
 
     #[test]
@@ -701,7 +934,9 @@ mod tests {
         assert_eq!(methods[0].span.end.col, 13);
         assert_eq!(methods[1].reply.as_ref().unwrap().value, TypeExpr::Never);
         assert_eq!(methods[2].reply.as_ref().unwrap().value, TypeExpr::Int);
-        for source in ["{foo ->}", "{foo.}", "{foo bar}"] {
+        assert!(parse_type_expression("{foo.}", &mut diagnostics).is_some());
+        assert!(diagnostics.is_empty());
+        for source in ["{foo ->}", "{foo..}", "{foo bar}"] {
             let mut diagnostics = Vec::new();
             assert!(
                 parse_type_expression(source, &mut diagnostics).is_none(),

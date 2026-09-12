@@ -5,6 +5,7 @@ use crate::{parser::Parser, *};
 pub struct ModuleSyntax {
     pub imports: Vec<Loc<ImportSyntax>>,
     pub globals: Vec<Loc<GlobalSyntax>>,
+    pub aliases: Vec<Loc<TypeAlias>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub enum ImportBinding {
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct ImportedName {
+    pub is_type: bool,
     pub name: Loc<String>,
     pub alias: Loc<String>,
 }
@@ -29,6 +31,14 @@ pub struct ImportedName {
 pub struct GlobalSyntax {
     pub exported: bool,
     pub binding: Let,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TypeAlias {
+    pub exported: bool,
+    pub name: Loc<String>,
+    pub parameters: Vec<Loc<TypeParameterExpr>>,
+    pub body: Loc<TypeExpr>,
 }
 
 fn name(parser: &mut Parser<'_, '_>) -> Option<Loc<String>> {
@@ -61,6 +71,7 @@ fn import(parser: &mut Parser<'_, '_>) -> Option<Loc<ImportSyntax>> {
     } else if parser.eat(Token::OpenParen) {
         let mut names = Vec::new();
         loop {
+            let is_type = parser.eat(Token::Identifier("type"));
             let imported = name(parser)?;
             let alias = if parser.eat(Token::Identifier("as")) {
                 name(parser)?
@@ -70,6 +81,7 @@ fn import(parser: &mut Parser<'_, '_>) -> Option<Loc<ImportSyntax>> {
             names.push(ImportedName {
                 name: imported,
                 alias,
+                is_type,
             });
             if !parser.eat(Token::Comma) {
                 break;
@@ -82,6 +94,26 @@ fn import(parser: &mut Parser<'_, '_>) -> Option<Loc<ImportSyntax>> {
     };
     parser.expect(Token::Dot, "expected '.' after import")?;
     Some(parser.located(start, ImportSyntax { path, binding }))
+}
+
+pub(crate) fn type_alias(
+    parser: &mut Parser<'_, '_>,
+    start: Pos,
+    exported: bool,
+) -> Option<Loc<TypeAlias>> {
+    let name = name(parser)?;
+    let parameters = parser.type_parameters()?;
+    let body = parser.ty(false)?;
+    parser.expect(Token::Dot, "expected '.' after type alias")?;
+    Some(parser.located(
+        start,
+        TypeAlias {
+            exported,
+            name,
+            parameters,
+            body,
+        },
+    ))
 }
 
 fn simple_binding(pattern: &Loc<Pattern>) -> bool {
@@ -122,11 +154,17 @@ pub fn parse_module(lexer: Lexer<'_>, diagnostics: &mut Vec<Diagnostic>) -> Modu
         }
         let start = parser.span().start;
         let exported = parser.eat(Token::Identifier("export"));
+        if parser.eat(Token::Identifier("type")) {
+            let alias = type_alias(&mut parser, start, exported);
+            let Some(alias) = alias else { break };
+            module.aliases.push(alias);
+            continue;
+        }
         if parser.peek() != Some(Token::Let) {
             parser.error::<()>(if exported {
-                "expected 'let' after 'export'"
+                "expected 'let' or 'type' after 'export'"
             } else {
-                "expected import, let, or export let declaration at module top level"
+                "expected import, let, type, or exported declaration at module top level"
             });
             break;
         }
@@ -219,6 +257,58 @@ mod tests {
             "{}. ",
             "x.",
             "export import p/m.",
+        ] {
+            let (_, diagnostics) = parsed(source);
+            assert!(!diagnostics.is_empty(), "{source}");
+        }
+    }
+
+    #[test]
+    fn aliases_and_mixed_imports_preserve_names_and_spans() {
+        let source = "import pkg/types (value, type Box as LocalBox).\nexport type Wrapper<T <: { compare: T -> int. }> LocalBox<T>.\ntype Number int.";
+        let (module, diagnostics) = parsed(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        let ImportBinding::Names(names) = &module.imports[0].binding else {
+            panic!()
+        };
+        assert!(!names[0].is_type);
+        assert!(names[1].is_type);
+        assert_eq!(names[1].name.value, "Box");
+        assert_eq!(names[1].alias.value, "LocalBox");
+        assert_eq!(module.aliases.len(), 2);
+        let alias = &module.aliases[0];
+        assert!(alias.exported);
+        assert_eq!(alias.name.value, "Wrapper");
+        assert_eq!(alias.span.start, Pos { line: 2, col: 1 });
+        assert_eq!(alias.parameters[0].name.value, "T");
+        assert!(matches!(
+            alias.parameters[0].upper_bound.as_ref().unwrap().value,
+            TypeExpr::Actor(_)
+        ));
+        assert!(
+            matches!(&alias.body.value, TypeExpr::Apply { name, arguments } if name == "LocalBox" && arguments.len() == 1)
+        );
+        assert!(!module.aliases[1].exported);
+        assert_eq!(module.aliases[1].body.value, TypeExpr::Int);
+        assert_eq!(module.aliases[1].span.end, Pos { line: 3, col: 17 });
+    }
+
+    #[test]
+    fn malformed_aliases_require_bodies_and_periods() {
+        for source in [
+            "type Name int",
+            "type Name.",
+            "type .",
+            "export type Name int",
+            "type Box<> int.",
+            "type Box<T,> T.",
+            "type Box<T <:> T.",
+            "type Box<T> Other<>.",
+            "type Box Other<int,>.",
+            "type Box pkg/ Name.",
+            "type Box pkg /Name.",
+            "import pkg (type).",
+            "import pkg (type Name as).",
         ] {
             let (_, diagnostics) = parsed(source);
             assert!(!diagnostics.is_empty(), "{source}");

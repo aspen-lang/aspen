@@ -12,19 +12,23 @@
 = Scope and Syntax
 
 This specification describes selectors, recursive patterns, structural actors,
-message sends, statement sequences, explicit no-reply signatures, implicit
-bounded method polymorphism, bidirectional typing, and
+message sends, statement sequences, explicit no-reply signatures, explicit and
+implicit bounded method polymorphism, bidirectional typing, and
 diagnostic provenance. The proposed BEAM execution contract and compiler
 foundation milestones are recorded separately in `docs/beam-runtime.md`.
 This specification describes parsing and static typing, not a runtime
 implementation or an evaluation protocol.
 
 ```text
-module    ::= (import | global)*
+module    ::= (import | global | type-alias)*
+type-alias ::= "export"? "type" type-name type-parameters? type "."
+type-application ::= qualified-type-name "<" type ("," type)* ">"
 global    ::= "export"? "let" annotated-name "=" static-value "."
 import    ::= "import" module-path ("as" name | "(" imports ")")? "."
 actor     ::= "{" method* "}"
-method    ::= "def" receiver-pattern ("->" type)? "=>" statement*
+method    ::= "def" type-parameters? receiver-pattern ("->" type)? "=>" statement*
+type-parameters ::= "<" type-parameter ("," type-parameter)* ">"
+type-parameter ::= type-name ("<:" type)?
 statement ::= "let" pattern "=" expression "."
             | expression "."
 ```
@@ -65,6 +69,30 @@ Identifiers
 start with a Unicode alphabetic character or underscore and continue with
 Unicode alphanumeric characters or underscores. The exact words `let` and `def`
 are reserved; the exact word `_` is the discard pattern.
+
+== Transparent Type Aliases
+
+A declaration such as `type Text string.` introduces a transparent name in a
+separate type namespace. It introduces neither a runtime value nor a fresh
+nominal type. Names are private unless declared with `export type`; forward
+references and mutually recursive declarations are permitted. Imports select
+types explicitly, as in `import app/model (value, type Text as LocalText).`;
+module imports also expose exported types through adjacent qualified names such
+as `model/Text`. Type parameters shadow aliases, while primitive names cannot
+be redeclared.
+
+Generic aliases declare explicit parameters: `type Box<T <: {}> { get -> T. }.`
+An omitted bound is `{}`. Applications supply exactly the declared number of
+type arguments, for example `Box<string>`, and each argument must satisfy its
+substituted bound. Alias bodies resolve in their declaration namespace, not at
+the use site.
+
+Recursive aliases denote structural equations and unfold implicitly on either
+side of subsumption. Every cycle must pass through an actor or selector
+constructor; `type Loop Loop.` is invalid. Rigid method parameters remain
+rigid: a bound is not an equality. The current implementation rejects recursive
+alias instantiations whose arguments change along a cycle, rather than expanding
+an unbounded family such as `type Grow<T> { next -> Grow<#item: T>. }.`.
 
 == Ordinary and Selector Modes
 
@@ -120,8 +148,9 @@ No reply is a signature property, not a value type: it is neither
 Annotations constrain the type of reply messages, not whether or how many
 replies are sent.
 
-The parameter notation describes semantic signatures. Receiver variables
-introduce those parameters implicitly; source patterns need no annotations.
+Parameter lists are source syntax in both method declarations and structural
+actor signatures. A missing upper bound defaults to `{}`. Receiver variables
+without a named parameter annotation still introduce implicit parameters.
 
 == Message Sends and Precedence
 
@@ -396,6 +425,49 @@ bindings. Sibling methods do not share bindings. Inner methods quantify only
 their own parameters; captured outer parameters remain bound by the enclosing
 signature.
 
+== Explicit Parameters and Recursive Bounds
+
+A method may declare named type parameters before its receiver pattern:
+
+```text
+{ def <T1, T2 <: { x -> #y }> do: T1 t1 with: T2 t2 -> T1 =>
+    let #y = t2 x.
+    ^ t1.
+}
+{ def <T <: { next -> T }> run: T t => t next next next. }
+```
+
+All names in a parameter list are in scope throughout every bound in that list,
+the receiver, reply annotation, and method body. Duplicate names in one list
+are errors. Names are lexical, not shared with sibling methods. Each parameter
+has a fresh identity. An omitted bound means `{}`. `T x`, when `T` resolves to
+a rigid parameter, binds `x : T` exactly and adds no extra quantifier. The body
+cannot choose a concrete instance of `T` or replace it with another parameter
+merely because their bounds agree.
+
+Bounds can refer forward, to themselves, or mutually to other parameters.
+Recursive cycles must be guarded by a structural type constructor; a cycle
+consisting only of bare variable bounds is rejected. For example:
+
+```text
+<T <: { next -> T }>                       // accepted
+<T <: { next -> U }, U <: { next -> T }>    // accepted
+<T <: U, U <: { next -> T }>                // accepted
+<T <: T>                                  // rejected
+<T <: U, U <: T>                           // rejected
+```
+
+These are F-bounded constraints, not equirecursive type equalities. The bound
+`T <: { next -> T }` exposes `next` on a value of type `T`, and its reply is
+still `T`, allowing repeated sends. It does not assert
+`T = { next -> T }`, identify distinct parameters, or admit an arbitrary value
+of the bound as a value of rigid type `T`.
+
+Calls use ordinary message syntax with input-directed parameter inference;
+there is no explicit call-site type argument list. Inferred instances must
+satisfy the bounds after simultaneous substitution of the whole list, and
+replies preserve those precise instances rather than widening to the bounds.
+
 = Expression Rules
 
 == Actors and References
@@ -543,8 +615,8 @@ receiver. No runtime delivery or execution is implemented by these typing rules.
 
 Every pair of receiver inputs must be provably disjoint at actor construction.
 For a generic signature, its accepted domain replaces method parameters with
-their upper bounds, recursively and with earlier substitutions applied to later
-bounds. Thus two independently fresh whole-value parameters bounded by `{}`
+their upper bounds recursively. Bounds share whole-list scope rather than
+source-order scope; recursive bound traversal must terminate conservatively. Thus two independently fresh whole-value parameters bounded by `{}`
 are overlapping, not distinct dispatch tags.
 
 The conservative disjointness proof uses these rules:
@@ -650,17 +722,18 @@ type ::= "never" | "bytes" | "string" | "int" | "float"
        | "(" type ")"
        | "#" selector-of-types
        | "{" (signature ("." signature)*)? "}"
-signature ::= type-input ("->" type)?
+signature ::= type-parameters? type-input ("->" type)?
 ```
 
 Actor type inputs retain selector mode; ordinary types use `#` for selectors.
 Every method signature and selector payload retains its own span. Resolving
 this syntax uses a separate type-name environment and produces semantic types.
 An unknown name is an error at that name, never an implicit declaration. Named
-types may refer to existing rigid type variables. No source-level declaration
-syntax for named type variables or explicit quantifiers is introduced here;
-compiler clients can supply a type environment. Type syntax parsing itself does
-not depend on that environment. Actor disjointness is checked during resolution.
+types may refer to existing rigid type variables. Method declarations and actor
+type signatures introduce named variables with explicit parameter lists, such as
+`{ <T> do: T -> T }`; compiler clients can also supply a type environment.
+Type syntax parsing itself does not depend on that environment. Actor
+disjointness is checked during resolution.
 
 == Annotation Parsing
 
@@ -693,10 +766,13 @@ Receiver selector mode is unchanged:
 
 == Annotation Typing
 
-Preparing `T x` resolves `T` and creates a fresh parameter `A <: T`, with binding
-template `x : A`. Let matching checks the actual value against `T` and
-instantiates `A` with that precise actual type. Receiver checking instead keeps
-`A` rigid and quantifies it over the method signature.
+Preparing `T x` resolves `T`. If it denotes an existing rigid type parameter,
+the accepted type and binding template are exactly `T`, with no fresh parameter
+or additional quantifier. Otherwise, preparation creates a fresh parameter
+`A <: T`, with binding template `x : A`. Let matching checks the actual value
+against the accepted constraint and preserves that precise actual type.
+Receiver checking keeps any fresh `A` rigid and quantifies it over the method
+signature alongside explicitly declared parameters.
 
 ```text
 let {} x = {}. x.           // binds x : {}, discards x

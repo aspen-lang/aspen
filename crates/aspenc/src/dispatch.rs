@@ -30,6 +30,10 @@ pub enum RuntimeShape {
 impl RuntimeShape {
     /// Erase static information while retaining recursive selector tags.
     pub fn from_type(ty: &Type) -> Self {
+        Self::from_type_in(ty, &mut Vec::new())
+    }
+
+    fn from_type_in(ty: &Type, active: &mut Vec<crate::types::TypeVariable>) -> Self {
         match ty {
             Type::Never => Self::Empty,
             Type::Actor(actor) if actor.methods.is_empty() => Self::Any,
@@ -42,9 +46,19 @@ impl RuntimeShape {
             Type::Atom => Self::Atom,
             Type::OpTagged => Self::OpTagged,
             Type::KeywordTagged => Self::KeywordTagged,
-            Type::Variable(variable) => Self::from_type(&variable.upper_bound),
+            Type::Variable(variable) | Type::Alias(variable) => {
+                // Selector payloads are finite values. A constructor cycle
+                // without an intervening actor handle has no runtime inhabitant.
+                if active.contains(variable) {
+                    return Self::Empty;
+                }
+                active.push(variable.clone());
+                let shape = Self::from_type_in(&variable.upper_bound(), active);
+                active.pop();
+                shape
+            }
             Type::Selector(selector) => {
-                let selector = selector.map(Self::from_type);
+                let selector = selector.map(|child| Self::from_type_in(child, active));
                 if selector.values().iter().any(|shape| shape.is_empty()) {
                     Self::Empty
                 } else {

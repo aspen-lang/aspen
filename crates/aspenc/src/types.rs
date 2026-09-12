@@ -227,9 +227,134 @@ impl Environment {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TypeEnvironment {
     bindings: Vec<(String, Type)>,
+    resolving_bounds: bool,
+    aliases: Rc<Vec<Loc<crate::TypeAlias>>>,
+    alias_bindings: Vec<(String, Type)>,
+    active_aliases: Vec<(String, Vec<Type>, TypeVariable, usize)>,
+    alias_guard: usize,
 }
 
 impl TypeEnvironment {
+    /// Install a mutually visible group in the separate type namespace.
+    pub fn with_aliases(&self, aliases: &[Loc<crate::TypeAlias>]) -> TypeResult<Self> {
+        let mut scope = self.clone();
+        let mut definitions = self.aliases.as_ref().clone();
+        for alias in aliases {
+            let name = &alias.name.value;
+            if definitions.iter().any(|a| a.name.value == *name)
+                || self.lookup(name).is_some()
+                || matches!(
+                    name.rsplit('/').next().unwrap(),
+                    "never"
+                        | "bytes"
+                        | "string"
+                        | "int"
+                        | "float"
+                        | "selector"
+                        | "atom"
+                        | "optagged"
+                        | "keywordtagged"
+                )
+            {
+                return Err(TypeError::InvalidAnnotation {
+                    span: alias.name.span,
+                    message: format!("duplicate or reserved type name '{name}'"),
+                });
+            }
+            definitions.push(alias.clone());
+        }
+        scope.aliases = Rc::new(definitions);
+        scope.alias_bindings = self.bindings.clone();
+        // Check even unused aliases, with their parameters kept rigid.
+        for alias in aliases {
+            let (parameters, located) = resolve_parameters(&scope, &alias.parameters)?;
+            let arguments = located
+                .iter()
+                .map(|p| Type::Variable(p.parameter.variable.clone()))
+                .collect();
+            parameters.instantiate_alias(&alias.name.value, arguments, alias.span)?;
+        }
+        Ok(scope)
+    }
+
+    fn instantiate_alias(&self, name: &str, arguments: Vec<Type>, span: Span) -> TypeResult<Type> {
+        let Some(alias) = self.aliases.iter().find(|alias| alias.name.value == name) else {
+            return Err(TypeError::UnknownType {
+                name: name.into(),
+                span,
+            });
+        };
+        if alias.parameters.len() != arguments.len() {
+            return Err(TypeError::InvalidAnnotation {
+                span,
+                message: format!(
+                    "type alias '{name}' expects {} type arguments, found {}",
+                    alias.parameters.len(),
+                    arguments.len()
+                ),
+            });
+        }
+        if let Some((_, previous, variable, guard)) = self
+            .active_aliases
+            .iter()
+            .find(|(active, _, _, _)| active == name)
+        {
+            if previous != &arguments {
+                return Err(TypeError::InvalidAnnotation {
+                    span,
+                    message: "recursive aliases with changing type arguments are not supported"
+                        .into(),
+                });
+            }
+            if self.alias_guard <= *guard {
+                return Err(TypeError::InvalidAnnotation {
+                    span,
+                    message:
+                        "recursive type aliases must pass through an actor or selector structure"
+                            .into(),
+                });
+            }
+            return Ok(Type::Alias(variable.clone()));
+        }
+        let mut scope = self.clone();
+        scope.bindings = self.alias_bindings.clone();
+        for (parameter, argument) in alias.parameters.iter().zip(&arguments) {
+            scope = scope.extended(parameter.name.value.clone(), argument.clone());
+        }
+        let variables = TypeVariable::try_recursive_group(1, |variables| {
+            scope.active_aliases.push((
+                name.into(),
+                arguments.clone(),
+                variables[0].clone(),
+                scope.alias_guard,
+            ));
+            for (parameter, argument) in alias.parameters.iter().zip(&arguments) {
+                let bound = parameter
+                    .upper_bound
+                    .as_ref()
+                    .map(|b| resolve_type(&scope, b))
+                    .transpose()?
+                    .unwrap_or(Type::UNIT);
+                if !argument.is_subtype_of(&bound) {
+                    return Err(TypeError::InvalidAnnotation {
+                        span,
+                        message: format!(
+                            "type argument {argument} does not satisfy bound {bound} for '{}'",
+                            parameter.name.value
+                        ),
+                    });
+                }
+            }
+            scope.resolving_bounds = true;
+            Ok::<_, TypeError>(vec![resolve_type(&scope, &alias.body)?])
+        })?;
+        let ty = variables[0].upper_bound();
+        if !self.resolving_bounds && !ty.is_well_formed() {
+            return Err(TypeError::InvalidActorType { span });
+        }
+        Ok(ty)
+    }
+
     pub fn extended(&self, name: impl Into<String>, ty: Type) -> Self {
         let mut scope = self.clone();
         scope.bindings.push((name.into(), ty));
@@ -245,7 +370,109 @@ impl TypeEnvironment {
     }
 }
 
+fn resolve_parameters(
+    environment: &TypeEnvironment,
+    syntax: &[Loc<crate::TypeParameterExpr>],
+) -> TypeResult<(TypeEnvironment, Vec<LocatedParameter>)> {
+    for (index, parameter) in syntax.iter().enumerate() {
+        if matches!(
+            parameter.name.value.as_str(),
+            "never"
+                | "bytes"
+                | "string"
+                | "int"
+                | "float"
+                | "selector"
+                | "atom"
+                | "optagged"
+                | "keywordtagged"
+        ) {
+            return Err(TypeError::InvalidAnnotation {
+                span: parameter.name.span,
+                message: "type parameter cannot shadow a primitive type name".into(),
+            });
+        }
+        if syntax[..index]
+            .iter()
+            .any(|p| p.name.value == parameter.name.value)
+        {
+            return Err(TypeError::InvalidAnnotation {
+                span: parameter.name.span,
+                message: format!("duplicate type parameter '{}'", parameter.name.value),
+            });
+        }
+        // Following only bare-variable bounds detects precisely the cycles
+        // that cannot reveal an actor or selector constructor when unfolded.
+        let mut visited = Vec::new();
+        let mut current = index;
+        loop {
+            if visited.contains(&current) {
+                return Err(TypeError::InvalidAnnotation {
+                    span: parameter.span,
+                    message:
+                        "recursive type bounds must pass through an actor or selector structure"
+                            .into(),
+                });
+            }
+            visited.push(current);
+            let Some(bound) = &syntax[current].upper_bound else {
+                break;
+            };
+            let TypeExpr::Variable(name) = &bound.value else {
+                break;
+            };
+            let Some(next) = syntax.iter().position(|p| p.name.value == *name) else {
+                break;
+            };
+            current = next;
+        }
+    }
+    let variables = TypeVariable::try_recursive_group(syntax.len(), |variables| {
+        let mut scope = environment.clone();
+        scope.resolving_bounds = true;
+        for (parameter, variable) in syntax.iter().zip(variables) {
+            scope = scope.extended(
+                parameter.name.value.clone(),
+                Type::Variable(variable.clone()),
+            );
+        }
+        syntax
+            .iter()
+            .map(|parameter| {
+                parameter
+                    .upper_bound
+                    .as_ref()
+                    .map(|bound| resolve_type(&scope, bound))
+                    .unwrap_or(Ok(Type::UNIT))
+            })
+            .collect::<TypeResult<Vec<_>>>()
+    })?;
+    let mut scope = environment.clone();
+    let mut parameters = Vec::new();
+    for (parameter, variable) in syntax.iter().zip(variables) {
+        if !environment.resolving_bounds && !variable.upper_bound().is_well_formed() {
+            return Err(TypeError::InvalidActorType {
+                span: parameter.span,
+            });
+        }
+        scope = scope.extended(
+            parameter.name.value.clone(),
+            Type::Variable(variable.clone()),
+        );
+        parameters.push(LocatedParameter {
+            parameter: TypeParameter { variable },
+            origin: parameter.span,
+        });
+    }
+    Ok((scope, parameters))
+}
+
 pub fn resolve_type(environment: &TypeEnvironment, syntax: &Loc<TypeExpr>) -> TypeResult<Type> {
+    let mut guarded = environment.clone();
+    if matches!(syntax.value, TypeExpr::Actor(_) | TypeExpr::Selector(_)) {
+        guarded.alias_guard += 1;
+    }
+    let environment = &guarded;
     let ty = match &syntax.value {
         TypeExpr::Bytes => Type::Bytes,
         TypeExpr::String => Type::String,
@@ -256,14 +483,22 @@ pub fn resolve_type(environment: &TypeEnvironment, syntax: &Loc<TypeExpr>) -> Ty
         TypeExpr::OpTagged => Type::OpTagged,
         TypeExpr::KeywordTagged => Type::KeywordTagged,
         TypeExpr::Never => Type::Never,
-        TypeExpr::Variable(name) => {
-            environment
-                .lookup(name)
-                .cloned()
-                .ok_or_else(|| TypeError::UnknownType {
-                    name: name.clone(),
+        TypeExpr::Variable(name) => match environment.lookup(name) {
+            Some(ty) => ty.clone(),
+            None => environment.instantiate_alias(name, Vec::new(), syntax.span)?,
+        },
+        TypeExpr::Apply { name, arguments } => {
+            if environment.lookup(name).is_some() {
+                return Err(TypeError::InvalidAnnotation {
                     span: syntax.span,
-                })?
+                    message: format!("type parameter '{name}' cannot take type arguments"),
+                });
+            }
+            let arguments = arguments
+                .iter()
+                .map(|a| resolve_type(environment, a))
+                .collect::<TypeResult<Vec<_>>>()?;
+            environment.instantiate_alias(name, arguments, syntax.span)?
         }
         TypeExpr::Selector(selector) => Type::Selector(try_selector_map(selector, |child| {
             resolve_type(environment, child)
@@ -272,20 +507,21 @@ pub fn resolve_type(environment: &TypeEnvironment, syntax: &Loc<TypeExpr>) -> Ty
             methods: methods
                 .iter()
                 .map(|method| {
+                    let (scope, parameters) = resolve_parameters(environment, &method.parameters)?;
                     Ok(MethodType {
-                        parameters: Vec::new(),
-                        input: resolve_type(environment, &method.input)?,
+                        parameters: parameters.into_iter().map(|p| p.parameter).collect(),
+                        input: resolve_type(&scope, &method.input)?,
                         reply: method
                             .reply
                             .as_ref()
-                            .map(|reply| resolve_type(environment, reply))
+                            .map(|reply| resolve_type(&scope, reply))
                             .transpose()?,
                     })
                 })
                 .collect::<TypeResult<_>>()?,
         }),
     };
-    if !ty.is_well_formed() {
+    if !environment.resolving_bounds && !ty.is_well_formed() {
         return Err(TypeError::InvalidActorType { span: syntax.span });
     }
     Ok(ty)
@@ -491,6 +727,40 @@ fn locate_annotation_components(plan: &mut PatternPlan, syntax: &Loc<TypeExpr>, 
     }
 }
 
+// A named method parameter annotates the binding itself, rather than creating
+// another inferred parameter bounded by that name.
+fn bind_declared_parameters(plan: &mut PatternPlan, declared: &[LocatedParameter]) {
+    match &mut plan.template {
+        BindingTemplate::Variable { parameter, .. } => {
+            if let Type::Variable(bound) = &parameter.upper_bound() {
+                if declared.iter().any(|p| p.parameter.variable == *bound) {
+                    *parameter = bound.clone();
+                    plan.expectation.ty = Type::Variable(bound.clone());
+                    plan.parameters.clear();
+                }
+            }
+        }
+        BindingTemplate::Selector(children) => {
+            match children {
+                Selector::Atomic(_) => {}
+                Selector::Operator { value, .. } => bind_declared_parameters(value, declared),
+                Selector::Keyword(parts) => {
+                    for (_, child) in parts {
+                        bind_declared_parameters(child, declared);
+                    }
+                }
+            }
+            plan.parameters = children
+                .values()
+                .iter()
+                .flat_map(|p| p.parameters.clone())
+                .collect();
+            plan.expectation.ty = Type::Selector(children.map(|p| p.expectation.ty.clone()));
+        }
+        BindingTemplate::Discard => {}
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BoundAdaptation {
     pub parameter: TypeVariable,
@@ -528,16 +798,16 @@ impl PatternPlan {
                     .map(|p| {
                         (
                             p.parameter.variable.clone(),
-                            (*p.parameter.variable.upper_bound).clone(),
+                            p.parameter.variable.upper_bound(),
                         )
                     })
                     .collect::<Vec<_>>();
                 let expected = self.expectation.ty.substitute(&upper);
-                let mut actual_type = &value.ty;
-                while let Type::Variable(variable) = actual_type {
-                    actual_type = &variable.upper_bound;
+                let mut actual_type = value.ty.clone();
+                while let Type::Variable(variable) | Type::Alias(variable) = &actual_type {
+                    actual_type = variable.upper_bound();
                 }
-                let actual = match actual_type {
+                let actual = match &actual_type {
                     Type::Selector(actual) if children.same_shape(actual) => Some(actual),
                     Type::Never => None,
                     _ => {
@@ -604,7 +874,7 @@ impl PatternPlan {
                     .find(|p| p.parameter.variable == *parameter)
                     .expect("binding template parameter must be declared in its plan");
                 let expected = Expectation {
-                    ty: (*parameter.upper_bound).clone(),
+                    ty: parameter.upper_bound(),
                     origin: self.expectation.origin,
                 };
                 assert_evidence(value, &expected)?;
@@ -685,7 +955,7 @@ pub fn check_binding(
         .map(|p| {
             (
                 p.parameter.variable.clone(),
-                (*p.parameter.variable.upper_bound).clone(),
+                p.parameter.variable.upper_bound(),
             )
         })
         .collect::<Vec<_>>();
@@ -874,10 +1144,11 @@ fn type_send(
 ) -> TypeResult<TypedStatement> {
     let callee = synthesize_in(environment, callee)?;
     let message = synthesize_in(environment, message)?;
-    let mut ty = &callee.evidence.ty;
-    while let Type::Variable(variable) = ty {
-        ty = &variable.upper_bound;
+    let mut exposed_type = callee.evidence.ty.clone();
+    while let Type::Variable(variable) | Type::Alias(variable) = &exposed_type {
+        exposed_type = variable.upper_bound();
     }
+    let ty = &exposed_type;
     let (reply, method) = if *ty == Type::Never || message.evidence.ty == Type::Never {
         (Some(Type::Never), None)
     } else {
@@ -935,7 +1206,7 @@ fn type_send(
             instances
                 .iter()
                 .map(|(parameter, actual)| {
-                    let expected = parameter.upper_bound.substitute(&instances);
+                    let expected = parameter.upper_bound().substitute(&instances);
                     BoundAdaptation {
                         parameter: parameter.clone(),
                         actual: actual.clone(),
@@ -1037,7 +1308,11 @@ fn type_expression(
             let mut methods = Vec::with_capacity(actor.methods.len());
             let mut method_types = Vec::with_capacity(actor.methods.len());
             for method in &actor.methods {
-                let plan = prepare_pattern_in(&environment.types, &method.pattern)?;
+                let (method_environment, declared) =
+                    resolve_parameters(&environment.types, &method.parameters)?;
+                let mut plan = prepare_pattern_in(&method_environment, &method.pattern)?;
+                bind_declared_parameters(&mut plan, &declared);
+                plan.parameters.splice(0..0, declared);
                 validate_bindings(&plan)?;
                 let bindings = plan.receiver_bindings();
                 let reply = method
@@ -1045,7 +1320,7 @@ fn type_expression(
                     .as_ref()
                     .map(|annotation| {
                         Ok(Rc::new(TypeEvidence {
-                            ty: resolve_type(&environment.types, annotation)?,
+                            ty: resolve_type(&method_environment, annotation)?,
                             expression: annotation.span,
                             origin: EvidenceOrigin::ReplyAnnotation,
                             value_from: None,
@@ -1055,6 +1330,7 @@ fn type_expression(
                     })
                     .transpose()?;
                 let mut scope = environment.extended(bindings.iter().cloned());
+                scope.types = method_environment;
                 // Each method owns its implicit reply-to actor; lexical aliases still capture.
                 scope.reply_to = reply.as_ref().map(|annotation| Binding {
                     name: "^".into(),
@@ -1239,7 +1515,9 @@ pub fn check_statements_in(
 
 /// Type-check a successfully parsed program; parse diagnostics remain separate.
 pub fn check_program(program: &Program) -> TypeResult<Vec<TypedStatement>> {
-    check_statements_in(&Environment::default(), &program.statements)
+    let mut environment = Environment::default();
+    environment.types = environment.types.with_aliases(&program.aliases)?;
+    check_statements_in(&environment, &program.statements)
 }
 
 #[cfg(test)]
@@ -1316,11 +1594,11 @@ mod tests {
         };
         assert_eq!(binding.instantiations.len(), 1);
         assert_eq!(
-            *binding.instantiations[0]
+            binding.instantiations[0]
                 .parameter
                 .parameter
                 .variable
-                .upper_bound,
+                .upper_bound(),
             Type::UNIT
         );
         assert!(Rc::ptr_eq(
@@ -1492,7 +1770,7 @@ mod tests {
             panic!()
         };
         assert_eq!(
-            *actor.methods[0].parameters[0].variable.upper_bound,
+            actor.methods[0].parameters[0].variable.upper_bound(),
             *environment.types.lookup("T").unwrap()
         );
         assert_eq!(actor.methods[0].reply, None);

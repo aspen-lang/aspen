@@ -72,6 +72,29 @@ Partially spaced paths are rejected. Every slash in a qualified reference must
 be adjacent to both names. Local method bindings remain lexical and may shadow
 global value bindings. The existing shadowable `syscall` fallback is unchanged.
 
+## Type Aliases
+
+Modules can declare transparent type aliases, with optional explicit parameters:
+
+```aspen
+type Number int.
+export type Box<T> #box: T.
+export type Readable { read -> Number }.
+```
+
+Aliases are order-independent and private unless exported. Import them explicitly
+with `import package_name/types (type Box as LocalBox, value).`, or use a module
+import and write `types/Box<int>`. A value and a type may have the same name;
+selective imports without `type` select only values. Duplicate bindings within
+either namespace are errors. Qualified type paths require adjacent slashes just
+like value paths.
+
+An exported alias can reference private helper aliases in its defining module;
+importers do not gain access to those private names. Alias definitions are checked
+even when unused. An alias does not create a runtime value or a nominal type:
+`Box<int>` is the same structural type as `#box: int`. Type parameters shadow
+module type names within their own bounds, annotations, and nested method bodies.
+
 ## Declarative Globals
 
 Each global denotes one shared value per running program. Global initializers
@@ -102,6 +125,23 @@ Actor method signatures come from receiver patterns and explicit reply
 annotations, so their bodies can be checked after the signatures of recursive
 global actors are available. Global bindings may use existing type-annotation
 syntax, but must bind one name rather than a destructuring pattern.
+
+Methods can declare explicit type parameters, and global annotations can contain
+polymorphic structural signatures:
+
+```aspen
+export let { <T> do: T -> T } identity = {
+  def <T> do: T value -> T => ^ value.
+}.
+```
+
+Type parameters are local to their method or structural signature, rather than
+module exports. Bounds default to `{}` and see the entire parameter list,
+including forward references. Guarded recursive bounds such as
+`<T <: { next -> T }>` are subtype constraints (F-bounds), not recursive type
+equalities. Bare variable-bound cycles are rejected. Importers call polymorphic
+methods with ordinary messages; type arguments are inferred rather than written
+at the call site.
 
 The initial implementation links local dependency sources into one generated
 BEAM program. A stable serialized interface/object format and a remote package

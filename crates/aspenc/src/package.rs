@@ -289,6 +289,146 @@ fn resolve_expr(
     }
     Ok(())
 }
+// Type names are resolved independently from runtime bindings. Parameter scopes
+// include the whole list so forward and guarded recursive bounds retain meaning.
+fn resolve_parameters(
+    parameters: &mut [Loc<crate::TypeParameterExpr>],
+    names: &BTreeMap<String, String>,
+    locals: &BTreeSet<String>,
+    path: &Path,
+) -> Result<BTreeSet<String>, PackageDiagnostic> {
+    let mut scope = locals.clone();
+    scope.extend(
+        parameters
+            .iter()
+            .map(|parameter| parameter.name.value.clone()),
+    );
+    for parameter in parameters {
+        if let Some(bound) = &mut parameter.upper_bound {
+            resolve_type(bound, names, &scope, path)?;
+        }
+    }
+    Ok(scope)
+}
+fn resolve_type(
+    ty: &mut Loc<crate::TypeExpr>,
+    names: &BTreeMap<String, String>,
+    locals: &BTreeSet<String>,
+    path: &Path,
+) -> Result<(), PackageDiagnostic> {
+    use crate::TypeExpr;
+    match &mut ty.value {
+        TypeExpr::Variable(name) | TypeExpr::Apply { name, .. } => {
+            if !locals.contains(name) {
+                *name = names
+                    .get(name)
+                    .filter(|name| !name.starts_with("@module:"))
+                    .cloned()
+                    .ok_or_else(|| {
+                        type_error(
+                            path,
+                            Some(ty.span),
+                            types::TypeError::UnknownType {
+                                name: name.clone(),
+                                span: ty.span,
+                            },
+                        )
+                    })?;
+            }
+            if let TypeExpr::Apply { arguments, .. } = &mut ty.value {
+                for argument in arguments {
+                    resolve_type(argument, names, locals, path)?;
+                }
+            }
+        }
+        TypeExpr::Actor(methods) => {
+            for method in methods {
+                let scope = resolve_parameters(&mut method.parameters, names, locals, path)?;
+                resolve_type(&mut method.input, names, &scope, path)?;
+                if let Some(reply) = &mut method.reply {
+                    resolve_type(reply, names, &scope, path)?;
+                }
+            }
+        }
+        TypeExpr::Selector(selector) => match selector {
+            Selector::Atomic(_) => {}
+            Selector::Operator { value, .. } => resolve_type(value, names, locals, path)?,
+            Selector::Keyword(parts) => {
+                for (_, value) in parts {
+                    resolve_type(value, names, locals, path)?;
+                }
+            }
+        },
+        _ => {}
+    }
+    Ok(())
+}
+fn resolve_pattern_types(
+    pattern: &mut Loc<Pattern>,
+    names: &BTreeMap<String, String>,
+    locals: &BTreeSet<String>,
+    path: &Path,
+) -> Result<(), PackageDiagnostic> {
+    match &mut pattern.value {
+        Pattern::Annotated { ty, pattern } => {
+            resolve_type(ty, names, locals, path)?;
+            resolve_pattern_types(pattern, names, locals, path)?;
+        }
+        Pattern::Selector(selector) => match selector {
+            Selector::Atomic(_) => {}
+            Selector::Operator { value, .. } => resolve_pattern_types(value, names, locals, path)?,
+            Selector::Keyword(parts) => {
+                for (_, value) in parts {
+                    resolve_pattern_types(value, names, locals, path)?;
+                }
+            }
+        },
+        _ => {}
+    }
+    Ok(())
+}
+fn resolve_expr_types(
+    expr: &mut Loc<Expr>,
+    names: &BTreeMap<String, String>,
+    locals: &BTreeSet<String>,
+    path: &Path,
+) -> Result<(), PackageDiagnostic> {
+    match &mut expr.value {
+        Expr::Actor(actor) => {
+            for method in &mut actor.methods {
+                let scope = resolve_parameters(&mut method.parameters, names, locals, path)?;
+                resolve_pattern_types(&mut method.pattern, names, &scope, path)?;
+                if let Some(reply) = &mut method.reply {
+                    resolve_type(reply, names, &scope, path)?;
+                }
+                for stmt in &mut method.body {
+                    match &mut stmt.value {
+                        Stmt::Expr(expr) => resolve_expr_types(expr, names, &scope, path)?,
+                        Stmt::Let(binding) => {
+                            resolve_pattern_types(&mut binding.pattern, names, &scope, path)?;
+                            resolve_expr_types(&mut binding.value, names, &scope, path)?;
+                        }
+                    }
+                }
+            }
+        }
+        Expr::Send { callee, message } => {
+            resolve_expr_types(callee, names, locals, path)?;
+            resolve_expr_types(message, names, locals, path)?;
+        }
+        Expr::Selector(selector) => match selector {
+            Selector::Atomic(_) => {}
+            Selector::Operator { value, .. } => resolve_expr_types(value, names, locals, path)?,
+            Selector::Keyword(parts) => {
+                for (_, value) in parts {
+                    resolve_expr_types(value, names, locals, path)?;
+                }
+            }
+        },
+        _ => {}
+    }
+    Ok(())
+}
 fn static_refs(
     expr: &Loc<Expr>,
     refs: &mut BTreeSet<String>,
@@ -486,7 +626,18 @@ fn check_package(
         }
     }
     let mut exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut type_exports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for (name, module) in &modules {
+        type_exports.insert(
+            name.clone(),
+            module
+                .syntax
+                .aliases
+                .iter()
+                .filter(|alias| alias.exported)
+                .map(|alias| alias.name.value.clone())
+                .collect(),
+        );
         let mut public = BTreeSet::new();
         for global in &module.syntax.globals {
             if global.exported {
@@ -497,7 +648,36 @@ fn check_package(
     }
     let mut graph = BTreeMap::new();
     let mut globals = BTreeMap::new();
+    let mut aliases = Vec::new();
     for (module_name, module) in modules {
+        let mut type_names = BTreeMap::new();
+        for alias in &module.syntax.aliases {
+            if matches!(
+                alias.name.value.as_str(),
+                "never"
+                    | "bytes"
+                    | "string"
+                    | "int"
+                    | "float"
+                    | "selector"
+                    | "atom"
+                    | "optagged"
+                    | "keywordtagged"
+            ) {
+                return Err(error(
+                    &module.path,
+                    Some(alias.name.span),
+                    "type alias cannot redefine a primitive type",
+                ));
+            }
+            add_name(
+                &mut type_names,
+                alias.name.value.clone(),
+                format!("{module_name}/{}", alias.name.value),
+                &module.path,
+                alias.span,
+            )?;
+        }
         let mut names = BTreeMap::new();
         for global in &module.syntax.globals {
             add_name(
@@ -542,6 +722,22 @@ fn check_package(
                         &module.path,
                         import.span,
                     )?;
+                    add_name(
+                        &mut type_names,
+                        alias.clone(),
+                        format!("@module:{target}"),
+                        &module.path,
+                        import.span,
+                    )?;
+                    for name in &type_exports[target] {
+                        add_name(
+                            &mut type_names,
+                            format!("{alias}/{name}"),
+                            format!("{target}/{name}"),
+                            &module.path,
+                            import.span,
+                        )?;
+                    }
                     for name in public {
                         add_name(
                             &mut names,
@@ -554,6 +750,11 @@ fn check_package(
                 }
                 crate::ImportBinding::Names(selected) => {
                     for selected in selected {
+                        let public = if selected.is_type {
+                            &type_exports[target]
+                        } else {
+                            public
+                        };
                         if !public.contains(&selected.name.value) {
                             return Err(error(
                                 &module.path,
@@ -562,7 +763,11 @@ fn check_package(
                             ));
                         }
                         add_name(
-                            &mut names,
+                            if selected.is_type {
+                                &mut type_names
+                            } else {
+                                &mut names
+                            },
                             selected.alias.value.clone(),
                             format!("{target}/{}", selected.name.value),
                             &module.path,
@@ -573,12 +778,25 @@ fn check_package(
             }
         }
         graph.insert(module_name.clone(), edges);
+        for mut alias in module.syntax.aliases {
+            let scope = resolve_parameters(
+                &mut alias.parameters,
+                &type_names,
+                &BTreeSet::new(),
+                &module.path,
+            )?;
+            resolve_type(&mut alias.body, &type_names, &scope, &module.path)?;
+            alias.name.value = format!("{module_name}/{}", alias.name.value);
+            aliases.push(alias);
+        }
         for global in module.syntax.globals {
             let global = global.value;
             let name = global_name(&global.binding.pattern).to_owned();
             let mut value = *global.binding.value;
             resolve_expr(&mut value, &names, &BTreeSet::new(), &module.path)?;
+            resolve_expr_types(&mut value, &type_names, &BTreeSet::new(), &module.path)?;
             let mut pattern = global.binding.pattern;
+            resolve_pattern_types(&mut pattern, &type_names, &BTreeSet::new(), &module.path)?;
             rename_pattern(&mut pattern, &format!("{module_name}/{name}"));
             globals.insert(
                 format!("{module_name}/{name}"),
@@ -612,6 +830,15 @@ fn check_package(
         references.insert(name.clone(), refs);
     }
     let mut environment = Environment::default();
+    environment.types = environment.types.with_aliases(&aliases).map_err(|cause| {
+        let span = match &cause {
+            types::TypeError::UnknownType { span, .. }
+            | types::TypeError::InvalidAnnotation { span, .. }
+            | types::TypeError::InvalidActorType { span } => Some(*span),
+            _ => aliases.first().map(|alias| alias.span),
+        };
+        type_error(path, span, cause)
+    })?;
     let mut order = Vec::new();
     while !pending.is_empty() {
         let Some(index) = pending.iter().position(|name| {

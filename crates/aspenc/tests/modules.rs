@@ -266,3 +266,15 @@ fn package_source_line_capacity_is_reported_without_wrapping() {
             .contains("package source positions exceed u16 line capacity")
     );
 }
+
+#[test]
+fn recursive_generic_bounds_accept_linked_actor_interfaces() {
+    let f = Fixture::new();
+    f.root();
+    f.write("src/index.aspen", "export let main = { def start => runner run: node. }.\nlet runner = { def <T <: { next -> T }> run: T t => t next next next. }.\nlet node = { def next -> { next -> {} } => ^ node. }.");
+    // A finite interface does not promise that every successor has the same T.
+    assert!(f.check().is_err());
+    f.write("src/index.aspen", "export let main = { def start => identity do: 42. }.\nlet identity = { def <T> do: T x -> T => ^ x. }.");
+    let checked = f.check().unwrap();
+    assert_eq!(checked.globals.len(), 2);
+}

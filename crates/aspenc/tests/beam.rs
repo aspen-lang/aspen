@@ -136,6 +136,10 @@ fn generated_programs_complete_structural_and_reply_protocols() {
     let scratch = Scratch::new();
     runtime(&scratch.0);
     let fixtures = [
+        "type Box<T> { get -> T. }. let use = { def use: Box<int> x -> int => ^ x get. }. let int answer = use use: { def other => def get -> int => ^ 42. }.",
+        "type Chain { value -> int. next -> Chain. }. { def use: Chain x -> int => ^ x next value. }.",
+        "let identity = { def <T> do: T x -> T => ^ x. }. let int answer = identity do: 42.",
+        "let use = { def <A, B <: { x -> #y }> do: A a with: B b -> A => let #y = b x. ^ a. }. use do: 42 with: { def x -> #y => ^ #y. }.",
         // A nonzero concrete handler supplies the structural interface.
         "let use = { def use: ({ start -> #ok } a) -> #ok => ^ a start. }.\
          use use: { def stop -> #no => ^ #no. def start -> #ok => ^ #ok. }.",
