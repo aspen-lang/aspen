@@ -75,7 +75,32 @@ fn runtime(dir: &Path) {
         include_str!("../runtime/aspen_runtime.erl"),
     )
     .unwrap();
-    compile(dir, &["aspen_runtime.erl"]);
+    fs::write(
+        dir.join("aspen_syscall.erl"),
+        include_str!("../runtime/aspen_syscall.erl"),
+    )
+    .unwrap();
+    fs::write(
+        dir.join("aspen_syscall_nif.c"),
+        include_str!("../runtime/aspen_syscall_nif.c"),
+    )
+    .unwrap();
+    compile(dir, &["aspen_runtime.erl", "aspen_syscall.erl"]);
+    let root = execute(dir, "io:put_chars(code:root_dir()), halt(0).");
+    success(&root);
+    let include = PathBuf::from(String::from_utf8(root.stdout).unwrap()).join("usr/include");
+    let mut cc = Command::new("cc");
+    cc.current_dir(dir)
+        .args(["-O2", "-Wall", "-Wextra", "-Werror", "-fPIC"]);
+    if cfg!(target_os = "macos") {
+        cc.args(["-dynamiclib", "-undefined", "dynamic_lookup"]);
+    } else {
+        cc.arg("-shared");
+    }
+    cc.arg("-I")
+        .arg(include)
+        .args(["-o", "aspen_syscall_nif.so", "aspen_syscall_nif.c"]);
+    success(&deadline(&mut cc));
 }
 
 fn execute(dir: &Path, expression: &str) -> Output {
@@ -115,13 +140,23 @@ fn generated_programs_complete_structural_and_reply_protocols() {
         "let use = { def use: ({ start -> #ok } a) -> #ok => ^ a start. }.\
          use use: { def stop -> #no => ^ #no. def start -> #ok => ^ #ok. }.",
         // A broad provided receiver satisfies several required signatures.
-        "let use = { def use: ({ start -> any. stop -> any } a) -> #ok =>\
-           a start. a stop. ^ #ok. }. use use: { def (x) -> any => ^ x. }.",
+        "let use = { def use: ({ start -> {}. stop -> {} } a) -> #ok =>\
+           a start. a stop. ^ #ok. }. use use: { def (x) -> {} => ^ x. }.",
         // Full nested shapes, not the outer selector alone, select handlers.
         "let a = { def put: (#inner: #left) -> #ok => ^ #ok.\
            def put: (#inner: #right) -> #ok => ^ #ok.\
-           def put: ({} x) -> #ok => ^ #ok. }.\
-         a put: (#inner: #left). a put: (#inner: #right). a put: {}.",
+           def put: (atom x) -> #ok => ^ #ok. }.\
+         a put: (#inner: #left). a put: (#inner: #right). a put: #plain.",
+        // The unit actor annotation accepts primitives, and family guards dispatch them.
+        "let top = { def ({} x) -> {} => ^ x. }. top (#ok).\
+         let families = { def (atom x) -> {} => ^ x.\
+           def (optagged x) -> {} => ^ x. def (keywordtagged x) -> {} => ^ x. }.\
+         families (#ok). families (#+ #ok). families (#value: #ok).\
+         let selectors = { def (selector x) -> {} => ^ x. }. selectors (#ok).",
+        // Strings are UTF-8 binaries, including escaped NUL and non-ASCII scalars.
+        r#"let service = { def (string x) -> string => ^ x. def (atom x) -> string => ^ "". }.
+           service ("hello\n\0\u{1f600}"). service (#ok).
+           let top = { def ({} x) -> {} => ^ x. }. top ("text")."#,
         // Reply handles are actor-kind, and delegation survives handler return.
         "let delegate = { def report: ({ (#ok) } target) => target (#ok). }.\
          let service = { def start -> #ok => delegate report: ^. }. service start.",
@@ -141,10 +176,22 @@ fn generated_programs_complete_structural_and_reply_protocols() {
         "let use = { def use: ({ accept: ({ ready -> #ok }) -> #ok } a) -> #ok =>\
            ^ a accept: { def ready -> #ok => ^ #ok. }. }.\
          use use: { def accept: ({ ready -> #ok } actor) -> #ok => ^ actor ready. }.",
+        // Signed integer boundaries survive replies, captures, and family dispatch.
+        "let min = -9_223_372_036_854_775_808.\
+         let a = { def minimum -> int => ^ min.\
+                   def echo: (int x) -> int => ^ x.\
+                   def echo: (atom x) -> atom => ^ x. }.\
+         a minimum. a echo: 9_223_372_036_854_775_807. a echo: #ok.\
+         let {} x = -42. x.",
+        // Binary64 extrema and signed zero compile, and float/int guards stay distinct.
+        "let smallest = 5e-324. let largest = 1.7976931348623157e308.\
+         let a = { def (float x) -> float => ^ x. def (int x) -> int => ^ x. }.\
+         a (smallest). a (largest). a (-0.0). a (1e3). a (42).\
+         let {} x = -1_000.25e-2. x.",
         // Ordered labels and all operator variants survive source generation.
-        "let a = { def + x -> any => ^ x. def - x -> any => ^ x.\
-          def * x -> any => ^ x. def / x -> any => ^ x.\
-          def a: x b: y -> any => ^ x. def b: x a: y -> any => ^ y. }.\
+        "let a = { def + x -> {} => ^ x. def - x -> {} => ^ x.\
+          def * x -> {} => ^ x. def / x -> {} => ^ x.\
+          def a: x b: y -> {} => ^ x. def b: x a: y -> {} => ^ y. }.\
           a + #ok. a - #ok. a * #ok. a / #ok.\
           a a: #ok b: #no. a b: #no a: #ok.",
     ];
@@ -174,7 +221,7 @@ fn generated_programs_complete_structural_and_reply_protocols() {
 fn generated_sends_evaluate_callee_then_payloads_left_to_right() {
     let scratch = Scratch::new();
     runtime(&scratch.0);
-    let source = "({ def make -> { left: any right: any -> #ok } =>\
+    let source = "({ def make -> { left: {} right: {} -> #ok } =>\
         ^ { def left: x right: y -> #ok => ^ #ok. }. } make)\
         (#left: ({ def one -> #first => ^ #first. } one)\
         right: ({ def two -> #second => ^ #second. } two)).";
@@ -259,4 +306,120 @@ fn unmatched_full_message_fails_receiver_diagnostically() {
     );
     assert!(diagnostic.contains("aspen_unmatched"), "{diagnostic}");
     assert!(diagnostic.contains("unexpected"), "{diagnostic}");
+}
+
+#[test]
+fn syscall_writes_real_descriptors_from_global_aliases_and_captures() {
+    let scratch = Scratch::new();
+    runtime(&scratch.0);
+    let source = r#"
+        let os = syscall.
+        let writer = { def go -> int => ^ os write: 1 data: "stdout\n". }.
+        writer go.
+        syscall write: 2 data: "stderr\n".
+        let bytes buffer = "\u{1f600}".
+        syscall write: 1 data: buffer.
+        let syscall = { def write: (int fd) data: (bytes data) -> int => ^ 0. }.
+        syscall write: 1 data: "must-not-print".
+    "#;
+    let mut diagnostics = Vec::new();
+    let parsed = parse(Lexer::new(source), &mut diagnostics);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let ir = lower_program(&check_program(&parsed).unwrap()).unwrap();
+    fs::write(
+        scratch.0.join("syscalls.erl"),
+        emit_program(&ir, "syscalls").unwrap(),
+    )
+    .unwrap();
+    compile(&scratch.0, &["syscalls.erl"]);
+    let output = execute(
+        &scratch.0,
+        "ok = aspen_runtime:run(syscalls, 3000), halt(0).",
+    );
+    success(&output);
+    assert_eq!(output.stdout, "stdout\n\u{1f600}".as_bytes());
+    assert_eq!(output.stderr, b"stderr\n");
+}
+
+#[test]
+fn string_dispatch_rejects_invalid_utf8_from_external_messages() {
+    let scratch = Scratch::new();
+    runtime(&scratch.0);
+    let mut diagnostics = Vec::new();
+    let parsed = parse(
+        Lexer::new("{ def (string x) -> string => ^ x. } (\"valid\")."),
+        &mut diagnostics,
+    );
+    assert!(diagnostics.is_empty());
+    let ir = lower_program(&check_program(&parsed).unwrap()).unwrap();
+    let generated = emit_program(&ir, "invalid_utf8").unwrap();
+    assert!(generated.contains("<<118, 97, 108, 105, 100>>"));
+    // Simulate an external bytes producer that does not satisfy the string refinement.
+    fs::write(
+        scratch.0.join("invalid_utf8.erl"),
+        generated.replace("<<118, 97, 108, 105, 100>>", "<<255>>"),
+    )
+    .unwrap();
+    compile(&scratch.0, &["invalid_utf8.erl"]);
+    let output = execute(
+        &scratch.0,
+        "{error, timeout} = aspen_runtime:run(invalid_utf8, 200), halt(0).",
+    );
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("aspen_unmatched"));
+}
+
+#[test]
+fn compiled_package_globals_and_nested_actor_dependencies() {
+    let scratch = Scratch::new();
+    runtime(&scratch.0);
+    fs::create_dir(scratch.0.join("src")).unwrap();
+    fs::write(
+        scratch.0.join("aspen.yaml"),
+        "name: fixture\nsource: src\nentry:\n  actor: fixture/main\n  message: start\n",
+    )
+    .unwrap();
+    fs::write(
+        scratch.0.join("src/index.aspen"),
+        r#"
+        import fixture/service (factory, wrapped).
+        export let main = { def start =>
+            let child = factory make.
+            child go.
+            let use = { def take: (#target: ({ ready -> string } actor)) -> string =>
+                ^ actor ready.
+            }.
+            syscall write: 1 data: (use take: wrapped).
+        }.
+    "#,
+    )
+    .unwrap();
+    fs::write(
+        scratch.0.join("src/service.aspen"),
+        r#"
+        export let factory = { def make -> { go } =>
+            ^ { def go => syscall write: 1 data: (alias ready). }.
+        }.
+        export let wrapped = #target: alias.
+        let alias = target.
+        let target = { def ready -> string => ^ "global\n". }.
+    "#,
+    )
+    .unwrap();
+    let checked =
+        aspenc::package::load_and_check(&scratch.0).unwrap_or_else(|errors| panic!("{errors:?}"));
+    let ir = aspenc::ir::lower_globals(&checked.globals, &checked.entry).unwrap();
+    assert!(ir.actors.iter().any(|actor| !actor.globals.is_empty()));
+    fs::write(
+        scratch.0.join("package_fixture.erl"),
+        emit_program(&ir, "package_fixture").unwrap(),
+    )
+    .unwrap();
+    compile(&scratch.0, &["package_fixture.erl"]);
+    let output = execute(
+        &scratch.0,
+        "ok = aspen_runtime:run(package_fixture, 3000), halt(0).",
+    );
+    success(&output);
+    assert_eq!(output.stdout, b"global\nglobal\n");
 }

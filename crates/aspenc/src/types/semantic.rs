@@ -24,7 +24,14 @@ pub enum Type {
     Never,
     Actor(ActorType),
     Selector(Selector<Type>),
-    Any,
+    Bytes,
+    String,
+    Int,
+    Float,
+    SelectorFamily,
+    Atom,
+    OpTagged,
+    KeywordTagged,
     Variable(TypeVariable),
 }
 
@@ -141,7 +148,15 @@ impl Type {
         if !self.is_well_formed() || !expected.is_well_formed() {
             return None;
         }
-        if self == expected || *self == Self::Never || *expected == Self::Any {
+        if self == expected || *self == Self::Never || *expected == Self::UNIT {
+            return Some(AdaptationPlan::Identity);
+        }
+        if self.primitive_domain().is_some_and(|actual| {
+            expected
+                .primitive_domain()
+                .is_some_and(|required| actual & required == actual)
+                && !matches!(expected, Self::Selector(_))
+        }) {
             return Some(AdaptationPlan::Identity);
         }
         match (self, expected) {
@@ -279,6 +294,22 @@ impl Type {
         }
     }
 
+    // Disjoint primitive domains; selector families are unions of selector shapes.
+    fn primitive_domain(&self) -> Option<u8> {
+        match self {
+            // UTF-8 strings occupy one subset of the binary domain.
+            Self::Bytes => Some(1 | 64),
+            Self::String => Some(1),
+            Self::Int => Some(2),
+            Self::Float => Some(4),
+            Self::SelectorFamily => Some(8 | 16 | 32),
+            Self::Atom | Self::Selector(Selector::Atomic(_)) => Some(8),
+            Self::OpTagged | Self::Selector(Selector::Operator { .. }) => Some(16),
+            Self::KeywordTagged | Self::Selector(Selector::Keyword(_)) => Some(32),
+            _ => None,
+        }
+    }
+
     /// A conservative proof that no inhabited value belongs to both types.
     pub fn is_disjoint_from(&self, other: &Self) -> bool {
         if self.is_empty() || other.is_empty() {
@@ -290,8 +321,11 @@ impl Type {
             (_, Self::Variable(v)) => self.is_disjoint_from(&v.upper_bound),
             (Self::Selector(a), Self::Selector(b)) => selector_pairs(a, b)
                 .is_none_or(|pairs| pairs.into_iter().any(|(a, b)| a.is_disjoint_from(b))),
-            (Self::Actor(_), Self::Selector(_)) | (Self::Selector(_), Self::Actor(_)) => true,
-            _ => false,
+            // A structural actor requirement alone cannot rule out a primitive.
+            _ => self
+                .primitive_domain()
+                .zip(other.primitive_domain())
+                .is_some_and(|(a, b)| a & b == 0),
         }
     }
 }
@@ -463,7 +497,15 @@ fn selector_pairs<'a>(
 
 fn alpha_type(left: &Type, right: &Type, scope: &[(TypeVariable, TypeVariable)]) -> bool {
     match (left, right) {
-        (Type::Never, Type::Never) | (Type::Any, Type::Any) => true,
+        (Type::Never, Type::Never)
+        | (Type::Bytes, Type::Bytes)
+        | (Type::String, Type::String)
+        | (Type::Int, Type::Int)
+        | (Type::Float, Type::Float)
+        | (Type::SelectorFamily, Type::SelectorFamily)
+        | (Type::Atom, Type::Atom)
+        | (Type::OpTagged, Type::OpTagged)
+        | (Type::KeywordTagged, Type::KeywordTagged) => true,
         (Type::Variable(left), Type::Variable(right)) => {
             if let Some((_, mapped)) = scope.iter().rev().find(|(key, _)| key == left) {
                 mapped == right
@@ -523,7 +565,14 @@ fn display_type(
 ) -> fmt::Result {
     match ty {
         Type::Never => f.write_str("never"),
-        Type::Any => f.write_str("any"),
+        Type::Bytes => f.write_str("bytes"),
+        Type::String => f.write_str("string"),
+        Type::Int => f.write_str("int"),
+        Type::Float => f.write_str("float"),
+        Type::SelectorFamily => f.write_str("selector"),
+        Type::Atom => f.write_str("atom"),
+        Type::OpTagged => f.write_str("optagged"),
+        Type::KeywordTagged => f.write_str("keywordtagged"),
         Type::Variable(variable) => {
             let index = match scope.iter().position(|bound| bound == variable) {
                 Some(index) => index,
@@ -675,24 +724,24 @@ mod tests {
     fn reply_modes_are_distinct_from_all_value_types() {
         let no_reply = MethodType {
             parameters: vec![],
-            input: Type::Any,
+            input: Type::UNIT,
             reply: None,
         };
         assert_eq!(no_reply.instantiate(&Type::UNIT), Some(None));
         assert!(no_reply.is_subtype_of(&no_reply));
-        assert_eq!(actor(no_reply.clone()).to_string(), "{ (any) }");
-        for ty in [Type::Never, Type::UNIT, Type::Any] {
-            let reply = mono(Type::Any, ty.clone());
+        assert_eq!(actor(no_reply.clone()).to_string(), "{ ({}) }");
+        for ty in [Type::Never, Type::UNIT, Type::Int] {
+            let reply = mono(Type::UNIT, ty.clone());
             assert_eq!(reply.instantiate(&Type::UNIT), Some(Some(ty)));
             assert!(!reply.is_subtype_of(&no_reply));
             assert!(!no_reply.is_subtype_of(&reply));
         }
         let generic = MethodType {
             reply: None,
-            ..identity(Type::Any)
+            ..identity(Type::UNIT)
         };
         let renamed =
-            actor(generic.clone()).substitute(&[(TypeVariable::fresh(Type::Any), Type::UNIT)]);
+            actor(generic.clone()).substitute(&[(TypeVariable::fresh(Type::UNIT), Type::UNIT)]);
         assert!(actor(generic).is_subtype_of(&renamed));
         assert!(no_reply.is_subtype_of(&MethodType {
             input: Type::UNIT,
@@ -710,22 +759,22 @@ mod tests {
 
     #[test]
     fn universal_identity_and_rigid_replies() {
-        let id = identity(Type::Any);
+        let id = identity(Type::UNIT);
         assert!(id.is_subtype_of(&mono(Type::UNIT, Type::UNIT)));
-        assert!(id.is_subtype_of(&identity(Type::Any)));
-        assert!(!mono(Type::Any, Type::Any).is_subtype_of(&id));
+        assert!(id.is_subtype_of(&identity(Type::UNIT)));
         assert!(!mono(Type::UNIT, Type::UNIT).is_subtype_of(&id));
-        assert!(mono(Type::Any, Type::Never).is_subtype_of(&id));
-        assert_eq!(actor(id).to_string(), "{ <A <: any> (A) -> A }");
+        assert!(!mono(Type::UNIT, Type::UNIT).is_subtype_of(&id));
+        assert!(mono(Type::UNIT, Type::Never).is_subtype_of(&id));
+        assert_eq!(actor(id).to_string(), "{ <A <: {}> (A) -> A }");
     }
 
     #[test]
     fn bounds_restrict_instantiation_and_do_not_identify_variables() {
-        let id = identity(Type::UNIT);
-        assert!(id.is_subtype_of(&mono(Type::UNIT, Type::UNIT)));
-        assert!(!id.is_subtype_of(&mono(Type::Any, Type::Any)));
-        assert!(!id.is_subtype_of(&identity(Type::Any)));
-        assert!(identity(Type::Any).is_subtype_of(&id));
+        let id = identity(Type::Int);
+        assert!(id.is_subtype_of(&mono(Type::Int, Type::Int)));
+        assert!(!id.is_subtype_of(&mono(Type::UNIT, Type::UNIT)));
+        assert!(!id.is_subtype_of(&identity(Type::UNIT)));
+        assert!(identity(Type::UNIT).is_subtype_of(&id));
         let a = TypeVariable::fresh(Type::UNIT);
         let b = TypeVariable::fresh(Type::UNIT);
         assert_ne!(a, b);
@@ -735,8 +784,8 @@ mod tests {
 
     #[test]
     fn nested_captures_substitute_without_capture() {
-        let outer = TypeParameter::new(Type::Any);
-        let inner = TypeParameter::new(Type::Any);
+        let outer = TypeParameter::new(Type::UNIT);
+        let inner = TypeParameter::new(Type::UNIT);
         let outer_ty = Type::Variable(outer.variable.clone());
         let inner_ty = Type::Variable(inner.variable.clone());
         let nested = actor(MethodType {
@@ -751,10 +800,10 @@ mod tests {
         };
         assert_eq!(
             actor(method.clone()).to_string(),
-            "{ <A <: any> (A) -> { <B <: any> (B) -> A } }"
+            "{ <A <: {}> (A) -> { <B <: {}> (B) -> A } }"
         );
-        assert!(method.is_subtype_of(&mono(Type::UNIT, actor(mono(Type::Any, Type::UNIT)))));
-        assert!(!method.is_subtype_of(&mono(Type::Any, actor(mono(Type::Any, Type::UNIT)))));
+        assert!(method.is_subtype_of(&mono(Type::Int, actor(mono(Type::UNIT, Type::Int)))));
+        assert!(!method.is_subtype_of(&mono(Type::UNIT, actor(mono(Type::UNIT, Type::Int)))));
         let replaced = nested.substitute(&[(outer.variable, inner_ty.clone())]);
         let Type::Actor(replaced) = replaced else {
             panic!()
@@ -769,7 +818,7 @@ mod tests {
 
     #[test]
     fn substitution_respects_bound_variables() {
-        let id = identity(Type::Any);
+        let id = identity(Type::UNIT);
         let substituted =
             actor(id.clone()).substitute(&[(id.parameters[0].variable.clone(), Type::UNIT)]);
         assert!(substituted.is_subtype_of(&actor(id.clone())));
@@ -785,8 +834,8 @@ mod tests {
 
     #[test]
     fn recursive_selector_instantiation_and_bounds() {
-        let a = TypeParameter::new(Type::Any);
-        let b = TypeParameter::new(Type::UNIT);
+        let a = TypeParameter::new(Type::UNIT);
+        let b = TypeParameter::new(Type::Int);
         let method = MethodType {
             parameters: vec![a.clone(), b.clone()],
             input: Type::Selector(Selector::Keyword(vec![
@@ -805,16 +854,16 @@ mod tests {
             ]))
         };
         assert_eq!(
-            method.instantiate(&message(Type::UNIT)),
+            method.instantiate(&message(Type::Int)),
             Some(Some(keyword("reply", atom("yes"))))
         );
         assert_eq!(method.instantiate(&message(atom("no"))), None);
         assert!(method.is_subtype_of(&method.clone()));
         let renamed =
-            actor(method.clone()).substitute(&[(TypeVariable::fresh(Type::Any), Type::UNIT)]);
+            actor(method.clone()).substitute(&[(TypeVariable::fresh(Type::UNIT), Type::UNIT)]);
         assert!(actor(method.clone()).is_subtype_of(&renamed));
-        assert!(method.is_subtype_of(&mono(message(Type::UNIT), keyword("reply", atom("yes")))));
-        let captured = TypeVariable::fresh(Type::Any);
+        assert!(method.is_subtype_of(&mono(message(Type::Int), keyword("reply", atom("yes")))));
+        let captured = TypeVariable::fresh(Type::UNIT);
         assert_eq!(
             mono(keyword("x", Type::Variable(captured)), Type::UNIT)
                 .instantiate(&keyword("x", Type::UNIT)),
@@ -824,26 +873,26 @@ mod tests {
 
     #[test]
     fn selector_covariance_and_disjoint_domains() {
-        assert!(keyword("x", Type::UNIT).is_subtype_of(&keyword("x", Type::Any)));
-        assert!(!keyword("x", Type::Any).is_subtype_of(&keyword("x", Type::UNIT)));
+        assert!(keyword("x", Type::Int).is_subtype_of(&keyword("x", Type::UNIT)));
+        assert!(!keyword("x", Type::UNIT).is_subtype_of(&keyword("x", Type::Int)));
         assert!(atom("yes").is_disjoint_from(&atom("no")));
         assert!(keyword("x", atom("yes")).is_disjoint_from(&keyword("x", atom("no"))));
-        assert!(!keyword("x", Type::Any).is_disjoint_from(&keyword("x", Type::UNIT)));
-        assert!(Type::UNIT.is_disjoint_from(&atom("yes")));
-        assert!(!Type::UNIT.is_disjoint_from(&actor(identity(Type::Any))));
-        assert!(Type::Never.is_disjoint_from(&Type::Any));
-        assert!(keyword("empty", Type::Never).is_disjoint_from(&Type::Any));
+        assert!(!keyword("x", Type::UNIT).is_disjoint_from(&keyword("x", Type::UNIT)));
+        assert!(!Type::UNIT.is_disjoint_from(&atom("yes")));
+        assert!(!Type::UNIT.is_disjoint_from(&actor(identity(Type::UNIT))));
+        assert!(Type::Never.is_disjoint_from(&Type::UNIT));
+        assert!(keyword("empty", Type::Never).is_disjoint_from(&Type::UNIT));
         let actor = ActorType {
             methods: vec![mono(atom("yes"), Type::UNIT), mono(atom("no"), Type::UNIT)],
         };
         assert!(actor.has_disjoint_inputs());
         let invalid = ActorType {
-            methods: vec![identity(Type::Any), mono(atom("yes"), Type::UNIT)],
+            methods: vec![identity(Type::UNIT), mono(atom("yes"), Type::UNIT)],
         };
         assert!(!invalid.has_disjoint_inputs());
         let invalid = Type::Actor(invalid);
         assert!(!invalid.is_subtype_of(&invalid));
-        assert!(!invalid.is_subtype_of(&Type::Any));
+        assert!(!invalid.is_subtype_of(&Type::UNIT));
     }
 
     fn two_methods() -> Type {
@@ -881,7 +930,7 @@ mod tests {
         assert!(provided.adaptation_to(&Type::UNIT).unwrap().is_identity());
         assert!(provided.adaptation_to(&provided).unwrap().is_identity());
 
-        let broad = actor(mono(Type::Any, Type::UNIT));
+        let broad = actor(mono(Type::UNIT, Type::UNIT));
         let plan = broad.adaptation_to(&provided).unwrap();
         assert!(plan.is_identity());
         let AdaptationPlan::Actor { methods, .. } = plan else {
@@ -924,13 +973,13 @@ mod tests {
         assert!(plan.is_identity());
         assert!(
             keyword("x", Type::UNIT)
-                .adaptation_to(&keyword("x", Type::Any))
+                .adaptation_to(&keyword("x", Type::UNIT))
                 .unwrap()
                 .is_identity()
         );
         assert!(
             nested
-                .adaptation_to(&keyword("different", Type::Any))
+                .adaptation_to(&keyword("different", Type::UNIT))
                 .is_none()
         );
     }
@@ -952,8 +1001,8 @@ mod tests {
         ));
         assert!(plan.is_identity());
         assert!(
-            identity(Type::Any)
-                .adaptation_to(&identity(Type::Any))
+            identity(Type::UNIT)
+                .adaptation_to(&identity(Type::UNIT))
                 .unwrap()
                 .parameter_bounds
                 .is_empty()
@@ -963,25 +1012,25 @@ mod tests {
     #[test]
     fn generic_plans_instantiate_and_keep_required_variables_rigid() {
         assert!(
-            identity(Type::Any)
+            identity(Type::UNIT)
                 .adaptation_to(&mono(Type::UNIT, Type::UNIT))
                 .unwrap()
                 .is_identity()
         );
         assert!(
-            identity(Type::Any)
-                .adaptation_to(&identity(Type::Any))
+            identity(Type::UNIT)
+                .adaptation_to(&identity(Type::UNIT))
                 .unwrap()
                 .is_identity()
         );
         assert!(
-            mono(Type::Any, Type::Any)
-                .adaptation_to(&identity(Type::Any))
+            mono(Type::UNIT, Type::UNIT)
+                .adaptation_to(&identity(Type::UNIT))
                 .is_none()
         );
         // Inference only descends through selectors, so an alpha-equivalent
         // quantified actor input must retain the representation-identity escape.
-        let parameter = TypeParameter::new(Type::Any);
+        let parameter = TypeParameter::new(Type::UNIT);
         let ty = Type::Variable(parameter.variable.clone());
         let method = MethodType {
             parameters: vec![parameter],
@@ -989,7 +1038,7 @@ mod tests {
             reply: Some(ty),
         };
         let original = actor(method);
-        let renamed = original.substitute(&[(TypeVariable::fresh(Type::Any), Type::UNIT)]);
+        let renamed = original.substitute(&[(TypeVariable::fresh(Type::UNIT), Type::UNIT)]);
         assert_ne!(original, renamed);
         assert!(original.adaptation_to(&renamed).unwrap().is_identity());
     }
@@ -998,7 +1047,7 @@ mod tests {
     fn plans_preserve_reply_modes_and_reject_invalid_actors() {
         let no_reply = MethodType {
             parameters: vec![],
-            input: Type::Any,
+            input: Type::UNIT,
             reply: None,
         };
         let plan = no_reply
@@ -1009,8 +1058,8 @@ mod tests {
             .unwrap();
         assert_eq!(plan.reply, None);
         assert!(plan.is_identity());
-        for reply in [Type::Never, Type::UNIT, Type::Any] {
-            let replying = mono(Type::Any, reply);
+        for reply in [Type::Never, Type::UNIT, Type::Int] {
+            let replying = mono(Type::UNIT, reply);
             assert!(no_reply.adaptation_to(&replying).is_none());
             assert!(replying.adaptation_to(&no_reply).is_none());
         }
@@ -1018,7 +1067,7 @@ mod tests {
             methods: vec![no_reply.clone(), no_reply],
         });
         assert!(invalid.adaptation_to(&invalid).is_none());
-        assert!(invalid.adaptation_to(&Type::Any).is_none());
+        assert!(invalid.adaptation_to(&Type::UNIT).is_none());
         assert!(
             Type::Never
                 .adaptation_to(&two_methods())
@@ -1027,10 +1076,75 @@ mod tests {
         );
         assert!(
             two_methods()
-                .adaptation_to(&Type::Any)
+                .adaptation_to(&Type::UNIT)
                 .unwrap()
                 .is_identity()
         );
+    }
+
+    #[test]
+    fn strings_are_a_proper_subtype_of_bytes() {
+        assert!(Type::String.is_subtype_of(&Type::Bytes));
+        assert!(!Type::Bytes.is_subtype_of(&Type::String));
+        assert!(Type::Bytes.is_subtype_of(&Type::UNIT));
+        assert!(!Type::String.is_disjoint_from(&Type::Bytes));
+        assert!(!Type::Bytes.is_disjoint_from(&Type::String));
+        assert!(Type::Bytes.is_disjoint_from(&Type::Int));
+        assert!(Type::Bytes.is_disjoint_from(&Type::Float));
+        assert!(Type::Bytes.is_disjoint_from(&Type::SelectorFamily));
+        assert!(keyword("data", Type::String).is_subtype_of(&keyword("data", Type::Bytes)));
+        assert!(!keyword("data", Type::Bytes).is_subtype_of(&keyword("data", Type::String)));
+        assert!(Type::Never.is_subtype_of(&Type::Bytes));
+        assert_eq!(Type::Bytes.to_string(), "bytes");
+    }
+
+    #[test]
+    fn primitive_lattice_has_actor_top_and_disjoint_families() {
+        let families = [
+            Type::Bytes,
+            Type::String,
+            Type::Int,
+            Type::Float,
+            Type::SelectorFamily,
+            Type::Atom,
+            Type::OpTagged,
+            Type::KeywordTagged,
+        ];
+        for family in &families {
+            assert!(family.is_subtype_of(&Type::UNIT));
+            assert!(Type::Never.is_subtype_of(family));
+            assert!(!Type::UNIT.is_subtype_of(family));
+            assert!(!family.is_disjoint_from(&Type::UNIT));
+            assert!(identity(family.clone()).is_subtype_of(&identity(family.clone())));
+        }
+        for a in [Type::String, Type::Int, Type::Float, Type::SelectorFamily] {
+            for b in [Type::String, Type::Int, Type::Float, Type::SelectorFamily] {
+                assert_eq!(a.is_disjoint_from(&b), a != b);
+                assert_eq!(a.is_subtype_of(&b), a == b);
+            }
+        }
+        let shapes = [
+            atom("abc"),
+            Type::Selector(Selector::Operator {
+                operator: "+".into(),
+                value: Box::new(Type::Int),
+            }),
+            keyword("a", Type::Int),
+        ];
+        for (i, family) in [Type::Atom, Type::OpTagged, Type::KeywordTagged]
+            .iter()
+            .enumerate()
+        {
+            assert!(family.is_subtype_of(&Type::SelectorFamily));
+            for (j, shape) in shapes.iter().enumerate() {
+                assert_eq!(shape.is_subtype_of(family), i == j);
+                assert_eq!(shape.is_disjoint_from(family), i != j);
+                assert!(!family.is_subtype_of(shape));
+                assert!(shape.is_subtype_of(&Type::SelectorFamily));
+                assert!(shape.is_subtype_of(&Type::UNIT));
+            }
+        }
+        assert!(!Type::Int.is_subtype_of(&two_methods()));
     }
 
     #[test]

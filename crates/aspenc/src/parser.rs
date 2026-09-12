@@ -1,14 +1,14 @@
 use super::*;
 
-struct Parser<'a, 'd> {
+pub(crate) struct Parser<'a, 'd> {
     tokens: Vec<Loc<Token<'a>>>,
     index: usize,
     eof: Pos,
-    diagnostics: &'d mut Vec<Diagnostic>,
+    pub(crate) diagnostics: &'d mut Vec<Diagnostic>,
 }
 
 impl<'a, 'd> Parser<'a, 'd> {
-    fn new(mut lexer: Lexer<'a>, diagnostics: &'d mut Vec<Diagnostic>) -> (Self, bool) {
+    pub(crate) fn new(mut lexer: Lexer<'a>, diagnostics: &'d mut Vec<Diagnostic>) -> (Self, bool) {
         let tokens = lexer
             .by_ref()
             .filter(|t| !matches!(t.value, Token::Whitespace(_)))
@@ -26,10 +26,10 @@ impl<'a, 'd> Parser<'a, 'd> {
         )
     }
 
-    fn peek(&self) -> Option<Token<'a>> {
+    pub(crate) fn peek(&self) -> Option<Token<'a>> {
         self.tokens.get(self.index).map(|t| t.value)
     }
-    fn span(&self) -> Span {
+    pub(crate) fn span(&self) -> Span {
         self.tokens.get(self.index).map_or(
             Span {
                 start: self.eof,
@@ -38,12 +38,12 @@ impl<'a, 'd> Parser<'a, 'd> {
             |t| t.span,
         )
     }
-    fn bump(&mut self) -> Loc<Token<'a>> {
+    pub(crate) fn bump(&mut self) -> Loc<Token<'a>> {
         let t = self.tokens[self.index];
         self.index += 1;
         t
     }
-    fn eat(&mut self, token: Token<'a>) -> bool {
+    pub(crate) fn eat(&mut self, token: Token<'a>) -> bool {
         if self.peek() == Some(token) {
             self.bump();
             true
@@ -51,21 +51,21 @@ impl<'a, 'd> Parser<'a, 'd> {
             false
         }
     }
-    fn error<T>(&mut self, message: &str) -> Option<T> {
+    pub(crate) fn error<T>(&mut self, message: &str) -> Option<T> {
         self.diagnostics.push(Diagnostic {
             span: self.span(),
             message: message.into(),
         });
         None
     }
-    fn expect(&mut self, token: Token<'a>, message: &str) -> Option<()> {
+    pub(crate) fn expect(&mut self, token: Token<'a>, message: &str) -> Option<()> {
         if self.eat(token) {
             Some(())
         } else {
             self.error(message)
         }
     }
-    fn located<T>(&self, start: Pos, value: T) -> Loc<T> {
+    pub(crate) fn located<T>(&self, start: Pos, value: T) -> Loc<T> {
         Loc {
             value,
             span: Span {
@@ -208,21 +208,43 @@ impl<'a, 'd> Parser<'a, 'd> {
             }
             self.expect(Token::CloseCurly, "expected '}'")?;
             Expr::Actor(Actor { methods })
+        } else if let Some(Token::String(source)) = self.peek() {
+            self.bump();
+            Expr::String(strings::decode(source).expect("lexer validates string escapes"))
+        } else if let Some(Token::Float(value)) = self.peek() {
+            self.bump();
+            Expr::Float(value)
+        } else if let Some(Token::Int(value)) = self.peek() {
+            self.bump();
+            Expr::Int(value)
         } else if self.eat(Token::Caret) {
             Expr::ReplyTo
         } else if let Some(Token::Identifier(name)) = self.peek() {
             if self.keyword() {
                 return self.error("expected expression");
             }
-            self.bump();
-            Expr::Variable(name.into())
+            let mut name = name.to_owned();
+            let mut end = self.bump().span.end;
+            while self.peek() == Some(Token::Slash) && self.span().start == end {
+                let slash = self.bump();
+                if self.span().start != slash.span.end {
+                    return self.error("qualified names require adjacent '/' and identifiers; division requires spaces on both sides");
+                }
+                let Some(Token::Identifier(part)) = self.peek() else {
+                    return self.error("expected name after '/' (division requires spaces on both sides)");
+                };
+                name.push('/');
+                name.push_str(part);
+                end = self.bump().span.end;
+            }
+            Expr::Variable(name)
         } else {
             return self.error("expected expression");
         };
         Some(self.located(start, value))
     }
 
-    fn statement(&mut self) -> Option<Loc<Stmt>> {
+    pub(crate) fn statement(&mut self) -> Option<Loc<Stmt>> {
         let start = self.span().start;
         let value = if self.eat(Token::Let) {
             let pattern = self.pattern(false)?;
@@ -246,6 +268,9 @@ impl<'a, 'd> Parser<'a, 'd> {
                 self.peek(),
                 Some(
                     Token::Identifier(_)
+                        | Token::Int(_)
+                        | Token::Float(_)
+                        | Token::String(_)
                         | Token::Hash
                         | Token::OpenParen
                         | Token::OpenCurly
@@ -277,6 +302,15 @@ impl<'a, 'd> Parser<'a, 'd> {
             } else if let Some((operator, precedence)) =
                 self.operator().filter(|(_, prec)| *prec >= minimum)
             {
+                if operator == "/" {
+                    let slash = self.tokens[self.index];
+                    let left_adjacent = self.tokens[self.index - 1].span.end == slash.span.start;
+                    let right_adjacent = self.tokens.get(self.index + 1)
+                        .is_some_and(|next| slash.span.end == next.span.start);
+                    if left_adjacent || right_adjacent {
+                        return self.error("division requires spaces on both sides of '/' (qualified names use adjacent identifiers)");
+                    }
+                }
                 self.bump();
                 let value = Box::new(self.expr(precedence + 1)?);
                 self.located(
@@ -338,15 +372,20 @@ impl<'a, 'd> Parser<'a, 'd> {
             TypeExpr::Actor(methods)
         } else if selector_mode {
             TypeExpr::Selector(self.selector(|p| p.ty(false))?)
-        } else if self.peek() == Some(Token::Identifier("any")) {
-            self.bump();
-            TypeExpr::Any
-        } else if self.peek() == Some(Token::Identifier("never")) {
-            self.bump();
-            TypeExpr::Never
         } else if let Some(Token::Identifier(name)) = self.peek() {
             self.bump();
-            TypeExpr::Variable(name.into())
+            match name {
+                "never" => TypeExpr::Never,
+                "bytes" => TypeExpr::Bytes,
+                "string" => TypeExpr::String,
+                "int" => TypeExpr::Int,
+                "float" => TypeExpr::Float,
+                "selector" => TypeExpr::SelectorFamily,
+                "atom" => TypeExpr::Atom,
+                "optagged" => TypeExpr::OpTagged,
+                "keywordtagged" => TypeExpr::KeywordTagged,
+                _ => TypeExpr::Variable(name.into()),
+            }
         } else {
             return self.error("expected type");
         };
@@ -423,6 +462,9 @@ mod tests {
 
     fn shape(expr: &Expr) -> String {
         match expr {
+            Expr::Int(value) => value.to_string(),
+            Expr::Float(value) => value.to_string(),
+            Expr::String(value) => format!("{value:?}"),
             Expr::ReplyTo => "^".into(),
             Expr::Variable(name) => name.clone(),
             Expr::Actor(_) => "{}".into(),
@@ -455,13 +497,13 @@ mod tests {
 
     #[test]
     fn annotations_preserve_type_and_pattern_locations() {
-        let pattern = binding_pattern("let any abc = {}. abc");
+        let pattern = binding_pattern("let int abc = {}. abc");
         assert_eq!(pattern.span.start.col, 5);
         assert_eq!(pattern.span.end.col, 12);
         let Pattern::Annotated { ty, pattern } = pattern.value else {
             panic!()
         };
-        assert_eq!(ty.value, TypeExpr::Any);
+        assert_eq!(ty.value, TypeExpr::Int);
         assert_eq!(ty.span.start.col, 5);
         assert_eq!(ty.span.end.col, 8);
         assert_eq!(pattern.value, Pattern::Variable("abc".into()));
@@ -507,8 +549,8 @@ mod tests {
         assert_eq!(actor.methods[1].span.end.col, 54);
         assert!(actor.methods[2].reply.is_none());
         for source in [
-            "{def put: any x -> any => ^ (x).}",
-            "{def (any x) -> (#ok: any) =>}",
+            "{def put: int x -> int => ^ (x).}",
+            "{def (int x) -> (#ok: int) =>}",
             "{def + x -> {done -> #ok} =>}",
             "{def _ -> Reply =>}",
         ] {
@@ -523,8 +565,8 @@ mod tests {
             ("{def done ->", "expected type"),
             ("{def done -> ^ =>}.", "expected type"),
             ("{def done -> # =>}.", "expected selector"),
-            ("{def done -> any}.", "expected '=>'"),
-            ("{def done -> any -> any =>}.", "expected '=>'"),
+            ("{def done -> int}.", "expected '=>'"),
+            ("{def done -> int -> int =>}.", "expected '=>'"),
         ] {
             let mut diagnostics = Vec::new();
             parse(Lexer::new(source), &mut diagnostics);
@@ -552,7 +594,7 @@ mod tests {
         }
         for source in [
             "let ^ = {}.",
-            "let any ^ = {}.",
+            "let int ^ = {}.",
             "{def ^ =>}.",
             "{def (^) =>}.",
             "{def put: ^ =>}.",
@@ -569,7 +611,7 @@ mod tests {
 
     #[test]
     fn annotations_bind_more_tightly_than_selectors() {
-        let pattern = binding_pattern("let #x: y z: any abc = {}. abc");
+        let pattern = binding_pattern("let #x: y z: int abc = {}. abc");
         let Pattern::Selector(Selector::Keyword(parts)) = pattern.value else {
             panic!()
         };
@@ -577,19 +619,19 @@ mod tests {
         assert_eq!(parts[0].1.value, Pattern::Variable("y".into()));
         assert!(matches!(parts[1].1.value, Pattern::Annotated { .. }));
         for source in [
-            "let any (#x: y) = {}. y",
+            "let int (#x: y) = {}. y",
             "let (#x: T) y = {}. y",
             "let {} x = {}. x",
-            "let (any) _ = {}. {}",
+            "let (int) _ = {}. {}",
             "let T x = {}. x",
-            "let any (T x) = {}. x",
+            "let int (T x) = {}. x",
         ] {
             assert!(
                 matches!(binding_pattern(source).value, Pattern::Annotated { .. }),
                 "{source}"
             );
         }
-        for source in ["let A B x = {}. x", "let any #x: y = {}. y"] {
+        for source in ["let A B x = {}. x", "let int #x: y = {}. y"] {
             let mut diagnostics = Vec::new();
             parse(Lexer::new(source), &mut diagnostics);
             assert!(!diagnostics.is_empty(), "{source}");
@@ -599,7 +641,7 @@ mod tests {
     #[test]
     fn annotations_do_not_change_receiver_selector_mode() {
         let Expr::Actor(actor) =
-            expression("{def x => {}. def (any x) => x. def put: T x => x.}").value
+            expression("{def x => {}. def (int x) => x. def put: T x => x.}").value
         else {
             panic!()
         };
@@ -637,7 +679,7 @@ mod tests {
         assert_eq!(parts[0].1.value, TypeExpr::Variable("T".into()));
         assert_eq!(parts[0].1.span.start.col, 7);
         assert_eq!(parts[0].1.span.end.col, 8);
-        assert!(parse_type_expression("{foo -> any. foo -> any}", &mut diagnostics).is_some());
+        assert!(parse_type_expression("{foo -> int. foo -> int}", &mut diagnostics).is_some());
         assert!(diagnostics.is_empty());
     }
 
@@ -645,7 +687,7 @@ mod tests {
     fn actor_type_signatures_distinguish_no_reply_from_never() {
         let mut diagnostics = Vec::new();
         let syntax = parse_type_expression(
-            "{notify: any. stop -> never. read -> any}",
+            "{notify: int. stop -> never. read -> int}",
             &mut diagnostics,
         )
         .unwrap();
@@ -658,7 +700,7 @@ mod tests {
         assert_eq!(methods[0].span.start.col, 2);
         assert_eq!(methods[0].span.end.col, 13);
         assert_eq!(methods[1].reply.as_ref().unwrap().value, TypeExpr::Never);
-        assert_eq!(methods[2].reply.as_ref().unwrap().value, TypeExpr::Any);
+        assert_eq!(methods[2].reply.as_ref().unwrap().value, TypeExpr::Int);
         for source in ["{foo ->}", "{foo.}", "{foo bar}"] {
             let mut diagnostics = Vec::new();
             assert!(
@@ -672,14 +714,14 @@ mod tests {
     #[test]
     fn type_selector_mode_applies_to_builtin_names_too() {
         let mut diagnostics = Vec::new();
-        let ty = parse_type("{ any -> {}. never -> {} }", &mut diagnostics).unwrap();
+        let ty = parse_type("{ int -> {}. never -> {} }", &mut diagnostics).unwrap();
         assert!(diagnostics.is_empty());
         let types::Type::Actor(actor) = ty.value else {
             panic!()
         };
         assert_eq!(
             actor.methods[0].input,
-            types::Type::Selector(Selector::Atomic("any".into()))
+            types::Type::Selector(Selector::Atomic("int".into()))
         );
         assert_eq!(
             actor.methods[1].input,
@@ -785,17 +827,80 @@ mod tests {
     }
 
     #[test]
+    fn primitive_type_names_resolve_in_ordinary_mode() {
+        for (source, syntax, semantic) in [
+            ("bytes", TypeExpr::Bytes, types::Type::Bytes),
+            ("string", TypeExpr::String, types::Type::String),
+            ("int", TypeExpr::Int, types::Type::Int),
+            ("float", TypeExpr::Float, types::Type::Float),
+            (
+                "selector",
+                TypeExpr::SelectorFamily,
+                types::Type::SelectorFamily,
+            ),
+            ("atom", TypeExpr::Atom, types::Type::Atom),
+            ("optagged", TypeExpr::OpTagged, types::Type::OpTagged),
+            (
+                "keywordtagged",
+                TypeExpr::KeywordTagged,
+                types::Type::KeywordTagged,
+            ),
+        ] {
+            let mut diagnostics = Vec::new();
+            assert_eq!(
+                parse_type_expression(source, &mut diagnostics)
+                    .unwrap()
+                    .value,
+                syntax
+            );
+            assert_eq!(
+                parse_type(source, &mut diagnostics).unwrap().value,
+                semantic
+            );
+            let actor = format!("{{ {source} -> {{}} }}");
+            let types::Type::Actor(actor) = parse_type(&actor, &mut diagnostics).unwrap().value
+            else {
+                panic!()
+            };
+            assert_eq!(
+                actor.methods[0].input,
+                types::Type::Selector(Selector::Atomic(source.into()))
+            );
+            assert!(diagnostics.is_empty());
+        }
+    }
+
+    #[test]
+    fn any_is_an_ordinary_name_not_a_builtin_type() {
+        let mut diagnostics = Vec::new();
+        assert_eq!(
+            parse_type_expression("any", &mut diagnostics)
+                .unwrap()
+                .value,
+            TypeExpr::Variable("any".into())
+        );
+        assert!(diagnostics.is_empty());
+        assert!(parse_type("any", &mut diagnostics).is_none());
+        assert!(!diagnostics.is_empty());
+        assert_eq!(expression("any").value, Expr::Variable("any".into()));
+        assert_eq!(
+            binding_pattern("let any = {}. any").value,
+            Pattern::Variable("any".into())
+        );
+    }
+
+    #[test]
     fn type_modes_and_disjointness() {
         for source in [
-            "any",
+            "int",
             "never",
             "{}",
             "#foo",
-            "#+ any",
+            "#+ int",
             "#put: {} at: #slot",
-            "{foo -> {}. bar -> any}",
-            "{put: any -> #ok}",
-            "{(any) -> never}",
+            "{foo -> {}. bar -> int}",
+            "{put: int -> #ok}",
+            "{(int) -> never}",
         ] {
             let mut diagnostics = Vec::new();
             assert!(
@@ -807,11 +912,11 @@ mod tests {
         for source in [
             "foo",
             "#",
-            "{foo => any}",
+            "{foo => int}",
             "{foo -> bar}",
-            "{foo -> any. foo -> {}}",
-            "{put: any -> any. put: {} -> {}}",
-            "any never",
+            "{foo -> int. foo -> {}}",
+            "{put: int -> int. put: {} -> {}}",
+            "int never",
         ] {
             let mut diagnostics = Vec::new();
             assert!(parse_type(source, &mut diagnostics).is_none(), "{source}");

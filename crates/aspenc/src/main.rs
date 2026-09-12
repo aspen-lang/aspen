@@ -6,10 +6,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use aspenc::{
-    Lexer, Span, parse,
-    types::{TypeError, check_program},
-};
+use aspenc::{Lexer, Span, types::TypeError};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -23,32 +20,32 @@ struct Cli {
 enum Command {
     /// Print located lexer tokens, including whitespace.
     Lex(Input),
-    /// Parse a source file and print its located AST.
+    /// Parse a module source file and print its located AST (imports and global lets).
     Parse(Input),
-    /// Type-check and lower to the executable IR (no execution or code generation).
-    Lower(Input),
-    /// Emit Erlang source for the checked program to stdout.
-    Emit(Input),
-    /// Compile the program and runtime with erlc.
+    /// Load a package, type-check its modules and entry, and print executable IR.
+    Lower(PackageInput),
+    /// Emit Erlang source for a checked package and its configured entry to stdout.
+    Emit(PackageInput),
+    /// Compile a package and runtime with erlc and build the native syscall library.
     Build {
         #[command(flatten)]
-        input: Input,
+        input: PackageInput,
         /// Output directory for generated Erlang and BEAM files.
         #[arg(long, default_value = "aspen-build")]
         out_dir: PathBuf,
     },
-    /// Run on BEAM; explicitly shut down all actors at top-level completion.
+    /// Run the configured entry on BEAM, draining asynchronous work before shutdown.
     Run {
         #[command(flatten)]
-        input: Input,
+        input: PackageInput,
         /// Hard runtime deadline in milliseconds; expiry is an error.
         #[arg(long)]
         timeout_ms: Option<u32>,
     },
-    /// Type-check a source file and report success.
+    /// Load a package and type-check its modules and configured entry.
     Check {
         #[command(flatten)]
-        input: Input,
+        input: PackageInput,
         /// Print the full typed AST and its evidence instead of just 'ok'.
         #[arg(long)]
         typed_ast: bool,
@@ -61,18 +58,11 @@ struct Input {
     file: PathBuf,
 }
 
-impl Command {
-    fn input(&self) -> &Input {
-        match self {
-            Self::Lex(input)
-            | Self::Parse(input)
-            | Self::Lower(input)
-            | Self::Emit(input)
-            | Self::Build { input, .. }
-            | Self::Run { input, .. }
-            | Self::Check { input, .. } => input,
-        }
-    }
+#[derive(clap::Args)]
+struct PackageInput {
+    /// Package directory or aspen.yaml manifest; compilation does not accept stdin.
+    #[arg(default_value = ".")]
+    package: PathBuf,
 }
 
 fn diagnostic(
@@ -89,7 +79,23 @@ fn diagnostic(
     )
 }
 
-fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::Result<()> {
+fn type_diagnostic(
+    out: &mut impl Write,
+    file: &str,
+    sources: &aspenc::package::SourceMap,
+    error: &TypeError,
+) -> io::Result<()> {
+    // Imported producers and expected annotations may be in different files.
+    macro_rules! located {
+        ($out:expr, $file:expr, $span:expr, $level:expr, $message:expr $(,)?) => {{
+            let span = $span;
+            if let Some((path, local)) = sources.resolve(span) {
+                diagnostic($out, &path.display().to_string(), local, $level, $message)
+            } else {
+                diagnostic($out, $file, span, $level, $message)
+            }
+        }};
+    }
     let span = match error {
         TypeError::Mismatch(mismatch) => mismatch.actual.expression,
         TypeError::ReplyToOutsideAnnotatedMethod { span }
@@ -100,13 +106,12 @@ fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::R
         | TypeError::InvalidActorType { span } => *span,
         TypeError::OverlappingReceivers { second, .. }
         | TypeError::DuplicateBinding { second, .. } => *second,
-        TypeError::NotActor { callee } => callee.expression,
         TypeError::NoReceiver { message, .. } => message.expression,
     };
-    diagnostic(out, file, span, "error", error)?;
+    located!(out, file, span, "error", error)?;
     match error {
         TypeError::Mismatch(mismatch) => {
-            diagnostic(
+            located!(
                 out,
                 file,
                 mismatch.expected.origin,
@@ -115,7 +120,7 @@ fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::R
             )?;
             let producer = mismatch.actual.producer();
             if producer.expression != span {
-                diagnostic(
+                located!(
                     out,
                     file,
                     producer.expression,
@@ -132,7 +137,7 @@ fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::R
             }
         }
         TypeError::OverlappingReceivers { first, .. } => {
-            diagnostic(
+            located!(
                 out,
                 file,
                 *first,
@@ -141,17 +146,17 @@ fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::R
             )?;
         }
         TypeError::DuplicateBinding { first, .. } => {
-            diagnostic(out, file, *first, "note", "first binding declared here")?;
+            located!(out, file, *first, "note", "first binding declared here")?;
         }
         TypeError::NoReceiver { callee, message } => {
-            diagnostic(
+            located!(
                 out,
                 file,
                 callee.expression,
                 "note",
                 format_args!("callee has type {}", callee.ty),
             )?;
-            diagnostic(
+            located!(
                 out,
                 file,
                 message.expression,
@@ -159,141 +164,133 @@ fn type_diagnostic(out: &mut impl Write, file: &str, error: &TypeError) -> io::R
                 format_args!("message has type {}", message.ty),
             )?;
         }
-        TypeError::NotActor { callee } => {
-            diagnostic(
-                out,
-                file,
-                callee.expression,
-                "note",
-                format_args!("callee has type {}", callee.ty),
-            )?;
-        }
         _ => {}
     }
     Ok(())
 }
-
 fn run(cli: Cli, stdout: &mut impl Write, stderr: &mut impl Write) -> io::Result<bool> {
-    let input = cli.command.input();
-    let stdin = input.file.as_os_str() == "-";
-    let file = if stdin {
-        "<stdin>".into()
-    } else {
-        input.file.display().to_string()
+    let input = match &cli.command {
+        Command::Lex(input) | Command::Parse(input) => {
+            let stdin = input.file.as_os_str() == "-";
+            let file = if stdin {
+                "<stdin>".into()
+            } else {
+                input.file.display().to_string()
+            };
+            let source = if stdin {
+                let mut source = String::new();
+                io::stdin().read_to_string(&mut source).map(|_| source)
+            } else {
+                fs::read_to_string(&input.file)
+            };
+            let source = match source {
+                Ok(source) => source,
+                Err(error) => {
+                    writeln!(stderr, "{file}: error: {error}")?;
+                    return Ok(false);
+                }
+            };
+            if matches!(cli.command, Command::Lex(_)) {
+                let mut lexer = Lexer::new(&source);
+                for token in lexer.by_ref() {
+                    writeln!(stdout, "{token:?}")?;
+                }
+                for error in &lexer.diagnostics {
+                    diagnostic(stderr, &file, error.span, "error", &error.message)?;
+                }
+                return Ok(lexer.diagnostics.is_empty());
+            }
+            let mut diagnostics = Vec::new();
+            let module = aspenc::parse_module(Lexer::new(&source), &mut diagnostics);
+            if !diagnostics.is_empty() {
+                for error in diagnostics {
+                    diagnostic(stderr, &file, error.span, "error", error.message)?;
+                }
+                return Ok(false);
+            }
+            writeln!(stdout, "{module:#?}")?;
+            return Ok(true);
+        }
+        Command::Lower(input)
+        | Command::Emit(input)
+        | Command::Build { input, .. }
+        | Command::Run { input, .. }
+        | Command::Check { input, .. } => input,
     };
-    let source = if stdin {
-        let mut source = String::new();
-        io::stdin().read_to_string(&mut source).map(|_| source)
-    } else {
-        fs::read_to_string(&input.file)
-    };
-    let source = match source {
-        Ok(source) => source,
-        Err(error) => {
-            writeln!(stderr, "{file}: error: {error}")?;
+    let file = input.package.display().to_string();
+    let package = match aspenc::package::load_and_check(&input.package) {
+        Ok(package) => package,
+        Err(errors) => {
+            for error in errors {
+                let file = error.path.display().to_string();
+                if let Some(type_error) = &error.type_error {
+                    type_diagnostic(stderr, &file, &error.sources, type_error)?;
+                } else if let Some(span) = error.span {
+                    diagnostic(stderr, &file, span, "error", error.message)?;
+                } else {
+                    writeln!(stderr, "{file}: error: {}", error.message)?;
+                }
+            }
             return Ok(false);
         }
     };
-    if matches!(cli.command, Command::Lex(_)) {
-        let mut lexer = Lexer::new(&source);
-        for token in lexer.by_ref() {
-            writeln!(stdout, "{token:?}")?;
+    if let Command::Check { typed_ast, .. } = cli.command {
+        if typed_ast {
+            writeln!(
+                stdout,
+                "globals: {:#?}\nentry: {:#?}",
+                package.globals, package.entry
+            )?;
+        } else {
+            writeln!(stdout, "ok")?;
         }
-        for error in &lexer.diagnostics {
-            diagnostic(stderr, &file, error.span, "error", &error.message)?;
-        }
-        return Ok(lexer.diagnostics.is_empty());
+        return Ok(true);
     }
-    let mut diagnostics = Vec::new();
-    let program = parse(Lexer::new(&source), &mut diagnostics);
-    // A parser can return a partial tree with diagnostics; never type-check it.
-    if !diagnostics.is_empty() {
-        for error in diagnostics {
-            diagnostic(stderr, &file, error.span, "error", error.message)?;
+    let ir = match aspenc::ir::lower_globals(&package.globals, &package.entry) {
+        Ok(ir) => ir,
+        Err(error) => {
+            writeln!(stderr, "{file}: error: IR lowering failed: {error}")?;
+            return Ok(false);
         }
-        return Ok(false);
+    };
+    if matches!(cli.command, Command::Lower(_)) {
+        writeln!(stdout, "{ir:#?}")?;
+        return Ok(true);
     }
+    let generated = match aspenc::beam::emit_program(&ir, "aspen_program") {
+        Ok(generated) => generated,
+        Err(error) => {
+            writeln!(stderr, "{file}: error: code generation failed: {error}")?;
+            return Ok(false);
+        }
+    };
     match cli.command {
-        Command::Parse(_) => writeln!(stdout, "{program:#?}")?,
-        Command::Lower(_) => match check_program(&program) {
-            Ok(statements) => match aspenc::ir::lower_program(&statements) {
-                Ok(program) => writeln!(stdout, "{program:#?}")?,
-                Err(error) => {
-                    writeln!(stderr, "{file}: error: IR lowering failed: {error}")?;
-                    return Ok(false);
-                }
-            },
-            Err(error) => {
-                type_diagnostic(stderr, &file, &error)?;
+        Command::Emit(_) => write!(stdout, "{generated}")?,
+        Command::Build { out_dir, .. } => return build(&generated, &out_dir, stdout, stderr),
+        Command::Run { timeout_ms, .. } => {
+            let directory = TemporaryDirectory::new()?;
+            if !build(&generated, &directory.0, stdout, stderr)? {
                 return Ok(false);
             }
-        },
-        command @ (Command::Emit(_) | Command::Build { .. } | Command::Run { .. }) => {
-            let statements = match check_program(&program) {
-                Ok(statements) => statements,
-                Err(error) => {
-                    type_diagnostic(stderr, &file, &error)?;
-                    return Ok(false);
-                }
-            };
-            let generated = aspenc::ir::lower_program(&statements)
-                .map_err(|error| error.to_string())
-                .and_then(|ir| {
-                    aspenc::beam::emit_program(&ir, "aspen_program")
-                        .map_err(|error| error.to_string())
-                });
-            let generated = match generated {
-                Ok(generated) => generated,
-                Err(error) => {
-                    writeln!(stderr, "{file}: error: code generation failed: {error}")?;
-                    return Ok(false);
-                }
-            };
-            match command {
-                Command::Emit(_) => write!(stdout, "{generated}")?,
-                Command::Build { out_dir, .. } => {
-                    return build(&generated, &out_dir, stdout, stderr);
-                }
-                Command::Run { timeout_ms, .. } => {
-                    let directory = TemporaryDirectory::new()?;
-                    if !build(&generated, &directory.0, stdout, stderr)? {
-                        return Ok(false);
-                    }
-                    let timeout = timeout_ms.map_or_else(|| "infinity".into(), |n| n.to_string());
-                    let evaluation = format!(
-                        "case aspen_runtime:run(aspen_program, {timeout}) of ok -> halt(0); {{error, Reason}} -> io:format(standard_error, \"Aspen runtime error: ~p~n\", [Reason]), halt(1) end."
-                    );
-                    let output = ProcessCommand::new("erl")
-                        .arg("-noshell")
-                        .arg("-pa")
-                        .arg(&directory.0)
-                        .arg("-eval")
-                        .arg(evaluation)
-                        .output()
-                        .map_err(|error| {
-                            io::Error::new(error.kind(), format!("cannot run erl: {error}"))
-                        })?;
-                    stdout.write_all(&output.stdout)?;
-                    stderr.write_all(&output.stderr)?;
-                    return Ok(output.status.success());
-                }
-                _ => unreachable!(),
-            }
+            let timeout = timeout_ms.map_or_else(|| "infinity".into(), |n| n.to_string());
+            let evaluation = format!(
+                "case aspen_runtime:run(aspen_program, {timeout}) of ok -> halt(0); {{error, Reason}} -> io:format(standard_error, \"Aspen runtime error: ~p~n\", [Reason]), halt(1) end."
+            );
+            let output = ProcessCommand::new("erl")
+                .arg("-noshell")
+                .arg("-pa")
+                .arg(&directory.0)
+                .arg("-eval")
+                .arg(evaluation)
+                .output()
+                .map_err(|error| {
+                    io::Error::new(error.kind(), format!("cannot run erl: {error}"))
+                })?;
+            stdout.write_all(&output.stdout)?;
+            stderr.write_all(&output.stderr)?;
+            return Ok(output.status.success());
         }
-        Command::Check { typed_ast, .. } => match check_program(&program) {
-            Ok(statements) => {
-                if typed_ast {
-                    writeln!(stdout, "{statements:#?}")?;
-                } else {
-                    writeln!(stdout, "ok")?;
-                }
-            }
-            Err(error) => {
-                type_diagnostic(stderr, &file, &error)?;
-                return Ok(false);
-            }
-        },
-        Command::Lex(_) => unreachable!(),
+        _ => unreachable!(),
     }
     Ok(true)
 }
@@ -310,10 +307,52 @@ fn build(
     let runtime = directory.join("aspen_runtime.erl");
     fs::write(&program, source)?;
     fs::write(&runtime, include_str!("../runtime/aspen_runtime.erl"))?;
+    let syscall = directory.join("aspen_syscall.erl");
+    let native = directory.join("aspen_syscall_nif.c");
+    fs::write(&syscall, include_str!("../runtime/aspen_syscall.erl"))?;
+    fs::write(&native, include_str!("../runtime/aspen_syscall_nif.c"))?;
+    let root = ProcessCommand::new("erl")
+        .args([
+            "+S",
+            "1:1",
+            "-noshell",
+            "-eval",
+            "io:put_chars(code:root_dir()), halt().",
+        ])
+        .output()
+        .map_err(|error| io::Error::new(error.kind(), format!("cannot run erl: {error}")))?;
+    if !root.status.success() {
+        stdout.write_all(&root.stdout)?;
+        stderr.write_all(&root.stderr)?;
+        return Ok(false);
+    }
+    let root = String::from_utf8(root.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let mut compiler = ProcessCommand::new(std::env::var_os("CC").unwrap_or_else(|| "cc".into()));
+    compiler.args(["-O2", "-Wall", "-Wextra", "-Werror", "-fPIC"]);
+    if cfg!(target_os = "macos") {
+        compiler.args(["-dynamiclib", "-undefined", "dynamic_lookup"]);
+    } else {
+        compiler.arg("-shared");
+    }
+    let output = compiler
+        .arg("-I")
+        .arg(Path::new(root.trim()).join("usr/include"))
+        .arg("-o")
+        .arg(directory.join("aspen_syscall_nif.so"))
+        .arg(&native)
+        .output()
+        .map_err(|error| io::Error::new(error.kind(), format!("cannot run C compiler: {error}")))?;
+    stdout.write_all(&output.stdout)?;
+    stderr.write_all(&output.stderr)?;
+    if !output.status.success() {
+        return Ok(false);
+    }
     let output = ProcessCommand::new("erlc")
         .arg("-o")
         .arg(&directory)
         .arg(&runtime)
+        .arg(&syscall)
         .arg(&program)
         .output()
         .map_err(|error| io::Error::new(error.kind(), format!("cannot run erlc: {error}")))?;

@@ -16,6 +16,14 @@ pub enum RuntimeShape {
     Any,
     /// Any opaque actor handle, regardless of its interface.
     Actor,
+    Bytes,
+    String,
+    Int,
+    Float,
+    SelectorFamily,
+    Atom,
+    OpTagged,
+    KeywordTagged,
     Selector(Selector<RuntimeShape>),
 }
 
@@ -24,8 +32,16 @@ impl RuntimeShape {
     pub fn from_type(ty: &Type) -> Self {
         match ty {
             Type::Never => Self::Empty,
-            Type::Any => Self::Any,
+            Type::Actor(actor) if actor.methods.is_empty() => Self::Any,
             Type::Actor(_) => Self::Actor,
+            Type::Bytes => Self::Bytes,
+            Type::String => Self::String,
+            Type::Int => Self::Int,
+            Type::Float => Self::Float,
+            Type::SelectorFamily => Self::SelectorFamily,
+            Type::Atom => Self::Atom,
+            Type::OpTagged => Self::OpTagged,
+            Type::KeywordTagged => Self::KeywordTagged,
             Type::Variable(variable) => Self::from_type(&variable.upper_bound),
             Type::Selector(selector) => {
                 let selector = selector.map(Self::from_type);
@@ -52,6 +68,23 @@ impl RuntimeShape {
         }
     }
 
+    // Each bit denotes one disjoint runtime value family.
+    fn kind_mask(&self) -> u8 {
+        match self {
+            Self::Empty => 0,
+            Self::Any => 0xff,
+            Self::Actor => 1,
+            Self::Bytes => 2 | 0x80,
+            Self::String => 2,
+            Self::Int => 4,
+            Self::Float => 8,
+            Self::SelectorFamily => 0x70,
+            Self::Atom | Self::Selector(Selector::Atomic(_)) => 0x10,
+            Self::OpTagged | Self::Selector(Selector::Operator { .. }) => 0x20,
+            Self::KeywordTagged | Self::Selector(Selector::Keyword(_)) => 0x40,
+        }
+    }
+
     /// Prove domains disjoint using only value kind and recursive selector tags.
     pub fn is_disjoint_from(&self, other: &Self) -> bool {
         if self.is_empty() || other.is_empty() {
@@ -65,8 +98,7 @@ impl RuntimeShape {
                         .zip(b.values())
                         .any(|(a, b)| a.is_disjoint_from(b))
             }
-            (Self::Actor, Self::Selector(_)) | (Self::Selector(_), Self::Actor) => true,
-            _ => false,
+            _ => self.kind_mask() & other.kind_mask() == 0,
         }
     }
 }
@@ -154,21 +186,43 @@ mod tests {
             )]))
         );
         let a = Type::Selector(Selector::Keyword(vec![
-            ("a".into(), Type::Any),
-            ("b".into(), Type::Any),
+            ("a".into(), Type::UNIT),
+            ("b".into(), Type::UNIT),
         ]));
         let b = Type::Selector(Selector::Keyword(vec![
-            ("b".into(), Type::Any),
-            ("a".into(), Type::Any),
+            ("b".into(), Type::UNIT),
+            ("a".into(), Type::UNIT),
         ]));
         assert!(RuntimeShape::from_type(&a).is_disjoint_from(&RuntimeShape::from_type(&b)));
         let operator = Type::Selector(Selector::Operator {
             operator: "a".into(),
-            value: Box::new(Type::Any),
+            value: Box::new(Type::UNIT),
         });
         assert!(
             RuntimeShape::from_type(&operator)
-                .is_disjoint_from(&RuntimeShape::from_type(&tag("a", Type::Any)))
+                .is_disjoint_from(&RuntimeShape::from_type(&tag("a", Type::UNIT)))
+        );
+    }
+
+    #[test]
+    fn top_is_a_wildcard_and_selector_families_overlap_their_members() {
+        assert_eq!(RuntimeShape::from_type(&Type::UNIT), RuntimeShape::Any);
+        let atomic = RuntimeShape::from_type(&atom("ok"));
+        assert!(!RuntimeShape::Any.is_disjoint_from(&atomic));
+        assert!(!RuntimeShape::SelectorFamily.is_disjoint_from(&atomic));
+        assert!(!RuntimeShape::Atom.is_disjoint_from(&atomic));
+        assert!(RuntimeShape::KeywordTagged.is_disjoint_from(&atomic));
+        assert!(RuntimeShape::Int.is_disjoint_from(&RuntimeShape::Float));
+        assert!(RuntimeShape::Actor.is_disjoint_from(&RuntimeShape::String));
+        assert_eq!(RuntimeShape::from_type(&Type::Bytes), RuntimeShape::Bytes);
+        assert!(!RuntimeShape::Bytes.is_disjoint_from(&RuntimeShape::String));
+        assert!(!RuntimeShape::String.is_disjoint_from(&RuntimeShape::Bytes));
+        assert!(RuntimeShape::Bytes.is_disjoint_from(&RuntimeShape::Int));
+        assert!(
+            validate_actor_inputs(&ActorType {
+                methods: vec![method(Type::Bytes), method(Type::String)],
+            })
+            .is_err()
         );
     }
 
@@ -208,7 +262,7 @@ mod tests {
         assert!(raw.is_empty());
         assert!(raw.is_disjoint_from(&RuntimeShape::Any));
         let shapes = validate_actor_inputs(&ActorType {
-            methods: vec![method(Type::Any), method(empty)],
+            methods: vec![method(Type::UNIT), method(empty)],
         })
         .unwrap();
         assert_eq!(shapes, [RuntimeShape::Any, RuntimeShape::Empty]);
@@ -222,7 +276,7 @@ mod tests {
         let receiver = MethodType {
             parameters: vec![a, b],
             input,
-            reply: Some(Type::Any),
+            reply: Some(Type::UNIT),
         };
         assert_eq!(
             RuntimeShape::accepted_input(&receiver),
@@ -230,13 +284,13 @@ mod tests {
         );
         assert!(
             validate_actor_inputs(&ActorType {
-                methods: vec![receiver, method(tag("y", Type::Any))]
+                methods: vec![receiver, method(tag("y", Type::UNIT))]
             })
             .is_ok()
         );
         assert_eq!(
             validate_actor_inputs(&ActorType {
-                methods: vec![method(atom("a")), method(atom("b")), method(Type::Any)]
+                methods: vec![method(atom("a")), method(atom("b")), method(Type::UNIT)]
             }),
             Err(DispatchOverlap {
                 first: 0,
@@ -250,8 +304,15 @@ mod tests {
     fn generated_types() -> Vec<Type> {
         let base = vec![
             Type::Never,
-            Type::Any,
             Type::UNIT,
+            Type::Bytes,
+            Type::String,
+            Type::Int,
+            Type::Float,
+            Type::SelectorFamily,
+            Type::Atom,
+            Type::OpTagged,
+            Type::KeywordTagged,
             atom("a"),
             atom("b"),
             Type::Actor(ActorType {
@@ -290,7 +351,7 @@ mod tests {
     #[test]
     fn static_disjointness_implies_shape_disjointness_exhaustively() {
         let types = generated_types();
-        assert_eq!(types.len(), 234);
+        assert_eq!(types.len(), 780);
         let shapes: Vec<_> = types.iter().map(RuntimeShape::from_type).collect();
         for (i, a) in types.iter().enumerate() {
             for (j, b) in types.iter().enumerate() {

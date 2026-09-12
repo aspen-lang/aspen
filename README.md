@@ -8,9 +8,63 @@ sends, and bounded method polymorphism. The compiler currently implements lexing
 parsing, static type checking, Erlang source generation, and execution on BEAM.
 The current language fragment is specified in `spec/type-system.typ`.
 
+Every value is an actor in the type system, including primitives. The unit actor
+`{}` is the top type, and `never` is bottom; there is no separate `any` type.
+The primitive types `bytes`, `int`, `float`, and `selector` are subtypes of `{}`.
+Strings refine immutable byte sequences: `string <: bytes <: {}`. A `bytes`
+argument accepts a string directly, without conversion; arbitrary bytes need not
+be valid UTF-8. There is no separate byte-literal syntax yet.
+Selectors divide into `atom`, `optagged`, and `keywordtagged`, with concrete
+selector types below their respective families (for example,
+`#ready <: atom <: selector <: {}`). These type names are available in
+annotations. Decimal signed 64-bit integer literals are supported, including
+negative values and underscore separators: `42`, `-42`, `1_000`. Underscores must
+occur singly between digits; the minus sign must touch the digits. Strings use
+double quotes, contain UTF-8 text, and support `\"`, `\\`, `\n`, `\r`, `\t`, `\0`,
+and `\u{...}` escapes. Raw newlines and interpolation are not supported.
+Floats use finite IEEE 754 binary64 values: `1.5`, `1e3`, `-1_000.25e-2`.
+They follow the same sign and separator rules as integers; decimal points require
+digits on both sides, leaving `1.` as an integer followed by a statement terminator.
+Overflow is rejected; rounding and underflow to signed zero are allowed.
+
+## Low-Level Output
+
+The global actor `syscall` exposes real OS syscalls. For example:
+
+```aspen
+export let main = {
+  def start => syscall write: 1 data: "Hello, world!\n".
+}.
+```
+
+Its interface is `{ write: int data: bytes -> int }`. `write` attempts one POSIX
+write and replies with the byte count, or negative native `errno` on failure.
+It does not add a newline, retry interrupted or partial writes, or interpret the
+bytes as text. Descriptors refer to the BEAM process: `1` is normally stdout and
+`2` stderr. This is unrestricted low-level descriptor access, not an I/O sandbox.
+A discarded reply still waits for the write attempt to finish before execution
+continues.
+
+`syscall` is a first-class actor shared within each runtime session. It is available
+inside methods as well as at top level; lexical bindings can shadow it, and it can
+be passed or aliased like any other actor.
+
+## Modules
+
+Each source file defines a module, with private `let` and public `export let`
+globals. Initializers are declarative; effects run only inside actor methods.
+Modules import exported globals using package paths. A YAML package manifest
+selects the source root and a global actor plus an initial no-reply atomic
+message. `index.aspen` names its containing directory's module.
+
+See [`docs/modules.md`](docs/modules.md) for the manifest, import syntax,
+qualified references, recursive module checking, and global identity rules.
+Script-style top-level expression statements are no longer accepted.
+
 ## Development
 
-Use the Nix development shell for the compiler's Rust and Erlang/OTP 28 toolchains:
+Use the Nix development shell for the compiler's Rust and Erlang/OTP 28 toolchains.
+The native syscall bridge also requires a C compiler and Erlang NIF headers:
 
 ```sh
 nix develop
@@ -21,25 +75,33 @@ cargo test --workspace --locked
 
 ```sh
 nix develop
-cargo run -p aspenc -- emit example.aspen > aspen_program.erl
-cargo run -p aspenc -- build example.aspen --out-dir aspen-build
-cargo run -p aspenc -- run example.aspen --timeout-ms 5000
+cargo run -p aspenc -- emit aspen.yaml > aspen_program.erl
+cargo run -p aspenc -- build aspen.yaml --out-dir aspen-build
+cargo run -p aspenc -- run aspen.yaml --timeout-ms 5000
+# Run the checked-in two-module example:
+cargo run -p aspenc -- run examples/hello --timeout-ms 5000
 ```
 
 `emit` prints one generated Erlang module, `aspen_program`, without invoking
-Erlang. `build` writes that module and `aspen_runtime.erl`, then invokes `erlc`
-to produce both BEAM modules in the output directory. Each build compiles one
-whole Aspen program; separate package compilation is not yet supported. `erlc`
-and `erl` must be on `PATH` for `build` and `run`, respectively. The development
+Erlang. `build` writes the generated module and runtime sources, then compiles
+three BEAM modules and the native `aspen_syscall_nif.so` into the output directory.
+Keep these artifacts together when deploying. Each build links the root package and its local dependencies into one whole
+Aspen program; serialized separately compiled package artifacts are not yet supported. `erlc`, `erl`,
+and a C compiler (`cc`, or the executable named by `CC`) must be on `PATH` for
+`build` and `run`; the Erlang installation must include NIF headers. The development
 shell supplies Erlang/OTP 28, including the process aliases used for replies.
 
-`run` builds in a temporary directory and executes a fresh BEAM VM. It explicitly
-shuts down the session when the top-level statement sequence finishes; this is
-not a claim that all actors or delegated work have finished. To await delegated
-work, the program must use a replying send as its completion signal. The runtime
-also exposes a session API for Erlang hosts that need a longer-lived session.
-There is no automatic actor reclamation, supervision, request failure detection,
-or implicit request timeout. `--timeout-ms` sets an optional hard runtime deadline;
+`run` builds in a temporary directory and executes a fresh BEAM VM. After the
+configured entry message has been sent, it waits for remaining actor work to drain and
+unreachable actors to be collected before shutting down. Fire-and-forget sends
+therefore finish even when the entrypoint has returned. An idle syscall singleton
+does not prevent exit; an executing autonomous loop does. The runtime also exposes
+a session API for Erlang hosts that need a longer-lived session.
+Actor liveness collection reclaims unreachable idle actors and suspended calls,
+including inactive cycles, while preserving executing or runnable autonomous
+cycles. External handles and native I/O are retained conservatively. There is no
+supervision, request failure reply, or implicit request timeout.
+`--timeout-ms` sets an optional hard runtime deadline;
 expiration fails the run, never reports successful completion. Compilation and VM
 startup are outside this runtime deadline. Without the flag, a missing reply can
 wait indefinitely.
@@ -50,23 +112,25 @@ wait indefinitely.
 cargo run -p aspenc -- --help
 cargo run -p aspenc -- lex example.aspen
 cargo run -p aspenc -- parse example.aspen
-cargo run -p aspenc -- check example.aspen
-cargo run -p aspenc -- check --typed-ast example.aspen
-cargo run -p aspenc -- lower example.aspen
-printf 'let service = { def (x) => x. }. service (#home).' | cargo run -q -p aspenc -- check -
+cargo run -p aspenc -- check aspen.yaml
+cargo run -p aspenc -- check --typed-ast aspen.yaml
+cargo run -p aspenc -- lower aspen.yaml
+printf 'export let greeting = "hello".' | cargo run -q -p aspenc -- parse -
 ```
 
 - `lex` prints located tokens, including whitespace. It reports lexical errors
   while continuing to print the tokens it can recognize.
 - `parse` prints the located AST only if parsing succeeds.
-- `check` prints `ok` on success. Programs are statement sequences, not values.
-  `--typed-ast` instead prints the typed AST, including type evidence and bindings.
+- `check` resolves and checks all package modules and dependencies, validates the
+  configured entrypoint, and prints `ok` on success. `--typed-ast` instead prints
+  the checked globals and entry send, including type evidence and bindings.
   Files with lexical or parse errors are not passed to the type checker.
 - `lower` checks a program and prints the backend-independent executable IR.
   It does not execute the program or generate BEAM code. The dump exposes
   sequencing, message sends, captures, projections, and static adaptation plans.
 
-Each command accepts one UTF-8 file; `-` reads standard input. Debug output goes to
+`lex` and `parse` accept one UTF-8 source file; `-` reads standard input.
+Compilation commands accept a package manifest or package directory. Debug output goes to
 stdout, and diagnostics go to stderr as `file:line:column: error: message`, with
 related source locations where available. Lines and Unicode scalar columns are
 one-based. The type checker currently stops at the first type error.
@@ -77,7 +141,8 @@ inspection, not as a stable machine-readable format.
 
 ## Statements And Replies
 
-Programs and method bodies contain zero or more period-terminated statements:
+Method bodies contain zero or more period-terminated statements. The following
+examples are method-body fragments, not standalone source files:
 
 ```text
 let service = {
@@ -93,7 +158,7 @@ service put: #home.
 statements discard their values; even a method's final expression does not
 implicitly send a reply. Method-local bindings do not escape their method.
 
-A signature such as `{put: any. ready}` has no replies. `{ready -> {}}` promises
+A signature such as `{put: {}. ready}` has no replies. `{ready -> {}}` promises
 a value reply and is a different contract. Methods declare replies explicitly:
 
 ```text

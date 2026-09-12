@@ -1,0 +1,5 @@
+name: hello
+source: src
+entry:
+  actor: hello/main
+  message: start

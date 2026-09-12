@@ -18,6 +18,7 @@ pub struct ActorId(pub u32);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IrProgram {
     pub entry: Block,
+    pub globals: Block,
     pub actors: Vec<ActorDefinition>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -37,6 +38,16 @@ pub enum SendMode {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Operation {
+    /// The session's shared syscall actor; lexical bindings may shadow it.
+    Syscall,
+    Global(String),
+    DefineGlobal {
+        name: String,
+        value: ValueId,
+    },
+    Int(i64),
+    Float(crate::FloatValue),
+    String(String),
     Read(BindingId),
     Selector(Selector<ValueId>),
     /// Every execution creates a fresh actor identity, even with no captures.
@@ -78,6 +89,7 @@ pub struct ActorDefinition {
     pub id: ActorId,
     pub span: Span,
     pub captures: Vec<BindingId>,
+    pub globals: Vec<String>,
     pub methods: Vec<Method>,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -131,6 +143,7 @@ struct Lowerer {
     next_binding: u32,
     next_actor: u32,
     actors: Vec<ActorDefinition>,
+    globals: BTreeSet<String>,
 }
 /// Lower a closed, checked program. Open expressions require runtime bindings
 /// and produce a located error rather than guessing identities from provenance.
@@ -140,6 +153,38 @@ pub fn lower_program(statements: &[TypedStatement]) -> Result<IrProgram, LowerEr
     lowerer.actors.sort_by_key(|actor| actor.id);
     let program = IrProgram {
         entry,
+        globals: Block::default(),
+        actors: lowerer.actors,
+    };
+    program.validate()?;
+    Ok(program)
+}
+/// Initialize the checked static graph once, then execute its entry send.
+pub fn lower_globals(
+    globals: &[(String, TypedExpression)],
+    entry: &TypedStatement,
+) -> Result<IrProgram, LowerError> {
+    let mut lowerer = Lowerer {
+        globals: globals.iter().map(|(name, _)| name.clone()).collect(),
+        ..Lowerer::default()
+    };
+    let mut initialization = Block::default();
+    for (name, expression) in globals {
+        let value = lowerer.expression(expression, &Scope::default(), &mut initialization)?;
+        Lowerer::effect(
+            &mut initialization,
+            expression.evidence.expression,
+            Operation::DefineGlobal {
+                name: name.clone(),
+                value,
+            },
+        );
+    }
+    let entry = lowerer.statements(std::slice::from_ref(entry), &mut Scope::default())?;
+    lowerer.actors.sort_by_key(|actor| actor.id);
+    let program = IrProgram {
+        entry,
+        globals: initialization,
         actors: lowerer.actors,
     };
     program.validate()?;
@@ -303,14 +348,23 @@ impl Lowerer {
     ) -> Result<ValueId, LowerError> {
         let span = expression.evidence.expression;
         let value = match &expression.kind {
+            TypedExprKind::Syscall => self.emit(block, span, Operation::Syscall),
+            TypedExprKind::Int(value) => self.emit(block, span, Operation::Int(*value)),
+            TypedExprKind::Float(value) => self.emit(block, span, Operation::Float(*value)),
+            TypedExprKind::String(value) => {
+                self.emit(block, span, Operation::String(value.clone()))
+            }
             TypedExprKind::Variable { binding } => {
-                let id = scope.names.get(&binding.name).copied().ok_or_else(|| {
-                    LowerError::MissingBinding {
+                if let Some(id) = scope.names.get(&binding.name).copied() {
+                    self.emit(block, span, Operation::Read(id))
+                } else if self.globals.contains(&binding.name) {
+                    self.emit(block, span, Operation::Global(binding.name.clone()))
+                } else {
+                    return Err(LowerError::MissingBinding {
                         name: binding.name.clone(),
                         span,
-                    }
-                })?;
-                self.emit(block, span, Operation::Read(id))
+                    });
+                }
             }
             TypedExprKind::ReplyTo { .. } => {
                 let id = scope.reply.ok_or_else(|| LowerError::MissingBinding {
@@ -390,10 +444,27 @@ impl Lowerer {
                     .iter()
                     .map(|binding| (*binding, self.emit(block, span, Operation::Read(*binding))))
                     .collect();
+                let mut globals = BTreeSet::new();
+                for method in &methods {
+                    for instruction in &method.body.instructions {
+                        match &instruction.operation {
+                            Operation::Global(name) => {
+                                globals.insert(name.clone());
+                            }
+                            Operation::CreateActor { definition, .. } => {
+                                let nested =
+                                    self.actors.iter().find(|a| a.id == *definition).unwrap();
+                                globals.extend(nested.globals.iter().cloned());
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 self.actors.push(ActorDefinition {
                     id,
                     span,
                     captures,
+                    globals: globals.into_iter().collect(),
                     methods,
                 });
                 self.emit(
@@ -452,11 +523,14 @@ impl Lowerer {
 impl IrProgram {
     /// Check the identity-only backend contract before handing IR to codegen.
     pub fn validate(&self) -> Result<(), LowerError> {
-        for block in std::iter::once(&self.entry).chain(
-            self.actors
-                .iter()
-                .flat_map(|a| a.methods.iter().map(|m| &m.body)),
-        ) {
+        for block in std::iter::once(&self.entry)
+            .chain(std::iter::once(&self.globals))
+            .chain(
+                self.actors
+                    .iter()
+                    .flat_map(|a| a.methods.iter().map(|m| &m.body)),
+            )
+        {
             for instruction in &block.instructions {
                 let identity = match &instruction.operation {
                     Operation::Check { adaptation, .. } => adaptation.is_identity(),
@@ -503,6 +577,45 @@ mod tests {
         let parsed = parse(Lexer::new(source), &mut diagnostics);
         assert!(diagnostics.is_empty(), "{diagnostics:?}");
         lower_program(&check_program(&parsed).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn global_references_are_edges_not_lexical_captures() {
+        let mut diagnostics = Vec::new();
+        let parsed = parse(
+            Lexer::new("let target = {}. { def go => { def nested => target. }. }. target."),
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+        let checked = check_program(&parsed).unwrap();
+        let TypedStatement::Let(target) = &checked[0] else {
+            panic!()
+        };
+        let TypedStatement::Expr(actor) = &checked[1] else {
+            panic!()
+        };
+        let ir = lower_globals(
+            &[
+                ("target".into(), target.value.clone()),
+                ("actor".into(), actor.clone()),
+            ],
+            &checked[2],
+        )
+        .unwrap();
+        assert!(ir.actors.iter().all(|a| a.captures.is_empty()));
+        assert_eq!(ir.actors[1].globals, ["target"]);
+        assert_eq!(ir.actors[2].globals, ["target"]);
+        assert!(
+            matches!(&ir.entry.instructions[0].operation, Operation::Global(name) if name == "target")
+        );
+        assert_eq!(
+            ir.globals
+                .instructions
+                .iter()
+                .filter(|i| matches!(i.operation, Operation::DefineGlobal { .. }))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -563,7 +676,7 @@ mod tests {
     #[test]
     fn sends_sequence_callee_then_payload_left_to_right() {
         let ir = compile(
-            "({ def make -> { (any) } => } make) (#left: ({ def one -> any => } one) right: ({ def two -> any => } two)).",
+            "({ def make -> { ({}) } => } make) (#left: ({ def one -> {} => } one) right: ({ def two -> {} => } two)).",
         );
         let sends = ir
             .entry
@@ -633,7 +746,7 @@ mod tests {
         let checked = check(
             &expression,
             &Expectation {
-                ty: Type::Any,
+                ty: Type::UNIT,
                 origin: expression.span,
             },
         )
@@ -656,7 +769,7 @@ mod tests {
     #[test]
     fn actors_are_fresh_and_method_results_never_implicitly_reply() {
         let ir = compile(
-            "{}. {}. { def empty -> #ok => def value -> any => {}. def bottom: (never x) => x go. }.",
+            "{}. {}. { def empty -> #ok => def value -> {} => {}. def bottom: (never x) => x go. }.",
         );
         assert_eq!(ir.entry.instructions.len(), 3);
         assert_eq!(ir.actors.len(), 4);

@@ -1,0 +1,7 @@
+import hello/output (printer).
+
+export let main = {
+  def start =>
+    printer print: "hello".
+    printer print: "world".
+}.

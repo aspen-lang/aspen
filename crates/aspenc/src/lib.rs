@@ -5,7 +5,15 @@ use std::ops::{Deref, DerefMut};
 pub mod beam;
 pub mod dispatch;
 pub mod ir;
+pub mod modules_syntax;
+pub mod package;
+pub use modules_syntax::{
+    GlobalSyntax, ImportBinding, ImportSyntax, ImportedName, ModuleSyntax, parse_module,
+};
+mod numbers;
+mod strings;
 pub mod types;
+pub use numbers::FloatValue;
 
 /// One-based line and Unicode scalar column.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,9 +73,13 @@ pub enum Token<'a> {
     Star,
     Slash,
     Identifier(&'a str),
+    Int(i64),
+    Float(crate::FloatValue),
+    String(&'a str),
     Underscore,
     Equals,
     Dot,
+    Comma,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -148,6 +160,23 @@ impl<'a> Iterator for Lexer<'a> {
                     self.advance(ch);
                 }
                 Token::Whitespace(&source[..source.len() - self.remaining.len()])
+            } else if ch == '"' {
+                match self.string_token(start) {
+                    Some(token) => token,
+                    None => continue,
+                }
+            } else if ch.is_ascii_digit()
+                || (ch == '-'
+                    && self
+                        .remaining
+                        .as_bytes()
+                        .get(1)
+                        .is_some_and(u8::is_ascii_digit))
+            {
+                match self.number_token(start) {
+                    Some(token) => token,
+                    None => continue,
+                }
             } else if ch.is_alphabetic() || ch == '_' {
                 let source = self.remaining;
                 while let Some(ch) = self
@@ -189,6 +218,7 @@ impl<'a> Iterator for Lexer<'a> {
                     '_' => Token::Underscore,
                     '=' => Token::Equals,
                     '.' => Token::Dot,
+                    ',' => Token::Comma,
                     _ => {
                         self.diagnostics.push(Diagnostic {
                             span: Span {
@@ -274,8 +304,15 @@ pub struct Method {
 /// A source-level type, before names are resolved in a type environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TypeExpr {
-    Any,
     Never,
+    Bytes,
+    String,
+    Int,
+    Float,
+    SelectorFamily,
+    Atom,
+    OpTagged,
+    KeywordTagged,
     Variable(String),
     Actor(Vec<Loc<TypeMethod>>),
     Selector(Selector<Loc<TypeExpr>>),
@@ -313,6 +350,9 @@ pub enum Stmt {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Expr {
+    Int(i64),
+    Float(crate::FloatValue),
+    String(String),
     /// The lexically enclosing method's reply target (`^`).
     ReplyTo,
     Selector(Selector<Loc<Expr>>),

@@ -1,0 +1,5 @@
+export let printer = {
+  def print: string text =>
+    syscall write: 1 data: text.
+    syscall write: 1 data: "\n".
+}.

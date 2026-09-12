@@ -20,17 +20,47 @@ This specification describes parsing and static typing, not a runtime
 implementation or an evaluation protocol.
 
 ```text
-program   ::= statement*
+module    ::= (import | global)*
+global    ::= "export"? "let" annotated-name "=" static-value "."
+import    ::= "import" module-path ("as" name | "(" imports ")")? "."
 actor     ::= "{" method* "}"
 method    ::= "def" receiver-pattern ("->" type)? "=>" statement*
 statement ::= "let" pattern "=" expression "."
             | expression "."
 ```
 
-Every statement ends with a period, including the last statement of a program
-or method. Method bodies end at the next `def` or closing brace; there is no
-separate method separator. Programs and method bodies may be empty. Let is a
-statement, not an expression, and cannot appear in an initializer or payload.
+Every declaration and statement ends with a period. Method bodies end at the
+next `def` or closing brace; there is no separate method separator. Modules and
+method bodies may be empty. At module scope, `let` declares one shared global;
+within a method, `let` is a sequential local binding statement. Let is not an
+expression and cannot appear in an initializer or payload.
+
+Source paths define module names relative to the package source root, prefixed
+by the package name. A terminal `index.aspen` names its directory's module;
+other files use their basename without `.aspen`. Colliding module paths are
+errors. The YAML package manifest and linking conventions are specified in
+`docs/modules.md`.
+
+Globals are private unless exported. Initializers are statically declarative:
+primitive literals, global references, actor literals, and selectors with
+recursively declarative payloads. Actor bodies may execute sends; establishing
+the actor value does not execute its behavior. Initialization dependencies,
+excluding references inside actor bodies, must be acyclic. Each actor literal
+in a global initializer has one identity per running program; aliases preserve
+identity.
+
+Imports and global declarations are order-independent. Resolve the module graph,
+condense its strongly connected components into a DAG, and check components in
+dependency order, with mutually dependent modules checked together. Module
+boundaries alone do not require type annotations.
+
+Qualified global references use adjacent slashes, such as `tools/output`.
+Spaced `tools / output` remains an operator send; partially spaced forms are
+errors. Imports grant access only to exported globals.
+
+A program links compilation units and selects an exported global actor and an
+atomic initial message. The selected receiver must accept that message without
+a reply. There is no implicit executable top-level statement sequence.
 Identifiers
 start with a Unicode alphabetic character or underscore and continue with
 Unicode alphanumeric characters or underscores. The exact words `let` and `def`
@@ -78,8 +108,8 @@ type notation:
 ```text
 { ready. put: ({}) }
 { ready -> {}. put: ({}) -> #done }
-{ <A <: any> (A) -> A }
-{ <A <: any, B <: any> put: (A) at: (B) -> A }
+{ <A <: {}> (A) -> A }
+{ <A <: {}, B <: {}> put: (A) at: (B) -> A }
 ```
 
 Omitting `-> type` denotes no reply, distinct from replying with any value,
@@ -126,29 +156,91 @@ arithmetic implementation.
 Types are semantic values, independent of source locations:
 
 - `never` is bottom, representing absence of a normally produced value.
-- `any` is top, accepting every type.
+- `{}` is the unit actor type and top, accepting every value.
 - Actor types contain finite collections of quantified input/reply signatures.
-  The empty actor type is `{}`.
-- Selector types contain an atomic tag, an operator tag and payload type, or an
-  ordered nonempty sequence of keyword labels and payload types.
+  The empty collection denotes `{}`.
+- Primitive types are `bytes`, `string`, `int`, `float`, and `selector`.
+- `string <: bytes <: {}`: strings are immutable byte sequences containing valid
+  UTF-8; `bytes` additionally admits arbitrary octets.
+- `selector` has three subfamilies: `atom`, `optagged`, and `keywordtagged`.
+- Structural selector types contain an atomic tag, an operator tag and payload
+  type, or an ordered nonempty sequence of keyword labels and payload types.
 - A type variable has a fresh identity and an upper bound.
 
-Every well-formed type is a subtype of itself; `never` is a subtype of every
-such type and every such type is a subtype of `any`. Every actor type is a
-subtype of `{}`, so `never <: {} <: any` remains valid, but does not describe
-the whole universe. Selectors are not actors: `#ready` is not a subtype of `{}`.
+Every value is an actor in the type system, including primitives. Runtime
+representations may optimize primitives without changing this fact. Every
+well-formed type is a subtype of itself; `never` is a subtype of every such
+type and every such type is a subtype of `{}`. There is no separate `any`
+type. In particular, `#ready <: atom <: selector <: {}`.
+
+The primitive branches `bytes`, `int`, `float`, and `selector` are mutually
+disjoint. `string` refines `bytes`, so those two types overlap. The three selector families are likewise mutually disjoint. Each
+structural selector belongs to its corresponding family; primitive and selector
+families do not by themselves promise any methods.
+
+== String Literals
+
+Double-quoted string expressions synthesize `string` and contain UTF-8 text.
+They satisfy `bytes` constraints by ordinary subtyping, with no encoding operation
+or conversion. There is no byte-literal syntax in this milestone.
+The supported escapes are `\"`, `\\`, `\n`, `\r`, `\t`, `\0`, and `\u{...}`.
+A Unicode escape contains one to six hexadecimal digits and must denote a Unicode
+scalar value: surrogates and values above `0x10ffff` are rejected. Unknown or
+incomplete escapes, unclosed strings, and raw CR or LF characters are lexical
+errors. Strings have no interpolation. Strings are expressions, not singleton
+types or literal patterns. Direct reply sends accept them, as in
+`{ def greeting -> string => ^ "hello". }`.
+
+== Integer Literals
+
+Decimal integer expressions synthesize `int`. Their spelling is an optional
+adjacent minus sign followed by ASCII digits, with optional single underscores
+between digits: `0`, `-42`, `1_000`. Leading zeros and negative zero are allowed.
+The value must fit a signed 64-bit integer, from `-9223372036854775808` through
+`9223372036854775807`; overflow and malformed separators are lexical errors.
+Integer literals are expressions, not singleton types or literal patterns.
+
+A minus immediately followed by a digit belongs to the integer token. A separate
+minus remains an operator selector: `a - 42` sends an operator-tagged message,
+whereas `a (-42)` sends the negative integer itself. Write `#- 42` for a minus
+selector with a positive payload and `#- -42` for a negative payload. Reply sends
+accept literals directly, as in `{ def answer -> int => ^ -42. }`.
+
+== Float Literals
+
+Float expressions synthesize `float`, distinct from `int` without implicit
+numeric conversion. They use finite IEEE 754 binary64 values. A float has decimal
+digits followed by a fractional part, an exponent, or both: `1.5`, `1e3`,
+`-1_000.25e-2`. Leading zeros are allowed. Each digit sequence allows single
+underscores only between digits. An exponent starts with `e` or `E`, has an
+optional `+` or `-`, and requires decimal digits.
+
+A leading minus belongs to a number only when adjacent to its first digit, just
+as for integers; a leading plus remains an operator. Decimal points require
+digits on both sides: `.5` is not a float and `1.` remains integer `1` followed
+by a statement terminator. Thus `1.5.` is a float expression statement. An
+immediately adjacent `e` or `E` starts an exponent, so malformed exponents such
+as `1e` are lexical errors rather than a number followed by an identifier.
+
+Conversion rounds to nearest binary64, ties to even. Overflow to infinity is a
+lexical error; subnormals and underflow to signed zero are allowed. Negative zero
+is preserved. Infinity and NaN have no literal forms. Float literals are
+expressions, not singleton types or literal patterns; direct reply sends accept
+them, as in `{ def answer -> float => ^ 42.5. }`.
 
 == Selector Subtyping
 
-Selector subtyping requires identical shape: the same variant and atomic name,
+Between structural selector types, subtyping requires identical shape: the same variant and atomic name,
 operator tag, or complete ordered keyword-label sequence. Corresponding payload
 types are compared covariantly and recursively. There is no keyword width
 subtyping, label reordering, or conversion between selector variants.
 
 ```text
 #ready <: #ready
-#put: ({}) <: #put: (any)
-#outer: inner: ({}) <: #outer: inner: (any)
+#put: (#ready) <: #put: ({})
+#outer: inner: (#ready) <: #outer: inner: ({})
+#+ {} <: optagged <: selector <: {}
+#a: {} b: int <: keywordtagged <: selector <: {}
 ```
 
 Different atomic names, different operators, or different keyword shapes do
@@ -180,7 +272,7 @@ invariant; overlapping method collections are not valid actor types.
 
 A rigid variable is a subtype of its upper bound and that bound's supertypes.
 Sharing a bound does not identify two fresh variables or make them subtypes of
-one another. In particular, `A <: any` does not justify `A <: {}`.
+one another. In particular, `A <: {}` does not justify `A <: selector`.
 
 = Locations and Evidence
 
@@ -219,7 +311,7 @@ check(Gamma, expression, Expected(U, origin)) -> Actual(T, evidence)
 Either operation may fail. Successful checking establishes `T <: U` and returns
 the actual type `T`, not the expected type `U`. The fallback rule synthesizes,
 then checks subtyping, with no conversion or implicit widening. For example,
-checking `{}` against `any` still returns `{}` and its evidence.
+checking `#ready` against `{}` still returns `#ready` and its evidence.
 
 Statement checking produces a typed statement and exports any new bindings to
 subsequent statements in the same sequence. A sequence has no value type and
@@ -234,8 +326,8 @@ a recursive binding plan, and component origins. Preparation alone does not
 quantify the parameters.
 
 ```text
-prepare(_) = ([], any, discard)
-prepare(x) = ([A <: any], A, bind x : A)  // A fresh
+prepare(_) = ([], {}, discard)
+prepare(x) = ([A <: {}], A, bind x : A)  // A fresh
 prepare(selector(children)) =
   (concatenate child parameters,
    selector(child accepted types),
@@ -243,7 +335,7 @@ prepare(selector(children)) =
 ```
 
 An atomic selector plan has no children, parameters, or bindings. Discard
-accepts `any` without a binding. Each variable introduces its own fresh parameter
+accepts `{}` without a binding. Each variable introduces its own fresh parameter
 and binds at that position. Display names such as `A` and `B` are not semantic
 identities, even when source names or spans coincide. Duplicate binding names
 within one pattern are rejected; a new lexical scope may shadow outer names.
@@ -271,12 +363,12 @@ label or nested selector shape is a pattern mismatch,
 not a successful binding. A whole-value variable remains precise too:
 
 ```text
-let x = {}. x.
-A <: any; actual = {}; check {} <: any; substitute A := {}
+let x = #ready. x.
+A <: {}; actual = #ready; check #ready <: {}; substitute A := #ready
 ```
 
-The inequality `{} <: A <: any` alone would also allow `A = any`. Instantiation
-deliberately chooses `{}` instead. A let inside a generic method can instantiate
+The inequality `#ready <: A <: {}` alone would also allow `A = {}`. Instantiation
+deliberately chooses `#ready` instead. A let inside a generic method can instantiate
 its fresh parameter with an enclosing rigid parameter, without widening that
 parameter to its bound or quantifying it again.
 
@@ -289,13 +381,13 @@ nested replies. There are no separate payload-level quantifiers.
 
 ```text
 { def (x) => x. }
-  : { <A <: any> (A) }
+  : { <A <: {}> (A) }
 { def put: (x) at: (y) => x. }
-  : { <A <: any, B <: any> put: (A) at: (B) }
+  : { <A <: {}, B <: {}> put: (A) at: (B) }
 { def outer: inner: (x) => x. }
-  : { <A <: any> outer: inner: (A) }
+  : { <A <: {}> outer: inner: (A) }
 { def (x) => { def (y) => x. }. }
-  : { <A <: any> (A) }
+  : { <A <: {}> (A) }
 ```
 
 Body checking cannot solve a rigid parameter to a convenient concrete type.
@@ -317,9 +409,31 @@ pairwise input disjointness before accepting the actor. Preserve source order
 for evidence and representation, not to give earlier methods priority.
 
 A reference resolves to the nearest enclosing binding and synthesizes its type
-with reference evidence linked to the bound value and declaration. An absent
-name is an unbound-variable error retaining the name and use span. Checking a
-reference preserves this evidence.
+with reference evidence linked to the bound value and declaration. If no lexical
+binding exists, the name `syscall` resolves to the runtime's global syscall actor;
+any other absent name is an unbound-variable error retaining the name and use
+span. Checking a reference preserves its evidence.
+
+== Global Syscall Actor
+
+The ever-present global `syscall` synthesizes this structural actor type:
+
+```text
+{ write: int data: bytes -> int }
+```
+
+It is available in every scope, including method bodies. An ordinary lexical
+binding named `syscall` shadows the global; programs can alias, capture, or pass
+the actor as a value. References to the global identify the same actor within
+one runtime session, rather than creating an actor on every evaluation.
+
+For example, `syscall write: 1 data: "Hello!\n".` is well typed because
+`string <: bytes`. Its replying method makes statement checking wait for the
+write attempt even when the returned integer is discarded. The runtime contract
+is a single POSIX write against a real BEAM-process file descriptor, returning
+the count of bytes written or negative native `errno`. Partial writes and
+interruptions are not retried; no newline or text conversion is implicit.
+The native execution details are specified in `docs/beam-runtime.md`.
 
 == Selector Expressions
 
@@ -381,7 +495,7 @@ continues after the send. Zero, one, or multiple replies are permitted. An
 incompatible reply message is rejected by the ordinary send typing rules.
 
 Each method establishes a fresh special reply-to scope. `^` is unavailable at
-program level and in unannotated methods, even when an enclosing method is
+module level and in unannotated methods, even when an enclosing method is
 annotated. Nested annotated methods use their own declared reply-to actor.
 Capturing an outer reply-to actor is explicit:
 
@@ -403,7 +517,7 @@ method parameters. Expose a callee variable's upper bound when looking for its
 actor capabilities. If the callee or message is `never`, the send synthesizes
 `never`; both operands are still statically typed.
 
-For a normally returning send, the callee must have a valid actor type. For
+For a normally returning send, the callee must expose a valid actor interface. For
 each signature, infer parameter instances recursively from the message type
 and the input template, check upper bounds, and test that the message is a
 subtype of the instantiated input. A signature passing these tests is applicable.
@@ -412,8 +526,9 @@ message. A replying send has that receiver's instantiated reply type; a
 no-reply send produces no value and is valid only as a statement. Both retain
 the callee, message, and selected method in its typed representation.
 
-A non-actor callee is a not-an-actor error. An actor with no applicable signature
-is a no-receiver error retaining both operands' evidence. An overlapping actor
+A callee with no applicable signature produces a no-receiver error retaining
+both operands' evidence. Primitive types currently expose no method signatures;
+being an actor does not by itself promise a receiver. An overlapping actor
 type supplied externally is invalid, not an instruction to pick the first
 receiver. No runtime delivery or execution is implemented by these typing rules.
 
@@ -429,19 +544,24 @@ receiver. No runtime delivery or execution is implemented by these typing rules.
 Every pair of receiver inputs must be provably disjoint at actor construction.
 For a generic signature, its accepted domain replaces method parameters with
 their upper bounds, recursively and with earlier substitutions applied to later
-bounds. Thus two independently fresh whole-value parameters bounded by `any`
+bounds. Thus two independently fresh whole-value parameters bounded by `{}`
 are overlapping, not distinct dispatch tags.
 
 The conservative disjointness proof uses these rules:
 
 - `never` is disjoint from every type.
 - Variables are examined through their upper bounds.
-- Actor and selector types are disjoint.
+- Distinct primitive branches and distinct selector families are disjoint;
+  `string` and `bytes` overlap and cannot select separate receivers.
+- A structural selector is disjoint from a different selector family.
+- A structural actor interface does not prove disjointness from a primitive:
+  primitives are actors too. The empty interface `{}` is top, not an actor-handle
+  kind, and overlaps every inhabited type.
 - Selectors with distinct variants or shapes are disjoint.
 - Selectors with matching shape are disjoint if at least one corresponding
   payload pair is provably disjoint, recursively.
 - Actor versus actor is conservatively unknown, even for different method sets.
-  Other unproved cases, including ordinary overlap with `any`, are not disjoint.
+  Other unproved cases, including ordinary overlap with `{}`, are not disjoint.
 
 Failure to prove disjointness rejects the actor with both receiver origins.
 This is stricter than merely rejecting identical signatures: neither ordering,
@@ -478,9 +598,9 @@ the instantiated signature. Value replies remain covariant; no reply matches
 only no reply. Compatible alpha-renamed signatures are supported.
 
 ```text
-{ <A <: any> (A) -> A } <: { ({}) -> {} }
-{ <A <: any> put: (A) -> A } <: { put: ({}) -> {} }
-{ (any) -> any } is not a subtype of { <A <: any> (A) -> A }
+{ <A <: {}> (A) -> A } <: { ({}) -> {} }
+{ <A <: {}> put: (A) -> A } <: { put: ({}) -> {} }
+{ ({}) -> {} } is not a subtype of { <A <: {}> (A) -> A }
 ```
 
 Substitution is simultaneous and capture-avoiding. Locally quantified parameters
@@ -512,12 +632,12 @@ Checking `{}` against `Expected(never, origin)` reports a root mismatch with tha
 origin and the empty actor's evidence. Checking a let initializer against an
 annotation reports its producing expression's evidence. Recursive
 selector patterns can themselves reject initializers, unlike unconstrained
-variable and discard patterns. Overlapping-receiver, not-an-actor, and
-no-receiver errors are distinct from an ordinary expected/actual mismatch.
+variable and discard patterns. Overlapping-receiver and no-receiver errors are
+distinct from an ordinary expected/actual mismatch.
 
-Caller-supplied environments may supply `never`, `any`, or bounded variables.
+Caller-supplied environments may supply `never`, `{}`, or bounded variables.
 The bottom rules do not claim a closed expression can construct a bottom value,
-and checking against `any` does not make the expression synthesize `any`.
+and checking against `{}` does not make the expression synthesize `{}`.
 
 = Type Expressions and Annotation Patterns
 
@@ -525,7 +645,8 @@ Source type syntax is now a separately located syntax tree, not a semantic type
 with source names prematurely resolved:
 
 ```text
-type ::= "any" | "never" | type-name
+type ::= "never" | "bytes" | "string" | "int" | "float"
+       | "selector" | "atom" | "optagged" | "keywordtagged" | type-name
        | "(" type ")"
        | "#" selector-of-types
        | "{" (signature ("." signature)*)? "}"
@@ -550,10 +671,10 @@ pattern is a single variable, discard, or parenthesized pattern. Consequently,
 annotating a whole selector pattern also requires grouping that pattern.
 
 ```text
-#x: y z: any abc       // z payload: variable abc constrained by any
-(#x: any z: any) abc   // whole variable abc constrained by selector type
-any (#x: y z: abc)     // whole selector pattern constrained by any
-{} x                  // variable x constrained to actor values
+#x: y z: {} abc       // z payload: variable abc constrained by {}
+(#x: {} z: {}) abc   // whole variable abc constrained by selector type
+{} (#x: y z: abc)     // whole selector pattern constrained by {}
+{} x                  // variable x accepts every value
 ```
 
 A lone identifier remains a variable pattern in ordinary mode. `T x` is an
@@ -567,7 +688,7 @@ Receiver selector mode is unchanged:
 ```text
 { def x => {}. }            // atomic selector x, no binding
 { def ({} x) => x. }        // constrained whole-message binding
-{ def z: any abc => abc. }  // constrained keyword payload binding
+{ def z: {} abc => abc. }  // constrained keyword payload binding
 ```
 
 == Annotation Typing
@@ -578,12 +699,12 @@ instantiates `A` with that precise actual type. Receiver checking instead keeps
 `A` rigid and quantifies it over the method signature.
 
 ```text
-let any x = {}. x.           // binds x : {}, discards x
+let {} x = {}. x.           // binds x : {}, discards x
 { def ({} x) => x. }         // type { <A <: {}> (A) }
 ```
 
 A constrained discard `T _` accepts `T` and introduces no parameter or binding.
-For a selector pattern annotated with `any`, recursively prepare its children
+For a selector pattern annotated with `{}`, recursively prepare its children
 normally. A matching structural selector annotation distributes each payload
 constraint to the corresponding child, retaining written component origins.
 An annotation with a different selector shape or a non-selector constraint on

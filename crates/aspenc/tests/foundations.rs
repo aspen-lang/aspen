@@ -14,9 +14,9 @@ fn existing_structural_fragment_lowers_without_runtime_adapters() {
         "let use = { def use: ({ accept: ({ ready }) } a) =>\
            a accept: { def ready => }. }.\
          use use: { def accept: ({} actor) => }.",
-        // Actor-vs-selector payloads and nested tags share an outer selector.
-        "let a = { def put: ({} x) => def put: #left => def put: #right => }.\
-         a put: {}. a put: #left. a put: #right.",
+        // Distinct selector tags and nested payloads share an outer selector.
+        "let a = { def put: (#nested: x) => def put: #left => def put: #right => }.\
+         a put: (#nested: {}). a put: #left. a put: #right.",
         // A first-class reply handle crosses an actor boundary unchanged.
         "let delegate = { def report: ({ (#ok) } target) => target (#ok). }.\
          let service = { def start -> #ok => delegate report: ^. }.\
